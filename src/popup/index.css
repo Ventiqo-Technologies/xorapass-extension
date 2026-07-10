@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  
+  --color-brand-cyan: #00d2ff;
+  --color-brand-teal: #2f66ff;
+  --color-brand-purple: #7000ff;
+  --color-brand-emerald: #10b981;
+  --color-brand-ruby: #ff2e93;
+  --color-brand-amber: #ff9f1c;
+}
+
+@layer utilities {
+  .glass-card {
+    background: rgba(15, 23, 42, 0.75);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  
+  .glow-cyan {
+    box-shadow: 0 0 15px rgba(0, 210, 255, 0.25);
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.2);
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 9999px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 210, 255, 0.3);
+  }
+}
+
+body {
+  font-family: var(--font-sans);
+  background: radial-gradient(circle at 50% 50%, #080d21 0%, #02040b 100%);
+  margin: 0;
+  overflow: hidden;
+}
+
+.security-grid {
+  background-size: 30px 30px;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.01) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.01) 1px, transparent 1px);
+}
