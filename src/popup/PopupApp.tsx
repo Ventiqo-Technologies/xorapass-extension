@@ -12,9 +12,12 @@ import {
   LogOut, 
   AlertCircle,
   Eye,
-  EyeOff
+  EyeOff,
+  ShieldOff,
+  ShieldCheck
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload } from '../utils/crypto';
+import { isDomainMatch } from '../utils/siteTrust';
 import browser from 'webextension-polyfill';
 
 // Setup API URL
@@ -42,6 +45,7 @@ export const PopupApp: React.FC = () => {
   // Unlocked Session States
   const [vaultItems, setVaultItems] = useState<DecryptedItem[]>([]);
   const [currentHostname, setCurrentHostname] = useState('');
+  const [siteDisabled, setSiteDisabled] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
 
@@ -68,12 +72,27 @@ export const PopupApp: React.FC = () => {
         try {
           const url = new URL(activeTab.url);
           setCurrentHostname(url.hostname);
+          // Load the per-site autofill enable/disable state.
+          browser.runtime
+            .sendMessage({ type: 'GET_SITE_SETTINGS', payload: { hostname: url.hostname } })
+            .then((res: any) => {
+              if (res && typeof res.disabled === 'boolean') setSiteDisabled(res.disabled);
+            });
         } catch (e) {
           console.warn("Could not parse active tab URL", e);
         }
       }
     });
   }, []);
+
+  const toggleSiteDisabled = () => {
+    const next = !siteDisabled;
+    browser.runtime
+      .sendMessage({ type: 'SET_SITE_DISABLED', payload: { hostname: currentHostname, disabled: next } })
+      .then((res: any) => {
+        if (res && res.success) setSiteDisabled(!!res.disabled);
+      });
+  };
 
   const fetchCachedCredentials = () => {
     browser.runtime.sendMessage({ type: 'GET_MATCHING_CREDENTIALS', payload: { hostname: 'all' } }).then(() => {
@@ -209,22 +228,11 @@ export const PopupApp: React.FC = () => {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  // Filter vault items to match current tab's hostname
-  const matchingItems = vaultItems.filter(item => {
-    if (!item.url || !currentHostname) return false;
-    try {
-      const cleanHost = currentHostname.toLowerCase().replace(/^www\./, '');
-      let credUrlStr = item.url.trim().toLowerCase();
-      if (!credUrlStr.startsWith('http://') && !credUrlStr.startsWith('https://')) {
-        credUrlStr = 'https://' + credUrlStr;
-      }
-      const credUrl = new URL(credUrlStr);
-      const cleanCredHost = credUrl.hostname.replace(/^www\./, '');
-      return cleanHost.includes(cleanCredHost) || cleanCredHost.includes(cleanHost);
-    } catch {
-      return item.url.toLowerCase().includes(currentHostname.toLowerCase());
-    }
-  });
+  // Filter vault items to match current tab's hostname using the shared,
+  // safe matcher (exact / subdomain / same registrable domain).
+  const matchingItems = siteDisabled
+    ? []
+    : vaultItems.filter(item => !!item.url && !!currentHostname && isDomainMatch(currentHostname, item.url));
 
   // Filter all items by search query
   const searchedItems = vaultItems.filter(item => {
@@ -386,12 +394,30 @@ export const PopupApp: React.FC = () => {
             {/* 1. MATCHING CREDENTIALS FOR ACTIVE TAB */}
             {currentHostname && (
               <div className="space-y-2">
-                <div className="flex items-center gap-1.5 text-slate-400 text-xs font-semibold">
-                  <Globe className="w-3.5 h-3.5 text-brand-cyan" />
-                  <span className="truncate">For: <span className="text-white font-bold">{currentHostname}</span></span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-slate-400 text-xs font-semibold min-w-0">
+                    <Globe className="w-3.5 h-3.5 text-brand-cyan flex-shrink-0" />
+                    <span className="truncate">For: <span className="text-white font-bold">{currentHostname}</span></span>
+                  </div>
+                  <button
+                    onClick={toggleSiteDisabled}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-bold uppercase tracking-wider border transition cursor-pointer flex-shrink-0 ${
+                      siteDisabled
+                        ? 'bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby hover:bg-brand-ruby/20'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:border-white/20'
+                    }`}
+                    title={siteDisabled ? 'Autofill is disabled on this site' : 'Disable autofill on this site'}
+                  >
+                    {siteDisabled ? <ShieldOff className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+                    <span>{siteDisabled ? 'Disabled' : 'Enabled'}</span>
+                  </button>
                 </div>
 
-                {matchingItems.length === 0 ? (
+                {siteDisabled ? (
+                  <div className="p-3 bg-brand-ruby/5 border border-brand-ruby/15 rounded-xl text-center">
+                    <p className="text-[11px] text-brand-ruby/90">Autofill is turned off for this site. Click "Disabled" to re-enable.</p>
+                  </div>
+                ) : matchingItems.length === 0 ? (
                   <div className="p-3 bg-slate-900/30 border border-white/5 rounded-xl text-center">
                     <p className="text-[11px] text-slate-500">No matching credentials for this website.</p>
                   </div>
