@@ -12,10 +12,42 @@ import {
   LogOut, 
   AlertCircle,
   Eye,
-  EyeOff
+  EyeOff,
+  ShieldOff,
+  ShieldCheck,
+  Clock,
+  AlertTriangle,
+  LockKeyhole,
+  ShieldAlert,
+  LayoutGrid,
+  Activity,
+  TrendingUp
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload } from '../utils/crypto';
+import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
+import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
 import browser from 'webextension-polyfill';
+
+// Category display metadata for the health chart.
+const CATEGORY_META: Record<string, { label: string; color: string }> = {
+  login: { label: 'Logins', color: '#38c7e8' },
+  other: { label: 'API / Other', color: '#4f7cff' },
+  card: { label: 'Cards', color: '#a855f7' },
+  note: { label: 'Notes', color: '#2dd4bf' },
+  sshkey: { label: 'SSH Keys', color: '#f59e0b' },
+  identity: { label: 'Identities', color: '#f43f5e' },
+};
+const categoryLabel = (c: string) => CATEGORY_META[c]?.label || c;
+const categoryColor = (c: string) => CATEGORY_META[c]?.color || '#64748b';
+
+const AUTO_LOCK_OPTIONS = [
+  { label: '1 min', value: 1 },
+  { label: '5 min', value: 5 },
+  { label: '15 min', value: 15 },
+  { label: '30 min', value: 30 },
+  { label: '1 hour', value: 60 },
+  { label: 'Never', value: 0 },
+];
 
 // Setup API URL
 const API_BASE_URL = 'https://app.xorapass.com';
@@ -42,6 +74,10 @@ export const PopupApp: React.FC = () => {
   // Unlocked Session States
   const [vaultItems, setVaultItems] = useState<DecryptedItem[]>([]);
   const [currentHostname, setCurrentHostname] = useState('');
+  const [currentProtocol, setCurrentProtocol] = useState('');
+  const [siteDisabled, setSiteDisabled] = useState(false);
+  const [autoLockMinutes, setAutoLockMinutes] = useState(15);
+  const [tab, setTab] = useState<'vault' | 'health'>('vault');
   const [searchTerm, setSearchTerm] = useState('');
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
 
@@ -51,15 +87,34 @@ export const PopupApp: React.FC = () => {
   const [mfaToken, setMfaToken] = useState('');
   const [tempEncKey, setTempEncKey] = useState<Uint8Array | null>(null);
   
-  // Check unlock status on open
+  // Check unlock status on open.
+  //
+  // MV3 service workers are ephemeral: if the worker is mid-cold-start when the
+  // popup opens, the first message can resolve with no response. Treat a missing
+  // response as "unknown" and retry a couple of times rather than falling back
+  // to the locked screen — otherwise the popup wrongly appears logged out even
+  // though the vault is still unlocked in storage.session.
   useEffect(() => {
-    browser.runtime.sendMessage({ type: 'GET_STATUS' }).then((res) => {
-      if (res && res.unlocked) {
-        setUnlocked(true);
-        setEmail(res.email || '');
-        fetchCachedCredentials();
-      }
-    });
+    const checkStatus = (attempt = 0) => {
+      browser.runtime
+        .sendMessage({ type: 'GET_STATUS' })
+        .then((res: any) => {
+          if (res && res.unlocked) {
+            setUnlocked(true);
+            setEmail(res.email || '');
+            fetchCachedCredentials();
+            browser.runtime.sendMessage({ type: 'GET_SETTINGS' }).then((s: any) => {
+              if (s && typeof s.autoLockMinutes === 'number') setAutoLockMinutes(s.autoLockMinutes);
+            });
+          } else if (!res && attempt < 3) {
+            setTimeout(() => checkStatus(attempt + 1), 150);
+          }
+        })
+        .catch(() => {
+          if (attempt < 3) setTimeout(() => checkStatus(attempt + 1), 150);
+        });
+    };
+    checkStatus();
 
     // Detect active tab domain
     browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
@@ -68,12 +123,33 @@ export const PopupApp: React.FC = () => {
         try {
           const url = new URL(activeTab.url);
           setCurrentHostname(url.hostname);
+          setCurrentProtocol(url.protocol);
+          // Load the per-site autofill enable/disable state.
+          browser.runtime
+            .sendMessage({ type: 'GET_SITE_SETTINGS', payload: { hostname: url.hostname } })
+            .then((res: any) => {
+              if (res && typeof res.disabled === 'boolean') setSiteDisabled(res.disabled);
+            });
         } catch (e) {
           console.warn("Could not parse active tab URL", e);
         }
       }
     });
   }, []);
+
+  const toggleSiteDisabled = () => {
+    const next = !siteDisabled;
+    browser.runtime
+      .sendMessage({ type: 'SET_SITE_DISABLED', payload: { hostname: currentHostname, disabled: next } })
+      .then((res: any) => {
+        if (res && res.success) setSiteDisabled(!!res.disabled);
+      });
+  };
+
+  const changeAutoLock = (minutes: number) => {
+    setAutoLockMinutes(minutes);
+    browser.runtime.sendMessage({ type: 'SET_AUTO_LOCK', payload: { minutes } });
+  };
 
   const fetchCachedCredentials = () => {
     browser.runtime.sendMessage({ type: 'GET_MATCHING_CREDENTIALS', payload: { hostname: 'all' } }).then(() => {
@@ -209,22 +285,11 @@ export const PopupApp: React.FC = () => {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  // Filter vault items to match current tab's hostname
-  const matchingItems = vaultItems.filter(item => {
-    if (!item.url || !currentHostname) return false;
-    try {
-      const cleanHost = currentHostname.toLowerCase().replace(/^www\./, '');
-      let credUrlStr = item.url.trim().toLowerCase();
-      if (!credUrlStr.startsWith('http://') && !credUrlStr.startsWith('https://')) {
-        credUrlStr = 'https://' + credUrlStr;
-      }
-      const credUrl = new URL(credUrlStr);
-      const cleanCredHost = credUrl.hostname.replace(/^www\./, '');
-      return cleanHost.includes(cleanCredHost) || cleanCredHost.includes(cleanHost);
-    } catch {
-      return item.url.toLowerCase().includes(currentHostname.toLowerCase());
-    }
-  });
+  // Filter vault items to match current tab's hostname using the shared,
+  // safe matcher (exact / subdomain / same registrable domain).
+  const matchingItems = siteDisabled
+    ? []
+    : vaultItems.filter(item => !!item.url && !!currentHostname && isDomainMatch(currentHostname, item.url));
 
   // Filter all items by search query
   const searchedItems = vaultItems.filter(item => {
@@ -233,6 +298,22 @@ export const PopupApp: React.FC = () => {
       item.username.toLowerCase().includes(term) ||
       (item.url && item.url.toLowerCase().includes(term));
   });
+
+  // ── Current-site trust assessment (mirrors the autofill engine's checks) ──
+  const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(currentHostname);
+  const isInsecure = currentProtocol === 'http:' && !isLocalHost;
+  const knownHosts = vaultItems.map((i) => (i.url ? extractHostname(i.url) : '')).filter(Boolean);
+  const lookalike =
+    currentHostname && !siteDisabled && matchingItems.length === 0
+      ? findLookalikeTarget(currentHostname, knownHosts)
+      : null;
+
+  // ── Vault health (for the Health dashboard tab) ──
+  const health = computeVaultHealth(vaultItems.map((i) => ({ category: i.category, value: i.value })));
+  const tier = scoreTier(health.score);
+  const scoreColor = tier.tone === 'good' ? '#2dd4bf' : tier.tone === 'ok' ? '#f59e0b' : '#f43f5e';
+  const ringCirc = 2 * Math.PI * 34; // r=34
+  const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
     <div className="w-[380px] h-[550px] bg-slate-950 text-white flex flex-col relative overflow-hidden select-none font-sans border border-white/5">
@@ -383,15 +464,98 @@ export const PopupApp: React.FC = () => {
           /* UNLOCKED VIEW */
           <div className="flex-1 flex flex-col space-y-4">
             
+            {/* TAB SWITCHER */}
+            <div className="flex items-center gap-1 p-1 bg-slate-900/60 border border-white/5 rounded-lg flex-shrink-0">
+              <button
+                onClick={() => setTab('vault')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'vault' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-400 hover:text-white'}`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" /> Vault
+              </button>
+              <button
+                onClick={() => setTab('health')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'health' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-400 hover:text-white'}`}
+              >
+                <Activity className="w-3.5 h-3.5" /> Health
+              </button>
+            </div>
+
+            {tab === 'vault' && (
+            <>
             {/* 1. MATCHING CREDENTIALS FOR ACTIVE TAB */}
             {currentHostname && (
               <div className="space-y-2">
-                <div className="flex items-center gap-1.5 text-slate-400 text-xs font-semibold">
-                  <Globe className="w-3.5 h-3.5 text-brand-cyan" />
-                  <span className="truncate">For: <span className="text-white font-bold">{currentHostname}</span></span>
+                {/* SITE SECURITY PANEL */}
+                <div className="p-3 bg-slate-900/50 border border-white/8 rounded-xl space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-slate-300 text-xs font-semibold min-w-0">
+                      <Globe className="w-3.5 h-3.5 text-brand-cyan flex-shrink-0" />
+                      <span className="truncate text-white font-bold">{currentHostname}</span>
+                    </div>
+                    <button
+                      onClick={toggleSiteDisabled}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-bold uppercase tracking-wider border transition cursor-pointer flex-shrink-0 ${
+                        siteDisabled
+                          ? 'bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby hover:bg-brand-ruby/20'
+                          : 'bg-brand-emerald/10 border-brand-emerald/25 text-brand-emerald hover:bg-brand-emerald/20'
+                      }`}
+                      title={siteDisabled ? 'Autofill is disabled on this site' : 'Disable autofill on this site'}
+                    >
+                      {siteDisabled ? <ShieldOff className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+                      <span>{siteDisabled ? 'Autofill Off' : 'Autofill On'}</span>
+                    </button>
+                  </div>
+
+                  {/* Trust chips */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {/* Connection */}
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-semibold border ${
+                      isInsecure
+                        ? 'bg-brand-amber/10 border-brand-amber/25 text-brand-amber'
+                        : 'bg-brand-emerald/10 border-brand-emerald/25 text-brand-emerald'
+                    }`}>
+                      <LockKeyhole className="w-2.5 h-2.5" />
+                      {isInsecure ? 'Insecure HTTP' : 'Secure HTTPS'}
+                    </span>
+
+                    {/* Domain match */}
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-semibold border ${
+                      matchingItems.length > 0
+                        ? 'bg-brand-cyan/10 border-brand-cyan/25 text-brand-cyan'
+                        : 'bg-white/5 border-white/10 text-slate-400'
+                    }`}>
+                      <ShieldCheck className="w-2.5 h-2.5" />
+                      {matchingItems.length > 0 ? `${matchingItems.length} match${matchingItems.length > 1 ? 'es' : ''}` : 'No match'}
+                    </span>
+
+                    {/* Lookalike warning */}
+                    {lookalike && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-semibold border bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby">
+                        <ShieldAlert className="w-2.5 h-2.5" />
+                        Resembles {lookalike.target}
+                      </span>
+                    )}
+                  </div>
+
+                  {isInsecure && (
+                    <div className="flex items-start gap-1.5 text-[10px] text-brand-amber/90 leading-snug">
+                      <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                      <span>This page uses insecure HTTP. Autofill will warn you before filling.</span>
+                    </div>
+                  )}
+                  {lookalike && (
+                    <div className="flex items-start gap-1.5 text-[10px] text-brand-ruby/90 leading-snug">
+                      <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                      <span>This domain resembles "{lookalike.target}" but doesn't match it — verify the address.</span>
+                    </div>
+                  )}
                 </div>
 
-                {matchingItems.length === 0 ? (
+                {siteDisabled ? (
+                  <div className="p-3 bg-brand-ruby/5 border border-brand-ruby/15 rounded-xl text-center">
+                    <p className="text-[11px] text-brand-ruby/90">Autofill is turned off for this site. Click "Disabled" to re-enable.</p>
+                  </div>
+                ) : matchingItems.length === 0 ? (
                   <div className="p-3 bg-slate-900/30 border border-white/5 rounded-xl text-center">
                     <p className="text-[11px] text-slate-500">No matching credentials for this website.</p>
                   </div>
@@ -502,6 +666,115 @@ export const PopupApp: React.FC = () => {
                 )}
               </div>
             </div>
+
+            {/* SECURITY BAR: vault overview + idle auto-lock */}
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/5">
+              <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                <Key className="w-3 h-3" />
+                <span><span className="text-slate-300 font-bold">{vaultItems.length}</span> items</span>
+              </div>
+              <div className="flex items-center gap-1.5" title="Automatically lock the vault after this idle period">
+                <Clock className="w-3 h-3 text-slate-500" />
+                <span className="text-[10px] text-slate-500">Auto-lock</span>
+                <select
+                  value={autoLockMinutes}
+                  onChange={(e) => changeAutoLock(Number(e.target.value))}
+                  className="bg-slate-900 border border-white/10 rounded-md text-[10px] text-slate-200 px-1.5 py-0.5 focus:outline-none focus:border-brand-cyan cursor-pointer"
+                >
+                  {AUTO_LOCK_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            </>
+            )}
+
+            {/* HEALTH DASHBOARD TAB */}
+            {tab === 'health' && (
+              <div className="space-y-4">
+                {/* Security score ring */}
+                <div className="p-4 bg-slate-900/50 border border-white/8 rounded-xl flex items-center gap-4">
+                  <div className="relative flex-shrink-0">
+                    <svg width="84" height="84" viewBox="0 0 84 84">
+                      <circle cx="42" cy="42" r="34" fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="8" />
+                      <circle
+                        cx="42" cy="42" r="34" fill="none" stroke={scoreColor} strokeWidth="8" strokeLinecap="round"
+                        strokeDasharray={ringCirc} strokeDashoffset={ringCirc * (1 - health.score / 100)}
+                        transform="rotate(-90 42 42)" style={{ transition: 'stroke-dashoffset 0.6s ease' }}
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                      <span className="text-xl font-extrabold text-white leading-none">{health.score}</span>
+                      <span className="text-[8px] uppercase tracking-widest text-slate-500 mt-0.5">score</span>
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <TrendingUp className="w-4 h-4" style={{ color: scoreColor }} />
+                      <span className="text-sm font-bold" style={{ color: scoreColor }}>{tier.label}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1 leading-snug">
+                      {health.totalLogins === 0
+                        ? 'No login passwords to analyze yet.'
+                        : `${health.strong} of ${health.totalLogins} password${health.totalLogins > 1 ? 's are' : ' is'} strong.`}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Stat chips */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="p-2.5 bg-slate-900/40 border border-white/5 rounded-lg text-center">
+                    <div className="text-lg font-extrabold text-brand-emerald leading-none">{health.strong}</div>
+                    <div className="text-[9px] uppercase tracking-wider text-slate-500 mt-1">Strong</div>
+                  </div>
+                  <div className="p-2.5 bg-slate-900/40 border border-white/5 rounded-lg text-center">
+                    <div className="text-lg font-extrabold text-brand-amber leading-none">{health.weak}</div>
+                    <div className="text-[9px] uppercase tracking-wider text-slate-500 mt-1">Weak</div>
+                  </div>
+                  <div className="p-2.5 bg-slate-900/40 border border-white/5 rounded-lg text-center">
+                    <div className="text-lg font-extrabold text-brand-ruby leading-none">{health.reused}</div>
+                    <div className="text-[9px] uppercase tracking-wider text-slate-500 mt-1">Reused</div>
+                  </div>
+                </div>
+
+                {/* Strength distribution */}
+                {health.totalLogins > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                      <span className="flex items-center gap-1.5"><Activity className="w-3 h-3" /> Strength</span>
+                      <span className="text-slate-500">{Math.round(health.strong / health.totalLogins * 100)}% strong</span>
+                    </div>
+                    <div className="flex h-2.5 rounded-full overflow-hidden bg-slate-900">
+                      {health.strong > 0 && <div style={{ width: `${health.strong / health.totalLogins * 100}%`, background: '#2dd4bf' }} />}
+                      {(health.totalLogins - health.strong) > 0 && <div style={{ width: `${(health.totalLogins - health.strong) / health.totalLogins * 100}%`, background: '#f43f5e' }} />}
+                    </div>
+                  </div>
+                )}
+
+                {/* Category breakdown */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                    <LayoutGrid className="w-3 h-3" /> By category
+                  </div>
+                  {health.byCategory.length === 0 ? (
+                    <p className="text-[10px] text-slate-600">No items yet.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {health.byCategory.map((c) => (
+                        <div key={c.category} className="flex items-center gap-2">
+                          <span className="w-16 text-[10px] text-slate-400 truncate flex-shrink-0">{categoryLabel(c.category)}</span>
+                          <div className="flex-1 h-2 bg-slate-900 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full" style={{ width: `${c.count / maxCat * 100}%`, background: categoryColor(c.category) }} />
+                          </div>
+                          <span className="w-5 text-right text-[10px] font-bold text-slate-300 flex-shrink-0">{c.count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
           </div>
         )}
