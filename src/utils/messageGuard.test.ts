@@ -88,4 +88,18 @@ describe('validateMessage — payload validation', () => {
     );
     expect(res.ok).toBe(true);
   });
+  it('accepts a valid SET_AUTO_LOCK from the popup', () => {
+    const res = validateMessage({ type: 'SET_AUTO_LOCK', payload: { minutes: 15 } }, popupSender());
+    expect(res.ok).toBe(true);
+  });
+  it('rejects SET_AUTO_LOCK with a non-numeric payload', () => {
+    const res = validateMessage({ type: 'SET_AUTO_LOCK', payload: { minutes: 'soon' } }, popupSender());
+    expect(res.reason).toBe('bad-payload');
+  });
+  it('rejects SET_AUTO_LOCK / GET_SETTINGS from a content script (privileged)', () => {
+    expect(validateMessage({ type: 'GET_SETTINGS' }, contentSender()).reason).toBe('privileged-from-content');
+    expect(
+      validateMessage({ type: 'SET_AUTO_LOCK', payload: { minutes: 5 } }, contentSender()).reason
+    ).toBe('privileged-from-content');
+  });
 });

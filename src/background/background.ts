@@ -9,6 +9,34 @@ import { validateMessage } from '../utils/messageGuard';
 console.debug('[XoraPass] service worker started at', new Date().toISOString());
 
 const DISABLED_SITES_KEY = 'disabledSites';
+const AUTO_LOCK_KEY = 'autoLockMinutes';
+const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
+const DEFAULT_AUTO_LOCK_MINUTES = 15;
+
+/** Idle-timeout (minutes) after which the vault auto-locks. 0 = never. */
+async function getAutoLockMinutes(): Promise<number> {
+  const res = await browser.storage.local.get([AUTO_LOCK_KEY]);
+  const v = (res as Record<string, unknown>)[AUTO_LOCK_KEY];
+  return typeof v === 'number' && v >= 0 ? v : DEFAULT_AUTO_LOCK_MINUTES;
+}
+
+// (Re)arm the idle auto-lock. Called on unlock and on any popup interaction, so
+// the countdown restarts each time the user actively uses the extension.
+async function scheduleAutoLock() {
+  const minutes = await getAutoLockMinutes();
+  await browser.alarms.clear(AUTO_LOCK_ALARM);
+  if (minutes > 0) {
+    browser.alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: minutes });
+  }
+}
+
+// When the idle timer fires, purge the decrypted vault from session storage.
+browser.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === AUTO_LOCK_ALARM) {
+    console.debug('[XoraPass] auto-lock fired -> clearing session');
+    browser.storage.session.clear();
+  }
+});
 
 interface VaultItem {
   id: string;
@@ -63,6 +91,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'GET_STATUS') {
     return browser.storage.session.get(['unlocked', 'email']).then((res) => {
+      // The popup opening counts as activity: restart the idle auto-lock timer.
+      if (res.unlocked) void scheduleAutoLock();
       console.debug('[XoraPass] GET_STATUS -> unlocked =', !!res.unlocked);
       return { unlocked: !!res.unlocked, email: res.email || null };
     });
@@ -73,6 +103,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return browser.storage.session
       .set({ unlocked: true, email, vaultItems: decryptedItems })
       .then(() => {
+        void scheduleAutoLock();
         console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', decryptedItems.length, 'items )');
         return { success: true };
       });
@@ -80,7 +111,20 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'LOCK_VAULT') {
     console.debug('[XoraPass] LOCK_VAULT -> clearing session');
+    void browser.alarms.clear(AUTO_LOCK_ALARM);
     return browser.storage.session.clear().then(() => ({ success: true }));
+  }
+
+  if (type === 'GET_SETTINGS') {
+    return getAutoLockMinutes().then((autoLockMinutes) => ({ autoLockMinutes }));
+  }
+
+  if (type === 'SET_AUTO_LOCK') {
+    const minutes = Math.max(0, Math.floor(msg.payload.minutes));
+    return browser.storage.local
+      .set({ [AUTO_LOCK_KEY]: minutes })
+      .then(() => scheduleAutoLock())
+      .then(() => ({ success: true, autoLockMinutes: minutes }));
   }
 
   if (type === 'GET_SITE_SETTINGS') {

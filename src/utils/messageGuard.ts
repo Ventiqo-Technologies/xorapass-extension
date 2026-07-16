@@ -19,6 +19,8 @@ export const KNOWN_MESSAGE_TYPES = [
   'GET_MATCHING_CREDENTIALS',
   'GET_SITE_SETTINGS',
   'SET_SITE_DISABLED',
+  'GET_SETTINGS',
+  'SET_AUTO_LOCK',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -32,6 +34,8 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'UNLOCK_VAULT',
   'LOCK_VAULT',
   'GET_STATUS',
+  'GET_SETTINGS',
+  'SET_AUTO_LOCK',
 ]);
 
 export interface GuardResult {
@@ -112,7 +116,12 @@ export function validateMessage(
         return { ok: false, reason: 'bad-payload' };
       }
       break;
-    // GET_STATUS and LOCK_VAULT need no payload.
+    case 'SET_AUTO_LOCK':
+      if (!payload || typeof payload.minutes !== 'number' || !Number.isFinite(payload.minutes)) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    // GET_STATUS, LOCK_VAULT and GET_SETTINGS need no payload.
   }
 
   return { ok: true, type: type as MessageType };
