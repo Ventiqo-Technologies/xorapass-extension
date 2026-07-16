@@ -106,6 +106,12 @@ function loadCredentials() {
     });
 }
 
+// An input is fillable if it's visible and user-editable.
+function isFillable(el: HTMLInputElement): boolean {
+  if (!el || el.type === 'hidden' || el.disabled || el.readOnly) return false;
+  return el.offsetParent !== null || el.getClientRects().length > 0;
+}
+
 // Injects autofill overlays into discovered input fields.
 function scanForLoginFields() {
   if (activeCredentials.length === 0) return;
@@ -116,52 +122,55 @@ function scanForLoginFields() {
 
   passwordInputs.forEach((passInput) => {
     if (scannedForms.has(passInput)) return;
+    if (!isFillable(passInput)) return;
 
-    // Find the corresponding username/email input (usually preceding text/email input)
+    // Locate the username/email field (may be null on unusual layouts).
     const usernameInput = findUsernameField(passInput);
-    if (!usernameInput) return;
 
     scannedForms.add(passInput);
-    scannedForms.add(usernameInput);
+    if (usernameInput) scannedForms.add(usernameInput);
 
-    injectAutofillIcon(usernameInput, passInput);
-    injectAutofillIcon(passInput, passInput); // also put it on the password field
+    // Always offer autofill on the password field; add the username field too
+    // when found. This keeps autofill working on pages that don't wrap inputs in
+    // a <form> or place username/password in separate containers.
+    injectAutofillIcon(passInput, usernameInput, passInput);
+    if (usernameInput) injectAutofillIcon(usernameInput, usernameInput, passInput);
   });
 }
 
-// Attempts to locate username field preceding a password input.
+// Attempts to locate the username/email field preceding a password input.
+// Searches the enclosing <form> when present, otherwise the whole document, in
+// DOM order — so it works even when fields live in separate containers.
 function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null {
-  const form = passInput.form;
+  const scope: ParentNode = passInput.form || document;
+  const inputs = Array.from(scope.querySelectorAll('input')) as HTMLInputElement[];
+  const passIdx = inputs.indexOf(passInput);
+  if (passIdx === -1) return null;
 
-  if (form) {
-    const inputs = Array.from(form.querySelectorAll('input')) as HTMLInputElement[];
-    const passIdx = inputs.indexOf(passInput);
-    // Scan backwards for text/email input
-    for (let i = passIdx - 1; i >= 0; i--) {
-      const type = inputs[i].type;
-      if (type === 'email' || type === 'text' || type === 'username') {
-        return inputs[i];
-      }
+  // Scan backwards from the password field for the nearest username-like input.
+  for (let i = passIdx - 1; i >= 0; i--) {
+    const el = inputs[i];
+    const type = (el.type || '').toLowerCase();
+    const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+    const hints = ((el.name || '') + ' ' + (el.id || '')).toLowerCase();
+    const looksUsername =
+      type === 'email' || type === 'text' || type === 'tel' ||
+      ac.includes('username') || ac.includes('email') ||
+      /user|email|login|phone/.test(hints);
+    if (looksUsername && type !== 'password' && isFillable(el)) {
+      return el;
     }
   }
-
-  // Fallback: search DOM sibling elements preceding the password input
-  let sibling = passInput.previousElementSibling;
-  while (sibling) {
-    const input =
-      sibling.querySelector('input') ||
-      ((sibling.tagName === 'INPUT' ? sibling : null) as HTMLInputElement | null);
-    if (input && (input.type === 'text' || input.type === 'email')) {
-      return input;
-    }
-    sibling = sibling.previousElementSibling;
-  }
-
   return null;
 }
 
-// Injects the XoraPass icon overlay into a given input field.
-function injectAutofillIcon(inputEl: HTMLInputElement, passEl: HTMLInputElement) {
+// Injects the XoraPass icon overlay into a given input field. `usernameEl` may
+// be null when the page has no locatable username field (password-only fill).
+function injectAutofillIcon(
+  iconHost: HTMLInputElement,
+  usernameEl: HTMLInputElement | null,
+  passEl: HTMLInputElement
+) {
   const wrapper = document.createElement('div');
   wrapper.style.position = 'relative';
   wrapper.style.display = 'inline-block';
@@ -201,14 +210,14 @@ function injectAutofillIcon(inputEl: HTMLInputElement, passEl: HTMLInputElement)
     button.style.backgroundColor = 'transparent';
   });
 
-  inputEl.parentNode?.insertBefore(wrapper, inputEl);
-  wrapper.appendChild(inputEl);
+  iconHost.parentNode?.insertBefore(wrapper, iconHost);
+  wrapper.appendChild(iconHost);
   wrapper.appendChild(button);
 
   button.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    openAutofillDropdown(button, inputEl, passEl);
+    openAutofillDropdown(button, usernameEl, passEl);
   });
 
   overlayElements.push(wrapper);
@@ -217,7 +226,7 @@ function injectAutofillIcon(inputEl: HTMLInputElement, passEl: HTMLInputElement)
 // Renders the auto-fill credential selection menu.
 function openAutofillDropdown(
   anchor: HTMLElement,
-  usernameEl: HTMLInputElement,
+  usernameEl: HTMLInputElement | null,
   passwordEl: HTMLInputElement
 ) {
   closeAllDropdowns();
@@ -307,7 +316,7 @@ function openAutofillDropdown(
       const confirmed = await confirmFillIfNeeded(cred);
       if (!confirmed) return;
 
-      autofillField(usernameEl, cred.username);
+      if (usernameEl && cred.username) autofillField(usernameEl, cred.username);
       autofillField(passwordEl, cred.value);
     });
 

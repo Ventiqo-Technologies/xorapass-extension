@@ -55,15 +55,31 @@ export const PopupApp: React.FC = () => {
   const [mfaToken, setMfaToken] = useState('');
   const [tempEncKey, setTempEncKey] = useState<Uint8Array | null>(null);
   
-  // Check unlock status on open
+  // Check unlock status on open.
+  //
+  // MV3 service workers are ephemeral: if the worker is mid-cold-start when the
+  // popup opens, the first message can resolve with no response. Treat a missing
+  // response as "unknown" and retry a couple of times rather than falling back
+  // to the locked screen — otherwise the popup wrongly appears logged out even
+  // though the vault is still unlocked in storage.session.
   useEffect(() => {
-    browser.runtime.sendMessage({ type: 'GET_STATUS' }).then((res) => {
-      if (res && res.unlocked) {
-        setUnlocked(true);
-        setEmail(res.email || '');
-        fetchCachedCredentials();
-      }
-    });
+    const checkStatus = (attempt = 0) => {
+      browser.runtime
+        .sendMessage({ type: 'GET_STATUS' })
+        .then((res: any) => {
+          if (res && res.unlocked) {
+            setUnlocked(true);
+            setEmail(res.email || '');
+            fetchCachedCredentials();
+          } else if (!res && attempt < 3) {
+            setTimeout(() => checkStatus(attempt + 1), 150);
+          }
+        })
+        .catch(() => {
+          if (attempt < 3) setTimeout(() => checkStatus(attempt + 1), 150);
+        });
+    };
+    checkStatus();
 
     // Detect active tab domain
     browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {

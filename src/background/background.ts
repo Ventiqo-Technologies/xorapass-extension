@@ -3,6 +3,11 @@ import browser from 'webextension-polyfill';
 import { isDomainMatch, extractHostname, findLookalikeTarget } from '../utils/siteTrust';
 import { validateMessage } from '../utils/messageGuard';
 
+// Logged on every service-worker (cold) start. If the session were cleared by a
+// mere page refresh you would NOT see this line on refresh — it only prints when
+// the worker itself restarts, which is what actually resets storage.session.
+console.debug('[XoraPass] service worker started at', new Date().toISOString());
+
 const DISABLED_SITES_KEY = 'disabledSites';
 
 interface VaultItem {
@@ -57,20 +62,24 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const msg = message as { type: string; payload?: any };
 
   if (type === 'GET_STATUS') {
-    return browser.storage.session.get(['unlocked', 'email']).then((res) => ({
-      unlocked: !!res.unlocked,
-      email: res.email || null,
-    }));
+    return browser.storage.session.get(['unlocked', 'email']).then((res) => {
+      console.debug('[XoraPass] GET_STATUS -> unlocked =', !!res.unlocked);
+      return { unlocked: !!res.unlocked, email: res.email || null };
+    });
   }
 
   if (type === 'UNLOCK_VAULT') {
     const { decryptedItems, email } = msg.payload;
     return browser.storage.session
       .set({ unlocked: true, email, vaultItems: decryptedItems })
-      .then(() => ({ success: true }));
+      .then(() => {
+        console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', decryptedItems.length, 'items )');
+        return { success: true };
+      });
   }
 
   if (type === 'LOCK_VAULT') {
+    console.debug('[XoraPass] LOCK_VAULT -> clearing session');
     return browser.storage.session.clear().then(() => ({ success: true }));
   }
 
