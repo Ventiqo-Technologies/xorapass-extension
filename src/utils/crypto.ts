@@ -2,6 +2,27 @@ import { argon2id } from 'hash-wasm';
 import { XChaCha20Poly1305 } from '@stablelib/xchacha20poly1305';
 import { encode as encodeUtf8, decode as decodeUtf8 } from '@stablelib/utf8';
 
+/**
+ * Key versioning: bump this when KDF parameters or cipher choice changes.
+ * Every encrypted payload is stamped with this version so decryption
+ * can route to the correct parameters during key rotation.
+ */
+export const CURRENT_KEY_VERSION = 1;
+
+/** Structured encrypted payload — always carry the keyVersion for future rotation. */
+export interface EncryptedPayload {
+  ciphertext: string;  // base64
+  tag: string;         // base64
+  nonce: string;       // base64
+  keyVersion: number;  // incremented when KDF params or cipher change
+}
+
+/** ECDH sharing key pair — exported as JWK for storage/transmission. */
+export interface SharingKeyPair {
+  publicKey: JsonWebKey;
+  privateKey: JsonWebKey;
+}
+
 // Helper: Convert Hex string to Uint8Array
 export const hexToBytes = (hex: string): Uint8Array => {
   const cleanHex = hex.startsWith('0x') ? hex.slice(2) : hex;
@@ -106,47 +127,117 @@ export async function splitMasterKey(masterKey: Uint8Array): Promise<{ encKey: U
 
 /**
  * 3. XChaCha20-Poly1305 Encryption
- * Returns {"ciphertext": "base64", "tag": "base64"} and "nonce"
+ * Returns a structured EncryptedPayload stamped with the current keyVersion.
+ * keyVersion must be persisted alongside the ciphertext so decryption can
+ * select the correct KDF parameters during future key rotation.
  */
-export function encryptPayload(plaintext: string, encKey: Uint8Array): { encryptedPayload: { ciphertext: string, tag: string }, nonce: string } {
+export function encryptPayload(plaintext: string, encKey: Uint8Array): EncryptedPayload {
   const cipher = new XChaCha20Poly1305(encKey);
   const nonce = window.crypto.getRandomValues(new Uint8Array(24));
   const plaintextBytes = encodeUtf8(plaintext);
-  
+
   // Seal returns ciphertext with the 16-byte Poly1305 tag appended at the end
   const sealed = cipher.seal(nonce, plaintextBytes);
-  
+
   const tagLength = 16;
   const ciphertextBytes = sealed.slice(0, sealed.length - tagLength);
   const tagBytes = sealed.slice(sealed.length - tagLength);
-  
+
   return {
-    encryptedPayload: {
-      ciphertext: bytesToBase64(ciphertextBytes),
-      tag: bytesToBase64(tagBytes)
-    },
-    nonce: bytesToBase64(nonce)
+    ciphertext: bytesToBase64(ciphertextBytes),
+    tag: bytesToBase64(tagBytes),
+    nonce: bytesToBase64(nonce),
+    keyVersion: CURRENT_KEY_VERSION,
   };
 }
 
 /**
  * 4. XChaCha20-Poly1305 Decryption
+ * Accepts the full EncryptedPayload (including keyVersion).
+ * Future versions should inspect payload.keyVersion to select the
+ * correct KDF parameters or cipher before decrypting.
  */
-export function decryptPayload(encryptedPayload: { ciphertext: string, tag: string }, nonceStr: string, encKey: Uint8Array): string {
+export function decryptPayload(payload: EncryptedPayload, encKey: Uint8Array): string {
+  // Future: if (payload.keyVersion !== CURRENT_KEY_VERSION) { /* re-derive with old params */ }
   const cipher = new XChaCha20Poly1305(encKey);
-  const nonce = base64ToBytes(nonceStr);
-  const ciphertextBytes = base64ToBytes(encryptedPayload.ciphertext);
-  const tagBytes = base64ToBytes(encryptedPayload.tag);
-  
+  const nonce = base64ToBytes(payload.nonce);
+  const ciphertextBytes = base64ToBytes(payload.ciphertext);
+  const tagBytes = base64ToBytes(payload.tag);
+
   // Recombine ciphertext and tag
   const sealed = new Uint8Array(ciphertextBytes.length + tagBytes.length);
   sealed.set(ciphertextBytes, 0);
   sealed.set(tagBytes, ciphertextBytes.length);
-  
+
   const openedBytes = cipher.open(nonce, sealed);
   if (!openedBytes) {
-    throw new Error("Failed to decrypt: Authentication tag mismatch or corrupt payload");
+    throw new Error('Failed to decrypt: Authentication tag mismatch or corrupt payload');
   }
-  
+
   return decodeUtf8(openedBytes);
+}
+
+// ─── Sharing Key Pair (ECDH P-256) ───────────────────────────────────────────
+
+/**
+ * 5. Generate an ECDH P-256 key pair for secure vault sharing.
+ * The public key is shared with the recipient; the private key stays
+ * on the sender's device, stored encrypted in the vault.
+ *
+ * Usage flow:
+ *   Sender  → generates shareKeyPair, gives publicKey to recipient.
+ *   Sender  → derives shared secret via ECDH(senderPrivate, recipientPublic).
+ *   Sender  → encrypts vault key with shared secret (via encryptPayload).
+ *   Sender  → transmits encrypted vault key + nonce to recipient.
+ *   Recipient → derives same shared secret via ECDH(recipientPrivate, senderPublic).
+ *   Recipient → decrypts vault key → accesses shared items.
+ */
+export async function generateSharingKeyPair(): Promise<SharingKeyPair> {
+  const keyPair = await window.crypto.subtle.generateKey(
+    { name: 'ECDH', namedCurve: 'P-256' },
+    true,           // extractable so we can export to JWK for storage
+    ['deriveKey', 'deriveBits']
+  );
+
+  const publicKey  = await window.crypto.subtle.exportKey('jwk', keyPair.publicKey);
+  const privateKey = await window.crypto.subtle.exportKey('jwk', keyPair.privateKey);
+
+  return { publicKey, privateKey };
+}
+
+/**
+ * 6. Derive a 256-bit shared secret from an ECDH key exchange.
+ * Both sides independently compute the same secret without transmitting it.
+ *
+ * @param myPrivateKeyJwk  - Caller's own private key (JWK)
+ * @param theirPublicKeyJwk - Counter-party's public key (JWK)
+ * @returns 32-byte shared secret as Uint8Array
+ */
+export async function deriveSharedSecret(
+  myPrivateKeyJwk: JsonWebKey,
+  theirPublicKeyJwk: JsonWebKey
+): Promise<Uint8Array> {
+  const myPrivate = await window.crypto.subtle.importKey(
+    'jwk',
+    myPrivateKeyJwk,
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false,
+    ['deriveBits']
+  );
+
+  const theirPublic = await window.crypto.subtle.importKey(
+    'jwk',
+    theirPublicKeyJwk,
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false,
+    []
+  );
+
+  const sharedBits = await window.crypto.subtle.deriveBits(
+    { name: 'ECDH', public: theirPublic },
+    myPrivate,
+    256
+  );
+
+  return new Uint8Array(sharedBits);
 }
