@@ -171,7 +171,12 @@ export const PopupApp: React.FC = () => {
     // 5. Decrypt vault entries client-side
     const decrypted: DecryptedItem[] = vaultRes.data.map((entry: any) => {
       try {
-        const plaintext = decryptPayload(entry.encrypted_payload, entry.nonce, encKey);
+        // The API stores the nonce alongside the payload rather than inside it,
+        // so fold it in to match the EncryptedPayload shape decryptPayload expects.
+        const plaintext = decryptPayload(
+          { ...entry.encrypted_payload, nonce: entry.nonce },
+          encKey
+        );
         const parsed = JSON.parse(plaintext);
         return {
           id: entry.id,

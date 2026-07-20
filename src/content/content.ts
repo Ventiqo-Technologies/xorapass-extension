@@ -181,7 +181,7 @@ function injectAutofillIcon(
   button.className = 'xorapass-autofill-btn';
   button.setAttribute('aria-label', 'XoraPass Autofill');
   button.innerHTML = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00D2FF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
     </svg>
   `;
@@ -242,7 +242,7 @@ function openAutofillDropdown(
     backgroundColor: '#0f172a',
     border: '1px solid rgba(255, 255, 255, 0.08)',
     borderRadius: '10px',
-    boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 0 15px rgba(0, 210, 255, 0.1)',
+    boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(45, 212, 191, 0.15)',
     zIndex: '100000',
     overflow: 'hidden',
     fontFamily: 'Inter, system-ui, sans-serif',
@@ -254,11 +254,11 @@ function openAutofillDropdown(
     padding: '8px 12px',
     fontSize: '10px',
     fontWeight: 'bold',
-    color: '#00D2FF',
+    color: '#2dd4bf',
     textTransform: 'uppercase',
     letterSpacing: '0.05em',
     borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
-    backgroundColor: '#020617',
+    backgroundColor: '#0a1412',
   });
   dropdown.appendChild(header);
 
@@ -300,8 +300,8 @@ function openAutofillDropdown(
     });
 
     item.addEventListener('mouseover', () => {
-      item.style.backgroundColor = 'rgba(0, 210, 255, 0.08)';
-      item.style.color = '#00D2FF';
+      item.style.backgroundColor = 'rgba(45, 212, 191, 0.08)';
+      item.style.color = '#2dd4bf';
     });
     item.addEventListener('mouseout', () => {
       item.style.backgroundColor = 'transparent';
@@ -403,7 +403,7 @@ function showConfirmDialog(opts: {
       fontWeight: '700',
       color: '#fca5a5',
       borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
-      backgroundColor: '#020617',
+      backgroundColor: '#0a1412',
     });
     modal.appendChild(title);
 
@@ -453,8 +453,8 @@ function showConfirmDialog(opts: {
       padding: '8px 14px',
       fontSize: '12px',
       fontWeight: '700',
-      color: '#020617',
-      background: 'linear-gradient(90deg, #00D2FF, #2dd4bf)',
+      color: '#04231d',
+      background: 'linear-gradient(135deg, #2dd4bf, #34d399)',
       border: 'none',
       borderRadius: '8px',
       cursor: 'pointer',
