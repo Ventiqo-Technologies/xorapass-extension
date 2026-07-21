@@ -42,20 +42,38 @@ describe('validateMessage — shape', () => {
   });
 });
 
+const unlockPayload = () => ({
+  decryptedItems: [],
+  email: 'a@b.c',
+  token: 'jwt-token',
+  encKey: 'a1b2c3',
+});
+
 describe('validateMessage — privileged operations', () => {
   it('allows UNLOCK_VAULT from the extension page', () => {
     const res = validateMessage(
-      { type: 'UNLOCK_VAULT', payload: { decryptedItems: [], email: 'a@b.c' } },
+      { type: 'UNLOCK_VAULT', payload: unlockPayload() },
       popupSender()
     );
     expect(res.ok).toBe(true);
   });
   it('rejects UNLOCK_VAULT from a content script', () => {
     const res = validateMessage(
-      { type: 'UNLOCK_VAULT', payload: { decryptedItems: [], email: 'a@b.c' } },
+      { type: 'UNLOCK_VAULT', payload: unlockPayload() },
       contentSender()
     );
     expect(res.reason).toBe('privileged-from-content');
+  });
+  it('rejects UNLOCK_VAULT missing the refresh credentials', () => {
+    const { token, ...noToken } = unlockPayload();
+    expect(
+      validateMessage({ type: 'UNLOCK_VAULT', payload: noToken }, popupSender()).reason
+    ).toBe('bad-payload');
+
+    const { encKey, ...noKey } = unlockPayload();
+    expect(
+      validateMessage({ type: 'UNLOCK_VAULT', payload: noKey }, popupSender()).reason
+    ).toBe('bad-payload');
   });
   it('rejects GET_STATUS originating from a web page', () => {
     expect(validateMessage({ type: 'GET_STATUS' }, contentSender()).reason).toBe('privileged-from-content');

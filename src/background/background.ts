@@ -99,9 +99,13 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'UNLOCK_VAULT') {
-    const { decryptedItems, email } = msg.payload;
+    const { decryptedItems, email, token, encKey } = msg.payload;
+    // token and encKey are held so the popup can re-fetch and decrypt the vault
+    // without a full re-authentication. They live in storage.session, which is
+    // memory-only, cleared on browser restart, and already restricted to
+    // TRUSTED_CONTEXTS — the same place the decrypted vault itself sits.
     return browser.storage.session
-      .set({ unlocked: true, email, vaultItems: decryptedItems })
+      .set({ unlocked: true, email, vaultItems: decryptedItems, token, encKey })
       .then(() => {
         void scheduleAutoLock();
         console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', decryptedItems.length, 'items )');

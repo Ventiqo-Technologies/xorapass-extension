@@ -101,6 +101,11 @@ export function validateMessage(
       if (!payload || !Array.isArray(payload.decryptedItems) || typeof payload.email !== 'string') {
         return { ok: false, reason: 'bad-payload' };
       }
+      // token and encKey back the refresh path: re-fetching the vault needs a
+      // bearer token, and decrypting anything new needs the key.
+      if (typeof payload.token !== 'string' || typeof payload.encKey !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
       break;
     case 'GET_MATCHING_CREDENTIALS':
       if (!payload || typeof payload.hostname !== 'string') {

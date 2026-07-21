@@ -23,7 +23,7 @@ import {
   Activity,
   TrendingUp
 } from 'lucide-react';
-import { deriveMasterKey, splitMasterKey, decryptPayload } from '../utils/crypto';
+import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
 import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
 import { LogoIcon, LogoHorizontal } from './Logo';
@@ -86,6 +86,8 @@ export const PopupApp: React.FC = () => {
   const [tab, setTab] = useState<'vault' | 'health'>('vault');
   const [searchTerm, setSearchTerm] = useState('');
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
 
   const [step, setStep] = useState<'login' | 'mfa'>('login');
@@ -102,7 +104,10 @@ export const PopupApp: React.FC = () => {
           if (res && res.unlocked) {
             setUnlocked(true);
             setEmail(res.email || '');
+            // Render the cached snapshot immediately, then sync in the
+            // background so entries added elsewhere show up without a re-unlock.
             fetchCachedCredentials();
+            void refreshVault();
             browser.runtime.sendMessage({ type: 'GET_SETTINGS' }).then((s: any) => {
               if (s && typeof s.autoLockMinutes === 'number') setAutoLockMinutes(s.autoLockMinutes);
             });
@@ -162,21 +167,15 @@ export const PopupApp: React.FC = () => {
   };
 
   const fetchCachedCredentials = () => {
-    browser.runtime.sendMessage({ type: 'GET_MATCHING_CREDENTIALS', payload: { hostname: 'all' } }).then(() => {
-      browser.storage.session.get(['vaultItems']).then((data) => {
-        if (data.vaultItems) {
-          setVaultItems(data.vaultItems);
-        }
-      });
+    browser.storage.session.get(['vaultItems']).then((data) => {
+      if (data.vaultItems) {
+        setVaultItems(data.vaultItems as DecryptedItem[]);
+      }
     });
   };
 
-  const processVault = async (token: string, encKey: Uint8Array) => {
-    const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-
-    const decrypted: DecryptedItem[] = vaultRes.data.map((entry: any) => {
+  const decryptEntries = (entries: any[], encKey: Uint8Array): DecryptedItem[] =>
+    entries.map((entry: any) => {
       try {
         const plaintext = decryptPayload(
           { ...entry.encrypted_payload, nonce: entry.nonce },
@@ -199,20 +198,63 @@ export const PopupApp: React.FC = () => {
       }
     });
 
-
+  const storeSession = (items: DecryptedItem[], token: string, encKey: Uint8Array, accountEmail: string) =>
     browser.runtime.sendMessage({
       type: 'UNLOCK_VAULT',
-      payload: { decryptedItems: decrypted, email }
-    }).then((res) => {
-      if (res && res.success) {
-        setUnlocked(true);
-        setVaultItems(decrypted);
-        setPassword('');
-        setStep('login');
-      } else {
-        setError("Failed to initialize secure extension session cache.");
+      payload: {
+        decryptedItems: items,
+        email: accountEmail,
+        token,
+        encKey: bytesToHex(encKey),
       }
     });
+
+  const processVault = async (token: string, encKey: Uint8Array) => {
+    const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    const decrypted = decryptEntries(vaultRes.data, encKey);
+
+    const res: any = await storeSession(decrypted, token, encKey, email);
+    if (res && res.success) {
+      setUnlocked(true);
+      setVaultItems(decrypted);
+      setPassword('');
+      setStep('login');
+    } else {
+      setError("Couldn't start the extension session. Try unlocking again.");
+    }
+  };
+
+  const refreshVault = async (manual = false) => {
+    const session = await browser.storage.session.get(['token', 'encKey', 'email']);
+    const token = session.token as string | undefined;
+    const encKeyHex = session.encKey as string | undefined;
+    if (!token || !encKeyHex) return;
+
+    setRefreshing(true);
+    try {
+      const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const encKey = hexToBytes(encKeyHex);
+      const decrypted = decryptEntries(vaultRes.data, encKey);
+      await storeSession(decrypted, token, encKey, (session.email as string) || email);
+      setVaultItems(decrypted);
+      setSyncError(null);
+    } catch (err: any) {
+      // Access tokens last 30 minutes but auto-lock can be set to Never, so an
+      // unlocked vault routinely outlives its token. Say so plainly rather than
+      // leaving a silently stale list on screen.
+      if (err?.response?.status === 401 || err?.response?.status === 403) {
+        setSyncError('Session expired — lock and unlock to sync.');
+      } else if (manual) {
+        setSyncError("Couldn't reach the server.");
+      }
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -334,13 +376,23 @@ export const PopupApp: React.FC = () => {
         <LogoHorizontal className="h-6 w-auto" />
 
         {unlocked && (
-          <button 
-            onClick={handleLock}
-            className="p-1.5 bg-brand-ruby/10 border border-brand-ruby/20 hover:border-brand-ruby/40 text-brand-ruby rounded-md hover:bg-brand-ruby/20 transition cursor-pointer flex items-center justify-center"
-            title="Lock Vault"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => refreshVault(true)}
+              disabled={refreshing}
+              className="p-1.5 bg-slate-900/5 border border-slate-900/8 hover:bg-slate-900/10 text-slate-500 hover:text-slate-700 rounded-md transition cursor-pointer flex items-center justify-center disabled:opacity-50"
+              title="Sync vault"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            </button>
+            <button
+              onClick={handleLock}
+              className="p-1.5 bg-brand-ruby/10 border border-brand-ruby/20 hover:border-brand-ruby/40 text-brand-ruby rounded-md hover:bg-brand-ruby/20 transition cursor-pointer flex items-center justify-center"
+              title="Lock Vault"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
         )}
       </header>
 
@@ -486,7 +538,13 @@ export const PopupApp: React.FC = () => {
           </form>
         ) : (
           <div className="flex-1 flex flex-col space-y-4">
-            
+
+            {syncError && (
+              <div className="p-2 bg-brand-amber/10 border border-brand-amber/25 text-brand-amber rounded-lg text-[10px] flex items-start gap-1.5 leading-snug flex-shrink-0">
+                <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                <span>{syncError}</span>
+              </div>
+            )}
 
             <div className="flex items-center gap-1 p-1 bg-white/70 border border-slate-900/8 rounded-lg flex-shrink-0">
               <button
