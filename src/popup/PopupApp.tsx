@@ -27,6 +27,7 @@ import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
 import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
 import { LogoIcon, LogoHorizontal } from './Logo';
+import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL } from '../utils/config';
 import browser from 'webextension-polyfill';
 
 
@@ -50,13 +51,7 @@ const AUTO_LOCK_OPTIONS = [
   { label: 'Never', value: 0 },
 ];
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://app.xorapass.com';
 
-const WEB_APP_URL = import.meta.env.VITE_WEB_APP_URL || 'https://app.xorapass.com';
-
-const SIGNUP_URL = `${WEB_APP_URL}/auth?intent=signup`;
-
-const RECOVERY_URL = `${WEB_APP_URL}/auth?intent=login`;
 
 interface DecryptedItem {
   id: string;

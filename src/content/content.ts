@@ -18,6 +18,9 @@ import {
   closeDropdown,
   scheduleReposition,
   showConfirmDialog,
+  showSavePrompt,
+  closeSavePrompt,
+  isSavePromptOpen,
   clearAll,
   type OverlayCredential,
 } from './overlay';
@@ -274,6 +277,159 @@ function autofillField(el: HTMLInputElement, value: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Credential capture
+// ---------------------------------------------------------------------------
+
+// Guards against re-capturing the same values when a page fires both a click
+// and a submit for one login attempt.
+let lastCaptured = '';
+
+// Reads the credential out of a scope that contains a filled password field.
+function readCredential(scope: ParentNode): { username: string; password: string } | null {
+  const passwords = Array.from(
+    scope.querySelectorAll('input[type="password"]')
+  ) as HTMLInputElement[];
+
+  const filled = passwords.find((p) => p.value && isFillable(p));
+  if (!filled) return null;
+
+  // A sign-up form usually has several password boxes (password + confirm).
+  // Capturing those is out of scope here: they need the "did the account
+  // actually get created" signal that a login redirect gives us.
+  const filledCount = passwords.filter((p) => p.value).length;
+  if (filledCount > 1) return null;
+
+  const usernameEl = findUsernameField(filled);
+  return { username: usernameEl?.value || '', password: filled.value };
+}
+
+function captureFrom(scope: ParentNode): void {
+  const cred = readCredential(scope);
+  if (!cred) return;
+
+  const fingerprint = `${cred.username} ${cred.password}`;
+  if (fingerprint === lastCaptured) return;
+  lastCaptured = fingerprint;
+
+  browser.runtime
+    .sendMessage({ type: 'CAPTURE_CREDENTIAL', payload: cred })
+    .then((res: any) => {
+      // The worker decides whether this is new, changed, or already stored.
+      // A full page navigation usually kills this script before the timer
+      // fires; the prompt is then raised by checkPendingSave on the next load.
+      if (res && res.prompt) {
+        setTimeout(checkPendingSave, 1200);
+      }
+    })
+    .catch(() => {
+      /* worker unavailable */
+    });
+}
+
+// Asks whether this tab has a capture awaiting a decision, and renders it.
+function checkPendingSave(): void {
+  if (isSavePromptOpen()) return;
+
+  browser.runtime
+    .sendMessage({ type: 'GET_PENDING_SAVE' })
+    .then((res: any) => {
+      const pending = res && res.pending;
+      if (!pending) return;
+
+      showSavePrompt({
+        username: pending.username,
+        hostname: pending.hostname,
+        mode: pending.mode,
+        onSave: () =>
+          browser.runtime.sendMessage({ type: 'SAVE_CREDENTIAL' }).then((r: any) => {
+            if (r && r.success) loadCredentials();
+            return r || { error: 'no_response' };
+          }),
+        onDismiss: () => {
+          void browser.runtime.sendMessage({ type: 'DISMISS_PENDING_SAVE' });
+        },
+      });
+    })
+    .catch(() => {
+      /* worker unavailable */
+    });
+}
+
+// Reports a username as it is entered so it survives into the next step of a
+// two-step login, where the field itself is gone by the time the password is
+// submitted. Only fires on change, and only for fields the heuristic accepts.
+let lastReported = '';
+
+function watchForUsernameEntry(): void {
+  document.addEventListener(
+    'change',
+    (e) => {
+      const el = e.target;
+      if (!(el instanceof HTMLInputElement)) return;
+      const value = el.value.trim();
+      if (!value || value === lastReported) return;
+
+      const matches = looksLikeUsername({
+        type: el.type,
+        autocomplete: el.getAttribute('autocomplete'),
+        name: el.name,
+        id: el.id,
+        placeholder: el.getAttribute('placeholder'),
+        ariaLabel: el.getAttribute('aria-label'),
+      });
+      if (!matches) return;
+
+      lastReported = value;
+      void browser.runtime
+        .sendMessage({ type: 'REMEMBER_USERNAME', payload: { username: value } })
+        .catch(() => {
+          /* worker unavailable */
+        });
+    },
+    true
+  );
+}
+
+function watchForSubmission(): void {
+  // Classic form posts.
+  document.addEventListener(
+    'submit',
+    (e) => {
+      const form = e.target as HTMLElement;
+      if (form && form instanceof HTMLFormElement) captureFrom(form);
+    },
+    true
+  );
+
+  // Single-page logins that never fire submit: a click on anything
+  // button-shaped, with the whole document as scope.
+  document.addEventListener(
+    'click',
+    (e) => {
+      const el = e.target as HTMLElement | null;
+      if (!el) return;
+      const btn = el.closest('button, [type="submit"], [role="button"]');
+      if (!btn) return;
+      captureFrom(document);
+    },
+    true
+  );
+
+  // Enter inside a password field submits on many login forms.
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key !== 'Enter') return;
+      const el = e.target as HTMLElement | null;
+      if (el instanceof HTMLInputElement && el.type === 'password' && el.value) {
+        captureFrom(el.form || document);
+      }
+    },
+    true
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
@@ -281,6 +437,11 @@ const frame = assessFrame();
 if (frame.isTop || !frame.isCrossOriginFrame) {
   // Only run in the top frame or in a same-origin (first-party) sub-frame.
   loadCredentials();
+  watchForUsernameEntry();
+  watchForSubmission();
+  // A login that navigated lands here: the capture was stored by the previous
+  // page's script, and this one raises the prompt.
+  checkPendingSave();
 
   // React to DOM changes instead of polling. SPAs swap login forms in without a
   // navigation, so a mutation-driven rescan is both faster to appear and far
@@ -322,6 +483,7 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   // Never leave a menu floating over a page the user navigated away from.
   window.addEventListener('pagehide', () => {
     closeDropdown();
+    closeSavePrompt();
   });
 } else {
   // Third-party iframe: autofill deliberately blocked.

@@ -1,7 +1,9 @@
 // XoraPass Background Service Worker (Manifest V3)
 import browser from 'webextension-polyfill';
-import { isDomainMatch, extractHostname, findLookalikeTarget } from '../utils/siteTrust';
+import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
 import { validateMessage } from '../utils/messageGuard';
+import { encryptPayload, hexToBytes } from '../utils/crypto';
+import { API_BASE_URL } from '../utils/config';
 
 // Logged on every service-worker (cold) start. If the session were cleared by a
 // mere page refresh you would NOT see this line on refresh — it only prints when
@@ -45,7 +47,68 @@ interface VaultItem {
   value: string;
   url?: string;
   category?: string;
+  notes?: string;
+  organization?: string;
 }
+
+// A credential submitted on a page, awaiting the user's decision. Keyed by tab
+// so a submit in one tab cannot surface a prompt in another. Held in
+// storage.session, so it is memory-only and cleared by lock along with the
+// vault itself.
+interface PendingSave {
+  hostname: string;
+  username: string;
+  password: string;
+  mode: 'new' | 'update';
+  entryId?: string;
+}
+
+const PENDING_KEY = 'pendingSaves';
+
+// Two-step logins (LastPass, Google, Microsoft) collect the email on one screen
+// and the password on the next, so by submit time the username field is gone
+// from the DOM. The username seen earlier in the tab is kept here and used as
+// the fallback, otherwise those sites all save as "(no username)".
+const LAST_USERNAME_KEY = 'lastUsernames';
+
+async function getLastUsernames(): Promise<Record<string, string>> {
+  const res = await browser.storage.session.get([LAST_USERNAME_KEY]);
+  const v = (res as Record<string, unknown>)[LAST_USERNAME_KEY];
+  return (v && typeof v === 'object' ? v : {}) as Record<string, string>;
+}
+
+async function setLastUsername(tabId: number, username: string | null) {
+  const all = await getLastUsernames();
+  if (username) {
+    all[String(tabId)] = username;
+  } else {
+    delete all[String(tabId)];
+  }
+  await browser.storage.session.set({ [LAST_USERNAME_KEY]: all });
+}
+
+async function getPendingSaves(): Promise<Record<string, PendingSave>> {
+  const res = await browser.storage.session.get([PENDING_KEY]);
+  const v = (res as Record<string, unknown>)[PENDING_KEY];
+  return (v && typeof v === 'object' ? v : {}) as Record<string, PendingSave>;
+}
+
+async function setPendingSave(tabId: number, pending: PendingSave | null) {
+  const all = await getPendingSaves();
+  if (pending) {
+    all[String(tabId)] = pending;
+  } else {
+    delete all[String(tabId)];
+  }
+  await browser.storage.session.set({ [PENDING_KEY]: all });
+}
+
+// Drop a tab's pending capture when the tab goes away, so prompts cannot
+// resurface against a later page that happens to reuse the id.
+browser.tabs.onRemoved.addListener((tabId) => {
+  void setPendingSave(tabId, null);
+  void setLastUsername(tabId, null);
+});
 
 /** Normalized set of hostnames on which the user has disabled autofill. */
 async function getDisabledSites(): Promise<string[]> {
@@ -224,9 +287,155 @@ browser.runtime.onMessage.addListener((message, sender) => {
     });
   }
 
+  if (type === 'REMEMBER_USERNAME') {
+    const tabId = sender.tab?.id;
+    if (!tabId) return Promise.resolve({ success: false });
+    return setLastUsername(tabId, msg.payload.username).then(() => ({ success: true }));
+  }
+
+  if (type === 'CAPTURE_CREDENTIAL') {
+    const tabId = sender.tab?.id;
+    const hostname = extractHostname(sender.tab?.url || sender.url || '');
+    if (!tabId || !hostname) return Promise.resolve({ prompt: false });
+
+    const captured = msg.payload as { username: string; password: string };
+    const password = captured.password;
+
+    return Promise.all([
+      browser.storage.session.get(['unlocked', 'vaultItems']),
+      isSiteDisabled(hostname),
+      captured.username ? Promise.resolve(captured.username) : getLastUsernames().then((m) => m[String(tabId)] || ''),
+    ]).then(async ([res, disabled, username]) => {
+      // Nothing to offer while locked — encryption needs the session key — and
+      // a site the user muted should stay silent here too.
+      if (!res.unlocked || disabled) return { prompt: false };
+
+      const items = (res.vaultItems as VaultItem[]) || [];
+      const sameSite = items.filter((i) => !!i.url && isDomainMatch(hostname, i.url!));
+      const existing = sameSite.find((i) => i.username === username);
+
+      // Already stored with this exact password: nothing worth asking about.
+      if (existing && existing.value === password) return { prompt: false };
+
+      const pending: PendingSave = existing
+        ? { hostname, username, password, mode: 'update', entryId: existing.id }
+        : { hostname, username, password, mode: 'new' };
+
+      await setPendingSave(tabId, pending);
+      return { prompt: true, mode: pending.mode };
+    });
+  }
+
+  if (type === 'GET_PENDING_SAVE') {
+    const tabId = sender.tab?.id;
+    const hostname = extractHostname(sender.tab?.url || sender.url || '');
+    if (!tabId || !hostname) return Promise.resolve({ pending: null });
+
+    return getPendingSaves().then((all) => {
+      const pending = all[String(tabId)];
+      // The capture must belong to the page currently asking. After a login
+      // redirect the host is usually the same; if it is not, the prompt would
+      // be about a different site.
+      if (!pending || !isDomainMatch(hostname, pending.hostname)) return { pending: null };
+      return {
+        pending: { username: pending.username, mode: pending.mode, hostname: pending.hostname },
+      };
+    });
+  }
+
+  if (type === 'DISMISS_PENDING_SAVE') {
+    const tabId = sender.tab?.id;
+    if (!tabId) return Promise.resolve({ success: true });
+    return setPendingSave(tabId, null).then(() => ({ success: true }));
+  }
+
+  if (type === 'SAVE_CREDENTIAL') {
+    const tabId = sender.tab?.id;
+    if (!tabId) return Promise.resolve({ error: 'no_tab' });
+    return savePendingCredential(tabId);
+  }
+
   // Should be unreachable because validateMessage allowlists types.
   return undefined;
 });
+
+// Encrypts the pending credential with the session key and writes it to the
+// API. Runs in the worker because the encryption key lives in
+// TRUSTED_CONTEXTS session storage, which content scripts cannot read.
+async function savePendingCredential(
+  tabId: number
+): Promise<{ success?: boolean; error?: string; detail?: string | null }> {
+  const all = await getPendingSaves();
+  const pending = all[String(tabId)];
+  if (!pending) return { error: 'nothing_pending' };
+
+  const session = await browser.storage.session.get(['unlocked', 'token', 'encKey', 'vaultItems']);
+  if (!session.unlocked || !session.token || !session.encKey) return { error: 'locked' };
+
+  const encKey = hexToBytes(session.encKey as string);
+  const items = (session.vaultItems as VaultItem[]) || [];
+  const existing = pending.entryId ? items.find((i) => i.id === pending.entryId) : undefined;
+
+  const entry = {
+    label: existing?.label || registrableDomain(pending.hostname) || pending.hostname,
+    username: pending.username,
+    value: pending.password,
+    notes: existing?.notes || '',
+    category: existing?.category || 'login',
+    organization: existing?.organization || '',
+    url: existing?.url || `https://${pending.hostname}`,
+  };
+
+  // encryptPayload bundles the nonce, but the API stores it in its own column.
+  const { nonce, ...encrypted_payload } = encryptPayload(JSON.stringify(entry), encKey);
+
+  const isUpdate = pending.mode === 'update' && !!pending.entryId;
+  const url = isUpdate ? `${API_BASE_URL}/api/vault/${pending.entryId}` : `${API_BASE_URL}/api/vault`;
+
+  try {
+    const res = await fetch(url, {
+      method: isUpdate ? 'PUT' : 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({ encrypted_payload, nonce }),
+    });
+
+    if (res.status === 401 || res.status === 403) {
+      await setPendingSave(tabId, null);
+      return { error: 'session_expired' };
+    }
+    if (!res.ok) {
+      // The API rejects creates that exceed the plan's vault limit with a
+      // useful message; pass it through rather than saying "couldn't save".
+      const detail = await res
+        .json()
+        .then((b: any) => (typeof b?.detail === 'string' ? b.detail : null))
+        .catch(() => null);
+      return { error: `http_${res.status}`, detail };
+    }
+
+    const saved = await res.json().catch(() => null);
+
+    // Fold the entry into the cached vault so it autofills straight away,
+    // instead of waiting for the next sync.
+    const id = isUpdate ? pending.entryId! : saved?.id;
+    const next = isUpdate
+      ? items.map((i) => (i.id === id ? { ...i, ...entry } : i))
+      : id
+        ? [...items, { id, ...entry }]
+        : items;
+
+    await browser.storage.session.set({ vaultItems: next });
+    await setPendingSave(tabId, null);
+    void scheduleAutoLock();
+    return { success: true };
+  } catch (err) {
+    console.warn('[XoraPass] Save failed:', err);
+    return { error: 'network' };
+  }
+}
 
 // Configure session storage access level (trusted context restriction) so
 // content scripts cannot read decrypted secrets directly; only the

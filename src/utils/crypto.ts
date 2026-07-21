@@ -42,7 +42,7 @@ export const bytesToHex = (bytes: Uint8Array): string => {
 
 // Helper: Convert Base64 string to Uint8Array
 export const base64ToBytes = (base64: string): Uint8Array => {
-  const binaryString = window.atob(base64);
+  const binaryString = atob(base64);
   const len = binaryString.length;
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; i++) {
@@ -58,7 +58,7 @@ export const bytesToBase64 = (bytes: Uint8Array): string => {
   for (let i = 0; i < len; i++) {
     binary += String.fromCharCode(bytes[i]);
   }
-  return window.btoa(binary);
+  return btoa(binary);
 };
 
 /**
@@ -88,7 +88,7 @@ export async function deriveMasterKey(password: string, saltHex: string): Promis
  */
 export async function splitMasterKey(masterKey: Uint8Array): Promise<{ encKey: Uint8Array, clientAuthHash: string }> {
   // Import master key as raw material for derivation
-  const baseKey = await window.crypto.subtle.importKey(
+  const baseKey = await crypto.subtle.importKey(
     'raw',
     masterKey as any,
     'HKDF',
@@ -97,7 +97,7 @@ export async function splitMasterKey(masterKey: Uint8Array): Promise<{ encKey: U
   );
   
   // 2.1 Derive K_enc (Info = "enc_key")
-  const encKeyBits = await window.crypto.subtle.deriveBits(
+  const encKeyBits = await crypto.subtle.deriveBits(
     {
       name: 'HKDF',
       hash: 'SHA-256',
@@ -110,7 +110,7 @@ export async function splitMasterKey(masterKey: Uint8Array): Promise<{ encKey: U
   const encKey = new Uint8Array(encKeyBits);
   
   // 2.2 Derive ClientAuthHash (Info = "auth_hash")
-  const authHashBits = await window.crypto.subtle.deriveBits(
+  const authHashBits = await crypto.subtle.deriveBits(
     {
       name: 'HKDF',
       hash: 'SHA-256',
@@ -133,7 +133,7 @@ export async function splitMasterKey(masterKey: Uint8Array): Promise<{ encKey: U
  */
 export function encryptPayload(plaintext: string, encKey: Uint8Array): EncryptedPayload {
   const cipher = new XChaCha20Poly1305(encKey);
-  const nonce = window.crypto.getRandomValues(new Uint8Array(24));
+  const nonce = crypto.getRandomValues(new Uint8Array(24));
   const plaintextBytes = encodeUtf8(plaintext);
 
   // Seal returns ciphertext with the 16-byte Poly1305 tag appended at the end
@@ -193,14 +193,14 @@ export function decryptPayload(payload: EncryptedPayload, encKey: Uint8Array): s
  *   Recipient → decrypts vault key → accesses shared items.
  */
 export async function generateSharingKeyPair(): Promise<SharingKeyPair> {
-  const keyPair = await window.crypto.subtle.generateKey(
+  const keyPair = await crypto.subtle.generateKey(
     { name: 'ECDH', namedCurve: 'P-256' },
     true,           // extractable so we can export to JWK for storage
     ['deriveKey', 'deriveBits']
   );
 
-  const publicKey  = await window.crypto.subtle.exportKey('jwk', keyPair.publicKey);
-  const privateKey = await window.crypto.subtle.exportKey('jwk', keyPair.privateKey);
+  const publicKey  = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
+  const privateKey = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
 
   return { publicKey, privateKey };
 }
@@ -217,7 +217,7 @@ export async function deriveSharedSecret(
   myPrivateKeyJwk: JsonWebKey,
   theirPublicKeyJwk: JsonWebKey
 ): Promise<Uint8Array> {
-  const myPrivate = await window.crypto.subtle.importKey(
+  const myPrivate = await crypto.subtle.importKey(
     'jwk',
     myPrivateKeyJwk,
     { name: 'ECDH', namedCurve: 'P-256' },
@@ -225,7 +225,7 @@ export async function deriveSharedSecret(
     ['deriveBits']
   );
 
-  const theirPublic = await window.crypto.subtle.importKey(
+  const theirPublic = await crypto.subtle.importKey(
     'jwk',
     theirPublicKeyJwk,
     { name: 'ECDH', namedCurve: 'P-256' },
@@ -233,7 +233,7 @@ export async function deriveSharedSecret(
     []
   );
 
-  const sharedBits = await window.crypto.subtle.deriveBits(
+  const sharedBits = await crypto.subtle.deriveBits(
     { name: 'ECDH', public: theirPublic },
     myPrivate,
     256

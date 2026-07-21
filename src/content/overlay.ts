@@ -145,6 +145,67 @@ const STYLES = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.save-prompt {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 14px;
+  box-shadow: 0 24px 48px -16px rgba(15, 23, 42, 0.28);
+  pointer-events: auto;
+  color: #0f172a;
+  overflow: hidden;
+  animation: xp-slide-in 0.22s ease-out;
+}
+@keyframes xp-slide-in {
+  from { transform: translateY(-8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.save-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 0 14px;
+}
+.save-title { font-size: 13px; font-weight: 700; }
+.save-body { padding: 6px 14px 0 14px; font-size: 12px; color: #475569; line-height: 1.5; }
+.save-user {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.05);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-top: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.save-actions { display: flex; gap: 8px; padding: 12px 14px 14px 14px; }
+.save-btn {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.save-btn-primary {
+  color: #ffffff;
+  background: linear-gradient(135deg, #0d9488, #059669);
+  border: none;
+}
+.save-btn-secondary {
+  color: #475569;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+}
+.save-status { padding: 0 14px 14px 14px; font-size: 11px; color: #475569; }
+
 .backdrop {
   position: fixed;
   inset: 0;
@@ -493,6 +554,113 @@ export function showConfirmDialog(opts: {
     root.appendChild(backdrop);
     confirmBtn.focus();
   });
+}
+
+// ---------------------------------------------------------------------------
+// Save prompt
+// ---------------------------------------------------------------------------
+
+let savePrompt: HTMLElement | null = null;
+
+export interface SavePromptOptions {
+  username: string;
+  hostname: string;
+  mode: 'new' | 'update';
+  onSave: () => Promise<{ success?: boolean; error?: string; detail?: string | null }>;
+  onDismiss: () => void;
+}
+
+export function showSavePrompt(opts: SavePromptOptions): void {
+  closeSavePrompt();
+  const root = ensureHost();
+
+  const card = document.createElement('div');
+  card.className = 'save-prompt';
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-label', 'Save login to XoraPass');
+
+  const head = document.createElement('div');
+  head.className = 'save-head';
+  const icon = document.createElement('span');
+  icon.innerHTML = SHIELD_SVG;
+  const title = document.createElement('div');
+  title.className = 'save-title';
+  title.textContent = opts.mode === 'update' ? 'Update password?' : 'Save this login?';
+  head.appendChild(icon);
+  head.appendChild(title);
+  card.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'save-body';
+  body.textContent =
+    opts.mode === 'update'
+      ? `The password for ${opts.hostname} has changed.`
+      : `Save this login to your XoraPass vault for ${opts.hostname}.`;
+  card.appendChild(body);
+
+  const user = document.createElement('div');
+  user.className = 'save-user';
+  user.textContent = opts.username || '(no username)';
+  body.appendChild(user);
+
+  const actions = document.createElement('div');
+  actions.className = 'save-actions';
+
+  const notNow = document.createElement('button');
+  notNow.type = 'button';
+  notNow.className = 'save-btn save-btn-secondary';
+  notNow.textContent = 'Not now';
+  notNow.addEventListener('click', () => {
+    opts.onDismiss();
+    closeSavePrompt();
+  });
+
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'save-btn save-btn-primary';
+  save.textContent = opts.mode === 'update' ? 'Update' : 'Save';
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    save.textContent = 'Saving…';
+    const res = await opts.onSave();
+    if (res && res.success) {
+      closeSavePrompt();
+      return;
+    }
+    // Keep the card up and say what happened, rather than closing silently and
+    // leaving the user believing the credential was stored.
+    save.disabled = false;
+    save.textContent = opts.mode === 'update' ? 'Update' : 'Save';
+    const status = card.querySelector('.save-status') || document.createElement('div');
+    status.className = 'save-status';
+    status.textContent =
+      res?.detail
+        ? res.detail
+        : res?.error === 'session_expired'
+          ? 'Your session expired. Unlock XoraPass and try again.'
+          : res?.error === 'locked'
+            ? 'XoraPass is locked. Unlock it and try again.'
+            : "Couldn't save. Please try again.";
+    if (!status.isConnected) card.appendChild(status);
+  });
+
+  actions.appendChild(notNow);
+  actions.appendChild(save);
+  card.appendChild(actions);
+
+  root.appendChild(card);
+  savePrompt = card;
+}
+
+export function closeSavePrompt(): void {
+  if (savePrompt) {
+    savePrompt.remove();
+    savePrompt = null;
+  }
+}
+
+export function isSavePromptOpen(): boolean {
+  return savePrompt !== null;
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,11 @@ export const KNOWN_MESSAGE_TYPES = [
   'LOCK_VAULT',
   'GET_MATCHING_CREDENTIALS',
   'GET_CREDENTIAL_SECRET',
+  'REMEMBER_USERNAME',
+  'CAPTURE_CREDENTIAL',
+  'GET_PENDING_SAVE',
+  'SAVE_CREDENTIAL',
+  'DISMISS_PENDING_SAVE',
   'GET_SITE_SETTINGS',
   'SET_SITE_DISABLED',
   'GET_SETTINGS',
@@ -109,6 +114,23 @@ export function validateMessage(
       break;
     case 'GET_MATCHING_CREDENTIALS':
       if (!payload || typeof payload.hostname !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'REMEMBER_USERNAME':
+      if (!payload || typeof payload.username !== 'string' || !payload.username) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'CAPTURE_CREDENTIAL':
+      // The submitted credential. The hostname is not taken from here — the
+      // background derives it from the sender tab.
+      if (
+        !payload ||
+        typeof payload.username !== 'string' ||
+        typeof payload.password !== 'string' ||
+        !payload.password
+      ) {
         return { ok: false, reason: 'bad-payload' };
       }
       break;
