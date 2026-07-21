@@ -20,12 +20,21 @@ import {
   Clock,
   AlertTriangle,
   LayoutGrid,
+  Wand2,
   Activity,
   TrendingUp
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
 import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
+import {
+  generatePassword,
+  entropyBits,
+  strengthTier,
+  DEFAULT_OPTIONS,
+  MIN_LENGTH,
+  type GeneratorOptions,
+} from '../utils/passwordGenerator';
 import { LogoIcon, LogoHorizontal } from './Logo';
 import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL } from '../utils/config';
 import browser from 'webextension-polyfill';
@@ -78,7 +87,9 @@ export const PopupApp: React.FC = () => {
   const [currentProtocol, setCurrentProtocol] = useState('');
   const [siteDisabled, setSiteDisabled] = useState(false);
   const [autoLockMinutes, setAutoLockMinutes] = useState(15);
-  const [tab, setTab] = useState<'vault' | 'health'>('vault');
+  const [tab, setTab] = useState<'vault' | 'generate' | 'health'>('vault');
+  const [genOptions, setGenOptions] = useState<GeneratorOptions>(DEFAULT_OPTIONS);
+  const [generated, setGenerated] = useState(() => generatePassword(DEFAULT_OPTIONS));
   const [searchTerm, setSearchTerm] = useState('');
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -135,6 +146,14 @@ export const PopupApp: React.FC = () => {
       }
     });
   }, []);
+
+  // Options and password stay in step: changing a setting immediately shows a
+  // password that reflects it, rather than leaving a stale one on screen.
+  const updateGenOptions = (patch: Partial<GeneratorOptions>) => {
+    const next = { ...genOptions, ...patch };
+    setGenOptions(next);
+    setGenerated(generatePassword(next));
+  };
 
   const toggleSiteDisabled = () => {
     const next = !siteDisabled;
@@ -354,6 +373,14 @@ export const PopupApp: React.FC = () => {
     : vaultItems.filter((i) => !matchingIds.has(i.id));
 
 
+  const bits = entropyBits(genOptions);
+  const strength = strengthTier(bits);
+  const strengthColor =
+    strength.tone === 'weak' ? '#e11d48'
+      : strength.tone === 'fair' ? '#b45309'
+        : strength.tone === 'good' ? '#0d9488'
+          : '#059669';
+
   const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(currentHostname);
   const isInsecure = currentProtocol === 'http:' && !isLocalHost;
   const knownHosts = vaultItems.map((i) => (i.url ? extractHostname(i.url) : '')).filter(Boolean);
@@ -557,6 +584,12 @@ export const PopupApp: React.FC = () => {
                 <LayoutGrid className="w-3.5 h-3.5" /> Vault
               </button>
               <button
+                onClick={() => setTab('generate')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'generate' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
+              >
+                <Wand2 className="w-3.5 h-3.5" /> Generate
+              </button>
+              <button
                 onClick={() => setTab('health')}
                 className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'health' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
               >
@@ -740,6 +773,95 @@ export const PopupApp: React.FC = () => {
             </>
             )}
 
+
+            {tab === 'generate' && (
+              <div className="space-y-3">
+                <div className="p-3 bg-white/80 border border-slate-900/8 rounded-xl space-y-2.5">
+                  <div className="font-mono text-[13px] leading-relaxed text-slate-900 break-all min-h-[46px] select-text">
+                    {generated}
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <div className="flex-1 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${Math.min(100, (bits / 128) * 100)}%`,
+                          background: strengthColor,
+                        }}
+                      />
+                    </div>
+                    <span className="text-[10px] font-bold" style={{ color: strengthColor }}>
+                      {strength.label}
+                    </span>
+                    <span className="text-[9px] text-slate-400 tabular-nums">{bits} bits</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setGenerated(generatePassword(genOptions))}
+                      className="flex-1 py-2 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/8 text-slate-700 font-semibold rounded-lg text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+                    </button>
+                    <button
+                      onClick={() => copyToClipboard(generated, 'generated', 'password')}
+                      className="btn-primary flex-1 py-2 rounded-lg text-[11px] flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      {copiedField?.id === 'generated' ? (
+                        <><Check className="w-3.5 h-3.5" /> Copied</>
+                      ) : (
+                        <><Copy className="w-3.5 h-3.5" /> Copy</>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-white/70 border border-slate-900/8 rounded-xl space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-slate-700">Length</span>
+                    <span className="text-[11px] font-bold text-brand-cyan tabular-nums">{genOptions.length}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={MIN_LENGTH}
+                    max={64}
+                    value={genOptions.length}
+                    onChange={(e) => updateGenOptions({ length: Number(e.target.value) })}
+                    className="w-full accent-brand-cyan cursor-pointer"
+                  />
+
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 pt-0.5">
+                    {([
+                      ['uppercase', 'A–Z'],
+                      ['lowercase', 'a–z'],
+                      ['digits', '0–9'],
+                      ['symbols', '!@#$'],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={genOptions[key]}
+                          onChange={(e) => updateGenOptions({ [key]: e.target.checked })}
+                          className="accent-brand-cyan cursor-pointer"
+                        />
+                        <span className="font-mono">{label}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer pt-0.5 border-t border-slate-900/6 mt-1">
+                    <input
+                      type="checkbox"
+                      checked={genOptions.avoidAmbiguous}
+                      onChange={(e) => updateGenOptions({ avoidAmbiguous: e.target.checked })}
+                      className="accent-brand-cyan cursor-pointer mt-2"
+                    />
+                    <span className="mt-2">Avoid lookalike characters (I l 1 O 0)</span>
+                  </label>
+                </div>
+              </div>
+            )}
 
             {tab === 'health' && (
               <div className="space-y-4">
