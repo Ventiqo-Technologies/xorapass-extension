@@ -43,6 +43,30 @@ export function looksLikeUsername(attrs: FieldAttrs): boolean {
   return USERNAME_HINT.test(hints);
 }
 
+const NEW_PASSWORD_HINT = /new|signup|sign-up|register|create|confirm|repeat|retype|verify/i;
+
+/**
+ * Whether a password field is being used to choose a *new* password (sign-up,
+ * password change) rather than to enter an existing one. The autocomplete
+ * token is authoritative when present — it is exactly what it exists for —
+ * with name/id/placeholder hints as the fallback.
+ *
+ * `hasSibling` should be true when the page has more than one password field,
+ * which on its own is a strong sign of a "password + confirm" pair.
+ */
+export function looksLikeNewPassword(attrs: FieldAttrs, hasSibling = false): boolean {
+  const ac = (attrs.autocomplete || '').toLowerCase();
+  if (ac.includes('new-password')) return true;
+  if (ac.includes('current-password')) return false;
+
+  const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel]
+    .filter(Boolean)
+    .join(' ');
+
+  if (NEW_PASSWORD_HINT.test(hints)) return true;
+  return hasSibling;
+}
+
 /** Minimal rectangle shape — matches the fields we need from a DOMRect. */
 export interface Rect {
   top: number;

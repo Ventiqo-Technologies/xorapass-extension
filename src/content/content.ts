@@ -10,7 +10,8 @@
 // the user picks it, and the background re-checks the tab's real domain before
 // handing it over.
 import browser from 'webextension-polyfill';
-import { looksLikeUsername } from './fieldHeuristics';
+import { looksLikeUsername, looksLikeNewPassword } from './fieldHeuristics';
+import { generatePassword } from '../utils/passwordGenerator';
 import {
   attachIcon,
   hasIcon,
@@ -30,6 +31,9 @@ let lookalikeWarning: { target: string; reason: string } | null = null;
 
 /** Password field -> its paired username field (null when none was found). */
 const fieldPairs = new WeakMap<HTMLInputElement, HTMLInputElement | null>();
+
+/** Password field -> whether it is choosing a new password rather than entering one. */
+const newPasswordFields = new WeakMap<HTMLInputElement, boolean>();
 
 // Categories whose values are sensitive enough to always require an explicit
 // confirmation before being written into a page.
@@ -107,11 +111,10 @@ function loadCredentials(): void {
       lookalikeWarning = response.lookalike || null;
       activeCredentials = response.credentials || [];
 
-      if (activeCredentials.length > 0) {
-        scanForLoginFields();
-      } else {
-        clearAll();
-      }
+      // Always scan: with no saved credentials there is nothing to fill, but a
+      // sign-up field still gets an icon so a password can be generated.
+      clearAll();
+      scanForLoginFields();
     })
     .catch(() => {
       /* background unavailable – nothing to fill */
@@ -134,15 +137,31 @@ function isFillable(el: HTMLInputElement): boolean {
  * idempotent, so the MutationObserver can call it freely.
  */
 function scanForLoginFields(): void {
-  if (activeCredentials.length === 0) return;
-
   const passwordInputs = Array.from(
     document.querySelectorAll('input[type="password"]')
   ) as HTMLInputElement[];
 
-  for (const passInput of passwordInputs) {
-    if (!isFillable(passInput)) continue;
+  const visible = passwordInputs.filter(isFillable);
+  const hasSibling = visible.length > 1;
+
+  for (const passInput of visible) {
+    const isNew = looksLikeNewPassword(
+      {
+        autocomplete: passInput.getAttribute('autocomplete'),
+        name: passInput.name,
+        id: passInput.id,
+        placeholder: passInput.getAttribute('placeholder'),
+        ariaLabel: passInput.getAttribute('aria-label'),
+      },
+      hasSibling
+    );
+
+    // Sign-up fields are worth decorating even with an empty vault — that is
+    // exactly when there is nothing to fill but a password to generate.
+    if (!isNew && activeCredentials.length === 0) continue;
     if (hasIcon(passInput)) continue;
+
+    newPasswordFields.set(passInput, isNew);
 
     const usernameInput = findUsernameField(passInput);
     fieldPairs.set(passInput, usernameInput);
@@ -151,7 +170,7 @@ function scanForLoginFields(): void {
     // was found. This keeps autofill working on pages that don't wrap inputs in
     // a <form> or that split username/password across containers.
     attachIcon(passInput, () => activate(passInput));
-    if (usernameInput && !hasIcon(usernameInput)) {
+    if (usernameInput && !hasIcon(usernameInput) && activeCredentials.length > 0) {
       fieldPairs.set(usernameInput, usernameInput);
       attachIcon(usernameInput, () => activate(passInput));
     }
@@ -188,15 +207,52 @@ function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null
 // Fill flow
 // ---------------------------------------------------------------------------
 
-// Opens the credential menu anchored to whichever field the user clicked.
+// Opens the credential menu anchored to whichever field the user clicked. On a
+// sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement): void {
+  const isNew = newPasswordFields.get(passInput) === true;
+
   openDropdown(passInput, {
     credentials: activeCredentials,
     warning: lookalikeWarning
       ? `This site resembles "${lookalikeWarning.target}". Verify the address before filling.`
       : null,
     onPick: (id) => void handlePick(id, passInput),
+    suggestion: isNew
+      ? {
+          password: generatePassword(),
+          onRegenerate: () => generatePassword(),
+          onUse: (pw) => applyGeneratedPassword(passInput, pw),
+        }
+      : undefined,
   });
+}
+
+/**
+ * Fills a generated password into the field and any confirm box beside it.
+ * Filling the confirm field matters: leaving it empty means the user has to
+ * retype a 20-character random string by hand.
+ */
+function applyGeneratedPassword(passInput: HTMLInputElement, password: string): void {
+  autofillField(passInput, password);
+
+  const others = (Array.from(
+    document.querySelectorAll('input[type="password"]')
+  ) as HTMLInputElement[]).filter((p) => p !== passInput && isFillable(p) && !p.value);
+
+  for (const other of others) {
+    const isNew = looksLikeNewPassword(
+      {
+        autocomplete: other.getAttribute('autocomplete'),
+        name: other.name,
+        id: other.id,
+        placeholder: other.getAttribute('placeholder'),
+        ariaLabel: other.getAttribute('aria-label'),
+      },
+      true
+    );
+    if (isNew) autofillField(other, password);
+  }
 }
 
 async function handlePick(id: string, passInput: HTMLInputElement): Promise<void> {
@@ -293,11 +349,12 @@ function readCredential(scope: ParentNode): { username: string; password: string
   const filled = passwords.find((p) => p.value && isFillable(p));
   if (!filled) return null;
 
-  // A sign-up form usually has several password boxes (password + confirm).
-  // Capturing those is out of scope here: they need the "did the account
-  // actually get created" signal that a login redirect gives us.
-  const filledCount = passwords.filter((p) => p.value).length;
-  if (filledCount > 1) return null;
+  // Several filled password boxes are fine when they all hold the same value —
+  // that is a sign-up form's "password + confirm", and it is a credential worth
+  // offering to save. Differing values mean a change-password form, where which
+  // one to store is ambiguous, so leave those alone.
+  const filledValues = new Set(passwords.filter((p) => p.value).map((p) => p.value));
+  if (filledValues.size > 1) return null;
 
   const usernameEl = findUsernameField(filled);
   return { username: usernameEl?.value || '', password: filled.value };

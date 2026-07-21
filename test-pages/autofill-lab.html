@@ -134,6 +134,36 @@
 </section>
 
 <section>
+  <h2>7b · Sign-up form (password generation)</h2>
+  <p class="why">
+    Two password fields with <code>autocomplete="new-password"</code>. The icon should appear <em>even with an empty vault</em>, and the menu should lead with a suggested password. Using it must fill <strong>both</strong> boxes — leaving the confirm field empty would mean retyping 20 random characters by hand.
+  </p>
+  <form onsubmit="return false">
+    <label>Email</label>
+    <input type="email" name="signup_email" autocomplete="username">
+    <label>Choose a password</label>
+    <input type="password" name="signup_pw" autocomplete="new-password">
+    <label>Confirm password</label>
+    <input type="password" name="signup_pw_confirm" autocomplete="new-password">
+    <button class="act" type="submit">Create account</button>
+  </form>
+</section>
+
+<section>
+  <h2>7c · Change-password form (must NOT capture)</h2>
+  <p class="why">
+    Current password plus a new one. Because the filled values differ, capture should stay silent — which of the two to store is ambiguous. Submitting here should raise no save prompt.
+  </p>
+  <form onsubmit="return false">
+    <label>Current password</label>
+    <input type="password" name="old_pw" autocomplete="current-password">
+    <label>New password</label>
+    <input type="password" name="new_pw" autocomplete="new-password">
+    <button class="act" type="submit">Change password</button>
+  </form>
+</section>
+
+<section>
   <h2>8 · Cross-origin iframe</h2>
   <p class="why">
     Framed from <code>127.0.0.1</code> while the page is <code>localhost</code> — a different origin. Autofill must be <strong>blocked</strong> inside it. Check the iframe's console for

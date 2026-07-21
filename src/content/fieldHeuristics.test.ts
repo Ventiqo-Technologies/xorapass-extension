@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   looksLikeUsername,
+  looksLikeNewPassword,
   computeIconPosition,
   computeDropdownPosition,
   isRectVisible,
@@ -41,6 +42,31 @@ describe('looksLikeUsername', () => {
     expect(looksLikeUsername({ type: 'text', name: 'street_address' })).toBe(false);
     expect(looksLikeUsername({ type: 'checkbox', name: 'email' })).toBe(false);
     expect(looksLikeUsername({})).toBe(false);
+  });
+});
+
+describe('looksLikeNewPassword', () => {
+  it('trusts the autocomplete token in both directions', () => {
+    expect(looksLikeNewPassword({ autocomplete: 'new-password' })).toBe(true);
+    // current-password wins even on a page with a confirm field.
+    expect(looksLikeNewPassword({ autocomplete: 'current-password', name: 'confirm' }, true)).toBe(false);
+  });
+
+  it('recognises sign-up and confirm wording', () => {
+    expect(looksLikeNewPassword({ name: 'new_password' })).toBe(true);
+    expect(looksLikeNewPassword({ id: 'confirmPassword' })).toBe(true);
+    expect(looksLikeNewPassword({ placeholder: 'Repeat password' })).toBe(true);
+    expect(looksLikeNewPassword({ ariaLabel: 'Create a password' })).toBe(true);
+  });
+
+  it('treats a second password field as a sign-up signal', () => {
+    expect(looksLikeNewPassword({ name: 'password' }, true)).toBe(true);
+    expect(looksLikeNewPassword({ name: 'password' }, false)).toBe(false);
+  });
+
+  it('leaves an ordinary login password alone', () => {
+    expect(looksLikeNewPassword({ name: 'password', id: 'login-pw' })).toBe(false);
+    expect(looksLikeNewPassword({ autocomplete: 'current-password' })).toBe(false);
   });
 });
 

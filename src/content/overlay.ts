@@ -34,6 +34,12 @@ export interface DropdownOptions {
   /** Optional phishing/lookalike banner shown above the credential list. */
   warning?: string | null;
   onPick: (credentialId: string) => void;
+  /** Present on sign-up fields: offers a generated password above the list. */
+  suggestion?: {
+    password: string;
+    onUse: (password: string) => void;
+    onRegenerate: () => string;
+  };
 }
 
 interface Registration {
@@ -145,6 +151,59 @@ const STYLES = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.suggest {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(45, 212, 191, 0.06);
+}
+.suggest-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #2dd4bf;
+  margin-bottom: 6px;
+}
+.suggest-row { display: flex; align-items: center; gap: 8px; }
+.suggest-value {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #e2e8f0;
+  word-break: break-all;
+  line-height: 1.35;
+}
+.suggest-refresh {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: #94a3b8;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.suggest-refresh:hover { color: #2dd4bf; border-color: rgba(45, 212, 191, 0.4); }
+.suggest-use {
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #04231d;
+  background: linear-gradient(135deg, #2dd4bf, #34d399);
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
 .save-prompt {
   position: fixed;
   top: 16px;
@@ -612,6 +671,54 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
     banner.className = 'menu-warning';
     banner.textContent = `⚠ ${opts.warning}`;
     menu.appendChild(banner);
+  }
+
+  if (opts.suggestion) {
+    const sug = opts.suggestion;
+    const box = document.createElement('div');
+    box.className = 'suggest';
+
+    const label = document.createElement('div');
+    label.className = 'suggest-label';
+    label.textContent = 'Suggested password';
+    box.appendChild(label);
+
+    const row = document.createElement('div');
+    row.className = 'suggest-row';
+
+    const value = document.createElement('div');
+    value.className = 'suggest-value';
+    value.textContent = sug.password;
+    row.appendChild(value);
+
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'suggest-refresh';
+    refresh.setAttribute('aria-label', 'Generate another');
+    refresh.textContent = '⟳';
+    refresh.addEventListener('mousedown', (e) => e.preventDefault());
+    refresh.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      value.textContent = sug.onRegenerate();
+    });
+    row.appendChild(refresh);
+    box.appendChild(row);
+
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.className = 'suggest-use';
+    use.textContent = 'Use this password';
+    use.addEventListener('mousedown', (e) => e.preventDefault());
+    use.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeDropdown();
+      sug.onUse(value.textContent || sug.password);
+    });
+    box.appendChild(use);
+
+    menu.appendChild(box);
   }
 
   for (const cred of opts.credentials) {
