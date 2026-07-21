@@ -171,16 +171,52 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const lookalike = matching.length === 0 ? findLookalikeTarget(hostname, knownHosts) : null;
 
       return {
+        // NOTE: `value` (the secret) is deliberately NOT included here. The
+        // content script only ever learns which items exist for this site; the
+        // password is released one at a time by GET_CREDENTIAL_SECRET, after a
+        // fresh domain re-check, when the user actually picks an entry.
         credentials: matching.map((item) => ({
           id: item.id,
           label: item.label,
           username: item.username,
-          value: item.value,
           category: item.category || 'login',
         })),
         disabled: false,
         lookalike,
       };
+    });
+  }
+
+  if (type === 'GET_CREDENTIAL_SECRET') {
+    const id: string = msg.payload.id;
+
+    // The hostname is taken from the sender tab, never from the message
+    // payload: a compromised content script must not be able to name a
+    // different site and pull that site's password.
+    const senderUrl = sender.tab?.url || sender.url || '';
+    const hostname = extractHostname(senderUrl);
+    if (!hostname) {
+      return Promise.resolve({ error: 'unknown_origin' });
+    }
+
+    return Promise.all([
+      browser.storage.session.get(['unlocked', 'vaultItems']),
+      isSiteDisabled(hostname),
+    ]).then(([res, disabled]) => {
+      if (!res.unlocked || !res.vaultItems) return { error: 'locked' };
+      if (disabled) return { error: 'site_disabled' };
+
+      const item = (res.vaultItems as VaultItem[]).find((i) => i.id === id);
+      if (!item || !item.url) return { error: 'not_found' };
+
+      // Re-authorize: the item must still match the tab's real hostname.
+      if (!isDomainMatch(hostname, item.url)) {
+        console.warn('[XoraPass] Refused secret for non-matching domain:', hostname);
+        return { error: 'domain_mismatch' };
+      }
+
+      void scheduleAutoLock(); // filling counts as activity
+      return { username: item.username, value: item.value };
     });
   }
 

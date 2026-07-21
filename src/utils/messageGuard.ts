@@ -17,6 +17,7 @@ export const KNOWN_MESSAGE_TYPES = [
   'UNLOCK_VAULT',
   'LOCK_VAULT',
   'GET_MATCHING_CREDENTIALS',
+  'GET_CREDENTIAL_SECRET',
   'GET_SITE_SETTINGS',
   'SET_SITE_DISABLED',
   'GET_SETTINGS',
@@ -103,6 +104,13 @@ export function validateMessage(
       break;
     case 'GET_MATCHING_CREDENTIALS':
       if (!payload || typeof payload.hostname !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'GET_CREDENTIAL_SECRET':
+      // Only the item id is trusted from the caller; the background re-derives
+      // the requesting hostname from the sender tab rather than the payload.
+      if (!payload || typeof payload.id !== 'string' || !payload.id) {
         return { ok: false, reason: 'bad-payload' };
       }
       break;
