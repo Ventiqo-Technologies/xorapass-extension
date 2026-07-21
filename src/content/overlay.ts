@@ -149,62 +149,272 @@ const STYLES = `
   position: fixed;
   top: 16px;
   right: 16px;
-  width: 320px;
+  width: 380px;
   max-width: calc(100vw - 32px);
   background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  border-radius: 14px;
-  box-shadow: 0 24px 48px -16px rgba(15, 23, 42, 0.28);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.06),
+    0 8px 24px -4px rgba(15, 23, 42, 0.14),
+    0 24px 48px -12px rgba(15, 23, 42, 0.18);
   pointer-events: auto;
   color: #0f172a;
   overflow: hidden;
-  animation: xp-slide-in 0.22s ease-out;
+  animation: xp-slide-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.save-prompt.is-update {
+  border-color: rgba(217, 119, 6, 0.18);
 }
 @keyframes xp-slide-in {
-  from { transform: translateY(-8px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+  from { transform: translateY(-12px) scale(0.97); opacity: 0; }
+  to   { transform: translateY(0) scale(1); opacity: 1; }
+}
+@keyframes xp-slide-out {
+  from { transform: translateY(0) scale(1); opacity: 1; }
+  to   { transform: translateY(-8px) scale(0.97); opacity: 0; }
+}
+@keyframes xp-check-draw {
+  0%   { stroke-dashoffset: 24; }
+  100% { stroke-dashoffset: 0; }
+}
+@keyframes xp-check-circle {
+  0%   { stroke-dashoffset: 100; }
+  100% { stroke-dashoffset: 0; }
 }
 .save-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 14px 0 14px;
+  gap: 10px;
+  padding: 16px 16px 0 18px;
 }
-.save-title { font-size: 13px; font-weight: 700; }
-.save-body { padding: 6px 14px 0 14px; font-size: 12px; color: #475569; line-height: 1.5; }
-.save-user {
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
+.save-head-icon {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+.save-title {
+  font-size: 15px;
+  font-weight: 700;
+  flex: 1;
+  letter-spacing: -0.01em;
   color: #0f172a;
-  background: rgba(15, 23, 42, 0.05);
-  border-radius: 6px;
-  padding: 6px 8px;
-  margin-top: 8px;
+}
+.save-title.is-update { color: #92400e; }
+.save-close {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  font-family: inherit;
+  transition: background-color 0.15s, color 0.15s;
+}
+.save-close:hover { background: rgba(15, 23, 42, 0.06); color: #0f172a; }
+
+.save-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 18px 0 18px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  transition: border-color 0.15s;
+}
+.save-prompt.is-update .save-identity {
+  background: rgba(251, 191, 36, 0.06);
+  border-color: rgba(217, 119, 6, 0.18);
+}
+/* Favicon from Google's service, with letter-avatar fallback */
+.save-favicon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 9px;
+  object-fit: contain;
+  background: #f1f5f9;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+.save-avatar {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #0d9488, #059669);
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-transform: uppercase;
+}
+.save-prompt.is-update .save-avatar {
+  background: linear-gradient(135deg, #d97706, #b45309);
+}
+.save-identity-text { min-width: 0; flex: 1; }
+.save-username {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.save-actions { display: flex; gap: 8px; padding: 12px 14px 14px 14px; }
-.save-btn {
-  flex: 1;
-  padding: 8px 12px;
+.save-username.is-empty { color: #94a3b8; font-weight: 500; font-style: italic; }
+.save-host {
   font-size: 12px;
-  font-weight: 700;
-  border-radius: 8px;
+  color: #64748b;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Footer: brand logo left, action buttons right — mirrors LastPass layout */
+.save-footer {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px 14px 18px;
+  border-top: 1px solid rgba(15, 23, 42, 0.05);
+  margin-top: 14px;
+}
+.save-brand {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1;
+  min-width: 0;
+}
+.save-brand-logo {
+  height: 22px;
+  width: auto;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.save-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.save-btn {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 9px;
   cursor: pointer;
   font-family: inherit;
+  transition: background-color 0.15s, box-shadow 0.15s, transform 0.1s;
 }
+.save-btn:active { transform: scale(0.97); }
 .save-btn-primary {
   color: #ffffff;
+  font-weight: 700;
   background: linear-gradient(135deg, #0d9488, #059669);
   border: none;
+  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.24);
+}
+.save-btn-primary:hover:not(:disabled) {
+  box-shadow: 0 4px 14px rgba(13, 148, 136, 0.36);
+  transform: translateY(-1px);
+}
+.save-btn-primary:disabled { opacity: 0.6; cursor: default; box-shadow: none; transform: none; }
+.save-prompt.is-update .save-btn-primary {
+  background: linear-gradient(135deg, #d97706, #b45309);
+  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.24);
+}
+.save-prompt.is-update .save-btn-primary:hover:not(:disabled) {
+  box-shadow: 0 4px 14px rgba(217, 119, 6, 0.36);
 }
 .save-btn-secondary {
-  color: #475569;
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  color: #64748b;
+  background: transparent;
+  border: none;
 }
-.save-status { padding: 0 14px 14px 14px; font-size: 11px; color: #475569; }
+.save-btn-secondary:hover { background: rgba(15, 23, 42, 0.05); color: #0f172a; }
+
+/* "Never for this site" link — subtle, below actions (Bitwarden-inspired) */
+.save-never {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 0 18px 12px 18px;
+  font-size: 11px;
+  color: #94a3b8;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s;
+}
+.save-never:hover { color: #ef4444; }
+
+/* Error status banner */
+.save-status {
+  margin: 10px 18px 0 18px;
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #9a3412;
+  background: rgba(234, 88, 12, 0.06);
+  border: 1px solid rgba(234, 88, 12, 0.16);
+  border-radius: 9px;
+}
+
+/* Success overlay — 1Password-style confirmation before auto-dismiss */
+.save-success {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #ffffff;
+  border-radius: 18px;
+  z-index: 1;
+  animation: xp-slide-in 0.2s ease-out;
+}
+.save-success-icon {
+  width: 48px;
+  height: 48px;
+}
+.save-success-icon circle {
+  fill: none;
+  stroke: #059669;
+  stroke-width: 2;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: xp-check-circle 0.4s ease-out forwards;
+}
+.save-success-icon polyline {
+  fill: none;
+  stroke: #059669;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: xp-check-draw 0.3s 0.25s ease-out forwards;
+}
+.save-success-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #059669;
+}
 
 .backdrop {
   position: fixed;
@@ -568,41 +778,123 @@ export interface SavePromptOptions {
   mode: 'new' | 'update';
   onSave: () => Promise<{ success?: boolean; error?: string; detail?: string | null }>;
   onDismiss: () => void;
+  /** Optional: permanently suppress prompts for this site (Bitwarden-style). */
+  onNever?: () => void;
+  /** URL to the XoraPass logo image (e.g. from browser.runtime.getURL). */
+  brandLogoUrl?: string;
 }
+
+// Animated checkmark SVG shown on save success (1Password-style).
+const SUCCESS_SVG =
+  '<svg class="save-success-icon" viewBox="0 0 40 40">' +
+  '<circle cx="20" cy="20" r="18"/>' +
+  '<polyline points="12,20 18,26 28,14"/>' +
+  '</svg>';
 
 export function showSavePrompt(opts: SavePromptOptions): void {
   closeSavePrompt();
   const root = ensureHost();
 
   const card = document.createElement('div');
-  card.className = 'save-prompt';
+  card.className = opts.mode === 'update' ? 'save-prompt is-update' : 'save-prompt';
   card.setAttribute('role', 'dialog');
   card.setAttribute('aria-label', 'Save login to XoraPass');
+  // Relative positioning for the success overlay.
+  card.style.position = 'fixed';
 
+  const dismiss = () => {
+    opts.onDismiss();
+    closeSavePrompt();
+  };
+
+  // ── Header ────────────────────────────────────────────────────────────────
   const head = document.createElement('div');
   head.className = 'save-head';
-  const icon = document.createElement('span');
-  icon.innerHTML = SHIELD_SVG;
+
+  const headIcon = document.createElement('span');
+  headIcon.className = 'save-head-icon';
+  headIcon.innerHTML = SHIELD_SVG;
+
   const title = document.createElement('div');
-  title.className = 'save-title';
+  title.className = opts.mode === 'update' ? 'save-title is-update' : 'save-title';
   title.textContent = opts.mode === 'update' ? 'Update password?' : 'Save this login?';
-  head.appendChild(icon);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'save-close';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.textContent = '✕';
+  close.addEventListener('click', dismiss);
+
+  head.appendChild(headIcon);
   head.appendChild(title);
+  head.appendChild(close);
   card.appendChild(head);
 
-  const body = document.createElement('div');
-  body.className = 'save-body';
-  body.textContent =
-    opts.mode === 'update'
-      ? `The password for ${opts.hostname} has changed.`
-      : `Save this login to your XoraPass vault for ${opts.hostname}.`;
-  card.appendChild(body);
+  // ── Identity row (favicon + username + hostname) ──────────────────────────
+  const identity = document.createElement('div');
+  identity.className = 'save-identity';
+
+  const cleanHost = opts.hostname.replace(/^www\./, '');
+
+  // Try the site's actual favicon first, fall back to a letter avatar.
+  const favicon = document.createElement('img');
+  favicon.className = 'save-favicon';
+  favicon.alt = cleanHost;
+  favicon.src = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(cleanHost)}&sz=64`;
+  favicon.onerror = () => {
+    // Replace the broken <img> with a letter avatar.
+    const avatar = document.createElement('div');
+    avatar.className = 'save-avatar';
+    avatar.textContent = (cleanHost[0] || '?').toUpperCase();
+    favicon.replaceWith(avatar);
+  };
+  identity.appendChild(favicon);
+
+  const identityText = document.createElement('div');
+  identityText.className = 'save-identity-text';
 
   const user = document.createElement('div');
-  user.className = 'save-user';
-  user.textContent = opts.username || '(no username)';
-  body.appendChild(user);
+  user.className = opts.username ? 'save-username' : 'save-username is-empty';
+  user.textContent = opts.username || 'No username detected';
+  identityText.appendChild(user);
 
+  const host = document.createElement('div');
+  host.className = 'save-host';
+  host.textContent = cleanHost;
+  identityText.appendChild(host);
+
+  identity.appendChild(identityText);
+  card.appendChild(identity);
+
+  // ── Footer (brand + actions) ──────────────────────────────────────────────
+  const footer = document.createElement('div');
+  footer.className = 'save-footer';
+
+  // Brand logo on the left — mirrors how LastPass shows its logo in the footer.
+  const brand = document.createElement('div');
+  brand.className = 'save-brand';
+  if (opts.brandLogoUrl) {
+    const logo = document.createElement('img');
+    logo.className = 'save-brand-logo';
+    logo.src = opts.brandLogoUrl;
+    logo.alt = 'XoraPass';
+    logo.draggable = false;
+    brand.appendChild(logo);
+  } else {
+    // Fallback: shield icon + text if no logo URL provided.
+    const brandIcon = document.createElement('span');
+    brandIcon.className = 'save-brand-icon';
+    brandIcon.innerHTML = SHIELD_SVG;
+    const brandName = document.createElement('span');
+    brandName.className = 'save-brand-name';
+    brandName.textContent = 'XoraPass';
+    brand.appendChild(brandIcon);
+    brand.appendChild(brandName);
+  }
+  footer.appendChild(brand);
+
+  // Action buttons on the right.
   const actions = document.createElement('div');
   actions.className = 'save-actions';
 
@@ -610,10 +902,7 @@ export function showSavePrompt(opts: SavePromptOptions): void {
   notNow.type = 'button';
   notNow.className = 'save-btn save-btn-secondary';
   notNow.textContent = 'Not now';
-  notNow.addEventListener('click', () => {
-    opts.onDismiss();
-    closeSavePrompt();
-  });
+  notNow.addEventListener('click', dismiss);
 
   const save = document.createElement('button');
   save.type = 'button';
@@ -621,15 +910,30 @@ export function showSavePrompt(opts: SavePromptOptions): void {
   save.textContent = opts.mode === 'update' ? 'Update' : 'Save';
   save.addEventListener('click', async () => {
     save.disabled = true;
+    notNow.disabled = true;
     save.textContent = 'Saving…';
     const res = await opts.onSave();
     if (res && res.success) {
-      closeSavePrompt();
+      // ── Success animation (1Password-style) ────────────────────────────
+      const success = document.createElement('div');
+      success.className = 'save-success';
+      success.innerHTML = SUCCESS_SVG;
+      const successText = document.createElement('div');
+      successText.className = 'save-success-text';
+      successText.textContent = opts.mode === 'update' ? 'Updated!' : 'Saved!';
+      success.appendChild(successText);
+      card.style.position = 'fixed'; // keep it positioned for the overlay
+      card.appendChild(success);
+      setTimeout(() => {
+        card.style.animation = 'xp-slide-out 0.2s ease-in forwards';
+        setTimeout(closeSavePrompt, 200);
+      }, 800);
       return;
     }
     // Keep the card up and say what happened, rather than closing silently and
     // leaving the user believing the credential was stored.
     save.disabled = false;
+    notNow.disabled = false;
     save.textContent = opts.mode === 'update' ? 'Update' : 'Save';
     const status = card.querySelector('.save-status') || document.createElement('div');
     status.className = 'save-status';
@@ -641,12 +945,29 @@ export function showSavePrompt(opts: SavePromptOptions): void {
           : res?.error === 'locked'
             ? 'XoraPass is locked. Unlock it and try again.'
             : "Couldn't save. Please try again.";
-    if (!status.isConnected) card.appendChild(status);
+    if (!status.isConnected) {
+      // Insert the error above the footer rather than at the card bottom.
+      card.insertBefore(status, footer);
+    }
   });
 
   actions.appendChild(notNow);
   actions.appendChild(save);
-  card.appendChild(actions);
+  footer.appendChild(actions);
+  card.appendChild(footer);
+
+  // ── "Never for this site" (Bitwarden-inspired) ────────────────────────────
+  if (opts.onNever) {
+    const never = document.createElement('button');
+    never.type = 'button';
+    never.className = 'save-never';
+    never.textContent = 'Never for this site';
+    never.addEventListener('click', () => {
+      opts.onNever!();
+      closeSavePrompt();
+    });
+    card.appendChild(never);
+  }
 
   root.appendChild(card);
   savePrompt = card;

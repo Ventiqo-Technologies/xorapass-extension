@@ -340,6 +340,7 @@ function checkPendingSave(): void {
         username: pending.username,
         hostname: pending.hostname,
         mode: pending.mode,
+        brandLogoUrl: browser.runtime.getURL('xorapass_logo_horizontal.png'),
         onSave: () =>
           browser.runtime.sendMessage({ type: 'SAVE_CREDENTIAL' }).then((r: any) => {
             if (r && r.success) loadCredentials();
@@ -347,6 +348,14 @@ function checkPendingSave(): void {
           }),
         onDismiss: () => {
           void browser.runtime.sendMessage({ type: 'DISMISS_PENDING_SAVE' });
+        },
+        onNever: () => {
+          void browser.runtime.sendMessage({ type: 'DISMISS_PENDING_SAVE' });
+          void browser.runtime.sendMessage({
+            type: 'SET_SITE_DISABLED',
+            payload: { hostname: pending.hostname, disabled: true },
+          });
+          clearAll();
         },
       });
     })

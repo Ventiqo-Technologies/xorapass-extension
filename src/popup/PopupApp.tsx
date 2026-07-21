@@ -338,12 +338,20 @@ export const PopupApp: React.FC = () => {
     : vaultItems.filter(item => !!item.url && !!currentHostname && isDomainMatch(currentHostname, item.url));
 
 
-  const searchedItems = vaultItems.filter(item => {
-    const term = searchTerm.toLowerCase();
-    return item.label.toLowerCase().includes(term) ||
-      item.username.toLowerCase().includes(term) ||
-      (item.url && item.url.toLowerCase().includes(term));
-  });
+  const term = searchTerm.trim().toLowerCase();
+
+  const matches = (item: DecryptedItem) =>
+    item.label.toLowerCase().includes(term) ||
+    item.username.toLowerCase().includes(term) ||
+    (!!item.url && item.url.toLowerCase().includes(term));
+
+  // While searching, everything is in scope. Otherwise the browse list omits
+  // the entries already shown under "For this site", so the same credential
+  // is not listed twice.
+  const matchingIds = new Set(matchingItems.map((i) => i.id));
+  const searchedItems = term
+    ? vaultItems.filter(matches)
+    : vaultItems.filter((i) => !matchingIds.has(i.id));
 
 
   const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(currentHostname);
@@ -651,7 +659,7 @@ export const PopupApp: React.FC = () => {
             )}
 
 
-            <div className="flex flex-col space-y-2">
+            <div className="flex-1 min-h-0 flex flex-col space-y-2">
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
                 <input
@@ -663,11 +671,12 @@ export const PopupApp: React.FC = () => {
                 />
               </div>
 
-              {searchTerm.trim() !== '' && (
-              <div className="overflow-y-auto custom-scrollbar pr-0.5 space-y-1.5 max-h-[220px]">
+              <div className="flex-1 overflow-y-auto custom-scrollbar pr-0.5 space-y-1.5 min-h-[80px]">
                 {searchedItems.length === 0 ? (
                   <div className="text-center py-6">
-                    <p className="text-[11px] text-slate-400">No matches.</p>
+                    <p className="text-[11px] text-slate-400">
+                      {term ? 'No matches.' : vaultItems.length === 0 ? 'Your vault is empty.' : 'Nothing else saved yet.'}
+                    </p>
                   </div>
                 ) : (
                   searchedItems.map((item) => (
@@ -710,11 +719,10 @@ export const PopupApp: React.FC = () => {
                   ))
                 )}
               </div>
-              )}
             </div>
 
 
-            <div className="flex items-center justify-end gap-2 pt-2 mt-auto border-t border-slate-900/8">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-900/8">
               <div className="flex items-center gap-1.5" title="Automatically lock the vault after this idle period">
                 <Clock className="w-3 h-3 text-slate-500" />
                 <span className="text-[10px] text-slate-500">Auto-lock</span>
