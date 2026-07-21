@@ -1,23 +1,32 @@
 // XoraPass Content Script (Manifest V3)
 //
-// The authoritative domain matching / lookalike detection happens in the
-// background worker; this script enforces the page-context guards (frame
-// origin, insecure transport) and gates sensitive fills behind explicit user
-// confirmation.
+// Responsibilities are deliberately narrow: detect login fields, ask the
+// background worker what may be offered here, and render the overlay. All
+// authoritative decisions — domain matching, lookalike detection, and the
+// release of any actual secret — happen in the background worker.
+//
+// This script never holds the full set of passwords. It receives labels and
+// usernames only; the password for a single entry is fetched on demand when
+// the user picks it, and the background re-checks the tab's real domain before
+// handing it over.
 import browser from 'webextension-polyfill';
+import { looksLikeUsername } from './fieldHeuristics';
+import {
+  attachIcon,
+  hasIcon,
+  openDropdown,
+  closeDropdown,
+  scheduleReposition,
+  showConfirmDialog,
+  clearAll,
+  type OverlayCredential,
+} from './overlay';
 
-interface MatchingCredential {
-  id: string;
-  label: string;
-  username: string;
-  value: string;
-  category: string;
-}
-
-let activeCredentials: MatchingCredential[] = [];
+let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string } | null = null;
-let scannedForms: Set<HTMLInputElement> = new Set();
-let overlayElements: HTMLElement[] = [];
+
+/** Password field -> its paired username field (null when none was found). */
+const fieldPairs = new WeakMap<HTMLInputElement, HTMLInputElement | null>();
 
 // Categories whose values are sensitive enough to always require an explicit
 // confirmation before being written into a page.
@@ -77,8 +86,8 @@ function isInsecureContext(): boolean {
 // Credential loading
 // ---------------------------------------------------------------------------
 
-// Request matching credentials for the current tab domain.
-function loadCredentials() {
+// Request the credential list (labels/usernames only) for the current domain.
+function loadCredentials(): void {
   const hostname = window.location.hostname;
   browser.runtime
     .sendMessage({ type: 'GET_MATCHING_CREDENTIALS', payload: { hostname } })
@@ -88,17 +97,17 @@ function loadCredentials() {
       // Respect the per-site disable list.
       if (response.disabled) {
         activeCredentials = [];
-        removeAllOverlays();
+        clearAll();
         return;
       }
 
       lookalikeWarning = response.lookalike || null;
+      activeCredentials = response.credentials || [];
 
-      if (response.credentials) {
-        activeCredentials = response.credentials;
-        if (activeCredentials.length > 0) {
-          scanForLoginFields();
-        }
+      if (activeCredentials.length > 0) {
+        scanForLoginFields();
+      } else {
+        clearAll();
       }
     })
     .catch(() => {
@@ -106,36 +115,44 @@ function loadCredentials() {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Field detection
+// ---------------------------------------------------------------------------
+
 // An input is fillable if it's visible and user-editable.
 function isFillable(el: HTMLInputElement): boolean {
   if (!el || el.type === 'hidden' || el.disabled || el.readOnly) return false;
   return el.offsetParent !== null || el.getClientRects().length > 0;
 }
 
-// Injects autofill overlays into discovered input fields.
-function scanForLoginFields() {
+/**
+ * Finds password fields and attaches an overlay icon to each, plus to its
+ * paired username field. Safe to call repeatedly — `hasIcon` makes it
+ * idempotent, so the MutationObserver can call it freely.
+ */
+function scanForLoginFields(): void {
   if (activeCredentials.length === 0) return;
 
   const passwordInputs = Array.from(
     document.querySelectorAll('input[type="password"]')
   ) as HTMLInputElement[];
 
-  passwordInputs.forEach((passInput) => {
-    if (scannedForms.has(passInput)) return;
-    if (!isFillable(passInput)) return;
+  for (const passInput of passwordInputs) {
+    if (!isFillable(passInput)) continue;
+    if (hasIcon(passInput)) continue;
 
-    // Locate the username/email field (may be null on unusual layouts).
     const usernameInput = findUsernameField(passInput);
+    fieldPairs.set(passInput, usernameInput);
 
-    scannedForms.add(passInput);
-    if (usernameInput) scannedForms.add(usernameInput);
-
-    // Always offer autofill on the password field; add the username field too
-    // when found. This keeps autofill working on pages that don't wrap inputs in
-    // a <form> or place username/password in separate containers.
-    injectAutofillIcon(passInput, usernameInput, passInput);
-    if (usernameInput) injectAutofillIcon(usernameInput, usernameInput, passInput);
-  });
+    // Offer autofill on the password field, and on the username field when one
+    // was found. This keeps autofill working on pages that don't wrap inputs in
+    // a <form> or that split username/password across containers.
+    attachIcon(passInput, () => activate(passInput));
+    if (usernameInput && !hasIcon(usernameInput)) {
+      fieldPairs.set(usernameInput, usernameInput);
+      attachIcon(usernameInput, () => activate(passInput));
+    }
+  }
 }
 
 // Attempts to locate the username/email field preceding a password input.
@@ -150,186 +167,62 @@ function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null
   // Scan backwards from the password field for the nearest username-like input.
   for (let i = passIdx - 1; i >= 0; i--) {
     const el = inputs[i];
-    const type = (el.type || '').toLowerCase();
-    const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
-    const hints = ((el.name || '') + ' ' + (el.id || '')).toLowerCase();
-    const looksUsername =
-      type === 'email' || type === 'text' || type === 'tel' ||
-      ac.includes('username') || ac.includes('email') ||
-      /user|email|login|phone/.test(hints);
-    if (looksUsername && type !== 'password' && isFillable(el)) {
-      return el;
-    }
+    if (!isFillable(el)) continue;
+    const matches = looksLikeUsername({
+      type: el.type,
+      autocomplete: el.getAttribute('autocomplete'),
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label'),
+    });
+    if (matches) return el;
   }
   return null;
 }
 
-// Injects the XoraPass icon overlay into a given input field. `usernameEl` may
-// be null when the page has no locatable username field (password-only fill).
-function injectAutofillIcon(
-  iconHost: HTMLInputElement,
-  usernameEl: HTMLInputElement | null,
-  passEl: HTMLInputElement
-) {
-  const wrapper = document.createElement('div');
-  wrapper.style.position = 'relative';
-  wrapper.style.display = 'inline-block';
-  wrapper.style.width = '100%';
+// ---------------------------------------------------------------------------
+// Fill flow
+// ---------------------------------------------------------------------------
 
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'xorapass-autofill-btn';
-  button.setAttribute('aria-label', 'XoraPass Autofill');
-  button.innerHTML = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-    </svg>
-  `;
-
-  Object.assign(button.style, {
-    position: 'absolute',
-    right: '8px',
-    top: '50%',
-    transform: 'translateY(-50%)',
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    zIndex: '99999',
-    padding: '4px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: '4px',
-    transition: 'background-color 0.2s',
+// Opens the credential menu anchored to whichever field the user clicked.
+function activate(passInput: HTMLInputElement): void {
+  openDropdown(passInput, {
+    credentials: activeCredentials,
+    warning: lookalikeWarning
+      ? `This site resembles "${lookalikeWarning.target}". Verify the address before filling.`
+      : null,
+    onPick: (id) => void handlePick(id, passInput),
   });
-
-  button.addEventListener('mouseover', () => {
-    button.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
-  });
-  button.addEventListener('mouseout', () => {
-    button.style.backgroundColor = 'transparent';
-  });
-
-  iconHost.parentNode?.insertBefore(wrapper, iconHost);
-  wrapper.appendChild(iconHost);
-  wrapper.appendChild(button);
-
-  button.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openAutofillDropdown(button, usernameEl, passEl);
-  });
-
-  overlayElements.push(wrapper);
 }
 
-// Renders the auto-fill credential selection menu.
-function openAutofillDropdown(
-  anchor: HTMLElement,
-  usernameEl: HTMLInputElement | null,
-  passwordEl: HTMLInputElement
-) {
-  closeAllDropdowns();
+async function handlePick(id: string, passInput: HTMLInputElement): Promise<void> {
+  const cred = activeCredentials.find((c) => c.id === id);
+  if (!cred) return;
 
-  const dropdown = document.createElement('div');
-  dropdown.className = 'xorapass-dropdown';
+  const confirmed = await confirmFillIfNeeded(cred);
+  if (!confirmed) return;
 
-  Object.assign(dropdown.style, {
-    position: 'absolute',
-    top: `${anchor.offsetTop + anchor.offsetHeight + 6}px`,
-    right: '0',
-    width: '240px',
-    backgroundColor: '#0f172a',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '10px',
-    boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(45, 212, 191, 0.15)',
-    zIndex: '100000',
-    overflow: 'hidden',
-    fontFamily: 'Inter, system-ui, sans-serif',
-  });
+  // Fetch the secret only now, for this one entry.
+  const res = (await browser.runtime
+    .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id } })
+    .catch(() => null)) as { username?: string; value?: string; error?: string } | null;
 
-  const header = document.createElement('div');
-  header.innerText = 'XoraPass Autofill';
-  Object.assign(header.style, {
-    padding: '8px 12px',
-    fontSize: '10px',
-    fontWeight: 'bold',
-    color: '#2dd4bf',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
-    backgroundColor: '#0a1412',
-  });
-  dropdown.appendChild(header);
-
-  // Surface a lookalike-domain warning banner at the top of the menu.
-  if (lookalikeWarning) {
-    const banner = document.createElement('div');
-    banner.innerText = `⚠ This site resembles "${lookalikeWarning.target}". Verify the address before filling.`;
-    Object.assign(banner.style, {
-      padding: '8px 12px',
-      fontSize: '10px',
-      lineHeight: '1.4',
-      color: '#fca5a5',
-      backgroundColor: 'rgba(220, 38, 38, 0.12)',
-      borderBottom: '1px solid rgba(220, 38, 38, 0.25)',
-    });
-    dropdown.appendChild(banner);
+  if (!res || res.error || typeof res.value !== 'string') {
+    console.warn('[XoraPass] Fill refused:', res?.error || 'no_response');
+    return;
   }
 
-  activeCredentials.forEach((cred) => {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'xorapass-dropdown-item';
-    item.innerHTML = `
-      <div style="font-weight: 600; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(cred.label)}</div>
-      <div style="font-size: 10px; color: #64748b; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; margin-top: 2px;">${escapeHtml(cred.username)}</div>
-    `;
-
-    Object.assign(item.style, {
-      width: '100%',
-      padding: '10px 12px',
-      background: 'none',
-      border: 'none',
-      cursor: 'pointer',
-      fontSize: '12px',
-      color: '#e2e8f0',
-      borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
-      transition: 'background-color 0.15s, color 0.15s',
-      display: 'block',
-    });
-
-    item.addEventListener('mouseover', () => {
-      item.style.backgroundColor = 'rgba(45, 212, 191, 0.08)';
-      item.style.color = '#2dd4bf';
-    });
-    item.addEventListener('mouseout', () => {
-      item.style.backgroundColor = 'transparent';
-      item.style.color = '#e2e8f0';
-    });
-
-    item.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      closeAllDropdowns();
-
-      const confirmed = await confirmFillIfNeeded(cred);
-      if (!confirmed) return;
-
-      if (usernameEl && cred.username) autofillField(usernameEl, cred.username);
-      autofillField(passwordEl, cred.value);
-    });
-
-    dropdown.appendChild(item);
-  });
-
-  anchor.parentElement?.appendChild(dropdown);
-  document.addEventListener('click', closeDropdownsOnOutsideClick);
+  const usernameEl = fieldPairs.get(passInput) ?? null;
+  if (usernameEl && usernameEl !== passInput && res.username) {
+    autofillField(usernameEl, res.username);
+  }
+  autofillField(passInput, res.value);
 }
 
 // Decides whether a fill needs explicit confirmation, and if so, asks the user.
 // Returns true when the fill may proceed.
-async function confirmFillIfNeeded(cred: MatchingCredential): Promise<boolean> {
+async function confirmFillIfNeeded(cred: OverlayCredential): Promise<boolean> {
   const warnings: string[] = [];
 
   if (SENSITIVE_CATEGORIES.has(cred.category)) {
@@ -358,166 +251,26 @@ async function confirmFillIfNeeded(cred: MatchingCredential): Promise<boolean> {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Confirmation modal
-// ---------------------------------------------------------------------------
+/**
+ * Writes a value into a page input. Uses the native value setter so that
+ * frameworks which track the property (React, Vue) observe the change — a
+ * plain `el.value = x` is silently reverted by React's controlled inputs.
+ */
+function autofillField(el: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value'
+  )?.set;
 
-function showConfirmDialog(opts: {
-  title: string;
-  body: string[];
-  confirmLabel: string;
-  cancelLabel: string;
-}): Promise<boolean> {
-  return new Promise((resolve) => {
-    const backdrop = document.createElement('div');
-    backdrop.className = 'xorapass-confirm-backdrop';
-    Object.assign(backdrop.style, {
-      position: 'fixed',
-      inset: '0',
-      backgroundColor: 'rgba(2, 6, 23, 0.6)',
-      backdropFilter: 'blur(2px)',
-      zIndex: '2147483646',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontFamily: 'Inter, system-ui, sans-serif',
-    });
+  if (setter) {
+    setter.call(el, value);
+  } else {
+    el.value = value;
+  }
 
-    const modal = document.createElement('div');
-    Object.assign(modal.style, {
-      width: '340px',
-      maxWidth: '90vw',
-      backgroundColor: '#0f172a',
-      border: '1px solid rgba(255, 255, 255, 0.08)',
-      borderRadius: '12px',
-      boxShadow: '0 20px 40px -10px rgba(0, 0, 0, 0.7)',
-      overflow: 'hidden',
-      color: '#e2e8f0',
-    });
-
-    const title = document.createElement('div');
-    title.innerText = opts.title;
-    Object.assign(title.style, {
-      padding: '14px 16px',
-      fontSize: '13px',
-      fontWeight: '700',
-      color: '#fca5a5',
-      borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
-      backgroundColor: '#0a1412',
-    });
-    modal.appendChild(title);
-
-    const body = document.createElement('div');
-    Object.assign(body.style, { padding: '14px 16px', fontSize: '12px', lineHeight: '1.5' });
-    opts.body.forEach((line) => {
-      const p = document.createElement('p');
-      p.innerText = '• ' + line;
-      p.style.margin = '0 0 8px 0';
-      body.appendChild(p);
-    });
-    modal.appendChild(body);
-
-    const actions = document.createElement('div');
-    Object.assign(actions.style, {
-      display: 'flex',
-      gap: '8px',
-      padding: '0 16px 16px 16px',
-      justifyContent: 'flex-end',
-    });
-
-    const cleanup = (result: boolean) => {
-      backdrop.remove();
-      document.removeEventListener('keydown', onKey);
-      resolve(result);
-    };
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.innerText = opts.cancelLabel;
-    Object.assign(cancelBtn.style, {
-      padding: '8px 14px',
-      fontSize: '12px',
-      fontWeight: '600',
-      color: '#e2e8f0',
-      background: 'rgba(255,255,255,0.06)',
-      border: '1px solid rgba(255,255,255,0.1)',
-      borderRadius: '8px',
-      cursor: 'pointer',
-    });
-    cancelBtn.addEventListener('click', () => cleanup(false));
-
-    const confirmBtn = document.createElement('button');
-    confirmBtn.type = 'button';
-    confirmBtn.innerText = opts.confirmLabel;
-    Object.assign(confirmBtn.style, {
-      padding: '8px 14px',
-      fontSize: '12px',
-      fontWeight: '700',
-      color: '#04231d',
-      background: 'linear-gradient(135deg, #2dd4bf, #34d399)',
-      border: 'none',
-      borderRadius: '8px',
-      cursor: 'pointer',
-    });
-    confirmBtn.addEventListener('click', () => cleanup(true));
-
-    actions.appendChild(cancelBtn);
-    actions.appendChild(confirmBtn);
-    modal.appendChild(actions);
-
-    backdrop.appendChild(modal);
-    backdrop.addEventListener('click', (e) => {
-      if (e.target === backdrop) cleanup(false);
-    });
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') cleanup(false);
-    };
-    document.addEventListener('keydown', onKey);
-
-    document.body.appendChild(backdrop);
-    confirmBtn.focus();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function autofillField(el: HTMLInputElement, value: string) {
-  el.value = value;
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
   el.dispatchEvent(new Event('blur', { bubbles: true }));
-}
-
-function escapeHtml(s: string): string {
-  return (s || '').replace(/[&<>"']/g, (c) => {
-    switch (c) {
-      case '&': return '&amp;';
-      case '<': return '&lt;';
-      case '>': return '&gt;';
-      case '"': return '&quot;';
-      default: return '&#39;';
-    }
-  });
-}
-
-function removeAllOverlays() {
-  overlayElements = [];
-  scannedForms.clear();
-}
-
-function closeAllDropdowns() {
-  document.querySelectorAll('.xorapass-dropdown').forEach((d) => d.remove());
-  document.removeEventListener('click', closeDropdownsOnOutsideClick);
-}
-
-function closeDropdownsOnOutsideClick(e: MouseEvent) {
-  const target = e.target as HTMLElement;
-  if (!target.closest('.xorapass-dropdown') && !target.closest('.xorapass-autofill-btn')) {
-    closeAllDropdowns();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -528,8 +281,48 @@ const frame = assessFrame();
 if (frame.isTop || !frame.isCrossOriginFrame) {
   // Only run in the top frame or in a same-origin (first-party) sub-frame.
   loadCredentials();
-  setInterval(scanForLoginFields, 2500);
+
+  // React to DOM changes instead of polling. SPAs swap login forms in without a
+  // navigation, so a mutation-driven rescan is both faster to appear and far
+  // cheaper than the previous 2.5s interval running on every open tab.
+  const observer = new MutationObserver((records) => {
+    let structural = false;
+    for (const r of records) {
+      if (r.type === 'childList' && (r.addedNodes.length || r.removedNodes.length)) {
+        structural = true;
+        break;
+      }
+      if (r.type === 'attributes') {
+        structural = true;
+        break;
+      }
+    }
+    if (!structural) return;
+    scanForLoginFields();
+    scheduleReposition();
+  });
+
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['type', 'style', 'class', 'hidden', 'disabled', 'readonly'],
+  });
+
+  // Keep overlay icons glued to their inputs as the page moves underneath them.
+  window.addEventListener('scroll', scheduleReposition, { passive: true, capture: true });
+  window.addEventListener('resize', scheduleReposition, { passive: true });
   window.addEventListener('focus', loadCredentials);
+
+  // A tab returning from the background may have been locked in the meantime.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) loadCredentials();
+  });
+
+  // Never leave a menu floating over a page the user navigated away from.
+  window.addEventListener('pagehide', () => {
+    closeDropdown();
+  });
 } else {
   // Third-party iframe: autofill deliberately blocked.
   console.debug('[XoraPass] Autofill disabled inside third-party iframe.');
