@@ -54,6 +54,30 @@
     border: 1px solid var(--border-field);
   }
 
+  .auth-card {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.72));
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    box-shadow:
+      0 24px 48px -20px rgba(13, 148, 136, 0.18),
+      0 2px 8px rgba(15, 23, 42, 0.04);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  .auth-input {
+    background: #ffffff;
+    border: 1px solid rgba(15, 23, 42, 0.09);
+    transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  }
+  .auth-input:hover:not(:focus) {
+    border-color: rgba(15, 23, 42, 0.16);
+  }
+  .auth-input:focus {
+    outline: none;
+    border-color: var(--color-brand-cyan);
+    box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
+  }
+
   .glow-cyan {
     box-shadow: 0 8px 24px rgba(13, 148, 136, 0.18);
   }

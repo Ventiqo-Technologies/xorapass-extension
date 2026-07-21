@@ -10,6 +10,9 @@ import {
   RefreshCw, 
   LogOut, 
   AlertCircle,
+  Mail,
+  Lock,
+  ArrowRight,
   Eye,
   EyeOff,
   ShieldOff,
@@ -26,7 +29,7 @@ import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
 import { LogoIcon, LogoHorizontal } from './Logo';
 import browser from 'webextension-polyfill';
 
-// Category display metadata for the health chart.
+
 const CATEGORY_META: Record<string, { label: string; color: string }> = {
   login: { label: 'Logins', color: '#0891b2' },
   other: { label: 'API / Other', color: '#4f46e5' },
@@ -47,21 +50,13 @@ const AUTO_LOCK_OPTIONS = [
   { label: 'Never', value: 0 },
 ];
 
-// API origin. Set VITE_API_BASE_URL (see .env.local) to point a development
-// build at a local core-api; production builds fall back to the hosted app.
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://app.xorapass.com';
 
-// Web vault origin, kept separate from API_BASE_URL because in local dev the
-// Go API and the Next.js app run on different ports.
 const WEB_APP_URL = import.meta.env.VITE_WEB_APP_URL || 'https://app.xorapass.com';
 
-// Sign-up deliberately opens the web vault rather than running in the popup:
-// registration there generates a recovery key and makes the user save it before
-// the account is created. The register endpoint treats that key as optional, so
-// a popup-native signup would quietly create an account with no recovery path —
-// forgetting the master password would then mean losing the vault permanently.
-// `intent=signup` matches the marketing site's own redirect.
 const SIGNUP_URL = `${WEB_APP_URL}/auth?intent=signup`;
+
+const RECOVERY_URL = `${WEB_APP_URL}/auth?intent=login`;
 
 interface DecryptedItem {
   id: string;
@@ -82,7 +77,7 @@ export const PopupApp: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Unlocked Session States
+
   const [vaultItems, setVaultItems] = useState<DecryptedItem[]>([]);
   const [currentHostname, setCurrentHostname] = useState('');
   const [currentProtocol, setCurrentProtocol] = useState('');
@@ -92,19 +87,13 @@ export const PopupApp: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
 
-  // MFA States
+
   const [step, setStep] = useState<'login' | 'mfa'>('login');
   const [mfaCode, setMfaCode] = useState('');
   const [mfaToken, setMfaToken] = useState('');
   const [tempEncKey, setTempEncKey] = useState<Uint8Array | null>(null);
   
-  // Check unlock status on open.
-  //
-  // MV3 service workers are ephemeral: if the worker is mid-cold-start when the
-  // popup opens, the first message can resolve with no response. Treat a missing
-  // response as "unknown" and retry a couple of times rather than falling back
-  // to the locked screen — otherwise the popup wrongly appears logged out even
-  // though the vault is still unlocked in storage.session.
+
   useEffect(() => {
     const checkStatus = (attempt = 0) => {
       browser.runtime
@@ -127,7 +116,7 @@ export const PopupApp: React.FC = () => {
     };
     checkStatus();
 
-    // Detect active tab domain
+
     browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
       const activeTab = tabs[0];
       if (activeTab && activeTab.url) {
@@ -135,7 +124,6 @@ export const PopupApp: React.FC = () => {
           const url = new URL(activeTab.url);
           setCurrentHostname(url.hostname);
           setCurrentProtocol(url.protocol);
-          // Load the per-site autofill enable/disable state.
           browser.runtime
             .sendMessage({ type: 'GET_SITE_SETTINGS', payload: { hostname: url.hostname } })
             .then((res: any) => {
@@ -157,10 +145,14 @@ export const PopupApp: React.FC = () => {
       });
   };
 
-  // Opens the web vault's sign-up flow in a new tab and closes the popup, which
-  // would otherwise stay open behind the new tab.
+
   const openSignup = () => {
     browser.tabs.create({ url: SIGNUP_URL });
+    window.close();
+  };
+
+  const openRecovery = () => {
+    browser.tabs.create({ url: RECOVERY_URL });
     window.close();
   };
 
@@ -171,7 +163,6 @@ export const PopupApp: React.FC = () => {
 
   const fetchCachedCredentials = () => {
     browser.runtime.sendMessage({ type: 'GET_MATCHING_CREDENTIALS', payload: { hostname: 'all' } }).then(() => {
-      // Background returns matched elements. Let's just fetch all from volatile storage directly
       browser.storage.session.get(['vaultItems']).then((data) => {
         if (data.vaultItems) {
           setVaultItems(data.vaultItems);
@@ -181,16 +172,12 @@ export const PopupApp: React.FC = () => {
   };
 
   const processVault = async (token: string, encKey: Uint8Array) => {
-    // 4. Fetch encrypted vault entries
     const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
       headers: { Authorization: `Bearer ${token}` }
     });
 
-    // 5. Decrypt vault entries client-side
     const decrypted: DecryptedItem[] = vaultRes.data.map((entry: any) => {
       try {
-        // The API stores the nonce alongside the payload rather than inside it,
-        // so fold it in to match the EncryptedPayload shape decryptPayload expects.
         const plaintext = decryptPayload(
           { ...entry.encrypted_payload, nonce: entry.nonce },
           encKey
@@ -212,7 +199,7 @@ export const PopupApp: React.FC = () => {
       }
     });
 
-    // 6. Share decrypted cache with Background worker in-memory session storage
+
     browser.runtime.sendMessage({
       type: 'UNLOCK_VAULT',
       payload: { decryptedItems: decrypted, email }
@@ -236,18 +223,18 @@ export const PopupApp: React.FC = () => {
     setError(null);
 
     try {
-      // 1. Discover user (get salt)
+
       const discoverRes = await axios.post(`${API_BASE_URL}/api/auth/discover`, { email });
       if (!discoverRes.data.exists) {
         throw new Error("Invalid credentials or account does not exist.");
       }
       const salt = discoverRes.data.master_salt;
 
-      // 2. Client-side Key Derivation (Argon2id WASM)
+
       const masterKey = await deriveMasterKey(password, salt);
       const { encKey, clientAuthHash } = await splitMasterKey(masterKey);
 
-      // 3. Login to server to get JWT
+
       const loginRes = await axios.post(`${API_BASE_URL}/api/auth/login`, {
         email,
         client_auth_hash: clientAuthHash
@@ -308,13 +295,12 @@ export const PopupApp: React.FC = () => {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  // Filter vault items to match current tab's hostname using the shared,
-  // safe matcher (exact / subdomain / same registrable domain).
+
   const matchingItems = siteDisabled
     ? []
     : vaultItems.filter(item => !!item.url && !!currentHostname && isDomainMatch(currentHostname, item.url));
 
-  // Filter all items by search query
+
   const searchedItems = vaultItems.filter(item => {
     const term = searchTerm.toLowerCase();
     return item.label.toLowerCase().includes(term) ||
@@ -322,7 +308,7 @@ export const PopupApp: React.FC = () => {
       (item.url && item.url.toLowerCase().includes(term));
   });
 
-  // ── Current-site trust assessment (mirrors the autofill engine's checks) ──
+
   const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(currentHostname);
   const isInsecure = currentProtocol === 'http:' && !isLocalHost;
   const knownHosts = vaultItems.map((i) => (i.url ? extractHostname(i.url) : '')).filter(Boolean);
@@ -331,7 +317,7 @@ export const PopupApp: React.FC = () => {
       ? findLookalikeTarget(currentHostname, knownHosts)
       : null;
 
-  // ── Vault health (for the Health dashboard tab) ──
+
   const health = computeVaultHealth(vaultItems.map((i) => ({ category: i.category, value: i.value })));
   const tier = scoreTier(health.score);
   const scoreColor = tier.tone === 'good' ? '#0d9488' : tier.tone === 'ok' ? '#b45309' : '#e11d48';
@@ -342,10 +328,9 @@ export const PopupApp: React.FC = () => {
     <div className="w-[380px] h-[550px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans border border-slate-900/8">
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
-      {/* Header */}
+
       <header className="glass-card border-x-0 border-t-0 border-b border-slate-900/8 px-4 py-3 flex items-center justify-between z-10 flex-shrink-0">
-        {/* Brand lockup shared with the web app. The horizontal asset already
-            contains the wordmark, so no separate <h1> text is needed. */}
+
         <LogoHorizontal className="h-6 w-auto" />
 
         {unlocked && (
@@ -359,89 +344,103 @@ export const PopupApp: React.FC = () => {
         )}
       </header>
 
-      {/* Main Panel Content */}
+
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 flex flex-col z-10">
         {!unlocked && step === 'login' ? (
-          /* LOCKED VIEW */
-          <form onSubmit={handleLogin} className="flex-1 flex flex-col justify-center space-y-4 max-w-[320px] mx-auto w-full">
-            <div className="text-center space-y-1 pb-2">
-              <LogoIcon className="w-12 h-12 mx-auto" />
-              <h2 className="text-sm font-bold tracking-wide text-slate-800 pt-1">Unlock your vault</h2>
-            </div>
-
-            {error && (
-              <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-lg text-xs flex items-start gap-1.5 leading-relaxed font-sans">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <span>{error}</span>
+          <form onSubmit={handleLogin} className="flex-1 flex flex-col justify-center max-w-[300px] mx-auto w-full">
+            <div className="auth-card rounded-2xl p-5 space-y-3.5">
+              <div className="text-center space-y-2">
+                <div className="relative w-14 h-14 mx-auto flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-brand-cyan/25 to-brand-teal/10 blur-lg" />
+                  <LogoIcon className="w-11 h-11 relative" />
+                </div>
+                <div>
+                  <h2 className="text-[15px] font-extrabold text-slate-900 leading-none">Welcome back</h2>
+                  <p className="text-[10px] text-slate-500 mt-1">Sign in to unlock your vault</p>
+                </div>
               </div>
-            )}
 
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Email Address</label>
-              <input
-                required
+              {error && (
+                <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-lg text-xs flex items-start gap-1.5 leading-relaxed">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <div className="space-y-2.5">
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                  <input
+                    required
+                    disabled={loading}
+                    type="email"
+                    autoComplete="username"
+                    placeholder="Email address"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="auth-input w-full pl-9 pr-3 py-2.5 rounded-xl text-xs text-slate-900 placeholder-slate-400"
+                  />
+                </div>
+
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                  <input
+                    required
+                    disabled={loading}
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="current-password"
+                    placeholder="Master password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="auth-input w-full pl-9 pr-9 py-2.5 rounded-xl text-xs text-slate-900 placeholder-slate-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                  >
+                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
                 disabled={loading}
-                type="email"
-                placeholder="name@domain.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-3 py-2 bg-white border border-slate-900/10 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition font-mono"
-              />
-            </div>
+                className="btn-primary group w-full py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Unlocking…</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Unlock vault</span>
+                    <ArrowRight className="w-3.5 h-3.5 stroke-[2.5] transition-transform group-hover:translate-x-0.5" />
+                  </>
+                )}
+              </button>
 
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Master Password</label>
-              <div className="relative">
-                <input
-                  required
-                  disabled={loading}
-                  type={showPassword ? "text" : "password"}
-                  placeholder="••••••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-3 pr-9 py-2 bg-white border border-slate-900/10 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition font-mono"
-                />
+              <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500 pt-0.5 border-t border-slate-900/6 mt-1 pt-2.5">
                 <button
                   type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-700 transition cursor-pointer"
+                  onClick={openRecovery}
+                  className="hover:text-slate-700 hover:underline cursor-pointer"
                 >
-                  {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  Forgot password?
+                </button>
+                <button
+                  type="button"
+                  onClick={openSignup}
+                  className="text-brand-cyan font-semibold hover:underline cursor-pointer"
+                >
+                  Create account
                 </button>
               </div>
             </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-2.5 bg-gradient-to-r from-brand-cyan to-brand-teal text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 hover:shadow-[0_6px_18px_rgba(13,148,136,0.3)] transition cursor-pointer disabled:opacity-50"
-            >
-              {loading ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Unlocking…</span>
-                </>
-              ) : (
-                <>
-                  <Key className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span>Unlock</span>
-                </>
-              )}
-            </button>
-
-            <p className="text-[10px] text-slate-500 text-center pt-1">
-              No account yet?{' '}
-              <button
-                type="button"
-                onClick={openSignup}
-                className="text-brand-cyan font-semibold hover:underline cursor-pointer"
-              >
-                Create one
-              </button>
-            </p>
           </form>
         ) : !unlocked && step === 'mfa' ? (
-          /* MFA VIEW */
           <form onSubmit={handleMfaSubmit} className="flex-1 flex flex-col justify-center space-y-4 max-w-[320px] mx-auto w-full">
             <div className="text-center space-y-1 pb-2">
               <Shield className="w-8 h-8 text-brand-emerald mx-auto animate-pulse" />
@@ -486,10 +485,9 @@ export const PopupApp: React.FC = () => {
             </div>
           </form>
         ) : (
-          /* UNLOCKED VIEW */
           <div className="flex-1 flex flex-col space-y-4">
             
-            {/* TAB SWITCHER */}
+
             <div className="flex items-center gap-1 p-1 bg-white/70 border border-slate-900/8 rounded-lg flex-shrink-0">
               <button
                 onClick={() => setTab('vault')}
@@ -507,10 +505,10 @@ export const PopupApp: React.FC = () => {
 
             {tab === 'vault' && (
             <>
-            {/* 1. MATCHING CREDENTIALS FOR ACTIVE TAB */}
+
             {currentHostname && (
               <div className="space-y-2">
-                {/* SITE SECURITY PANEL */}
+
                 <div className="p-3 bg-white/70 border border-slate-900/8 rounded-xl space-y-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 text-slate-700 text-xs font-semibold min-w-0">
@@ -531,9 +529,7 @@ export const PopupApp: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* Only surface a status when something is actually wrong. A
-                      "Secure HTTPS" badge on every normal site is noise, and the
-                      match count just repeats the list rendered below it. */}
+
                   {isInsecure && (
                     <div className="flex items-start gap-1.5 text-[10px] text-brand-amber/90 leading-snug">
                       <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
@@ -601,10 +597,7 @@ export const PopupApp: React.FC = () => {
               </div>
             )}
 
-            {/* 2. SEARCH ALL VAULT ENTRIES
-                The result list renders only while a query is active. Showing
-                every item by default duplicated the site matches above it and
-                roughly doubled the height of the default view. */}
+
             <div className="flex flex-col space-y-2">
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
@@ -667,9 +660,7 @@ export const PopupApp: React.FC = () => {
               )}
             </div>
 
-            {/* AUTO-LOCK BAR. The item count moved into the search placeholder,
-                so this row carries the one control it needs. `mt-auto` pins it
-                to the bottom now that the list above no longer fills the panel. */}
+
             <div className="flex items-center justify-end gap-2 pt-2 mt-auto border-t border-slate-900/8">
               <div className="flex items-center gap-1.5" title="Automatically lock the vault after this idle period">
                 <Clock className="w-3 h-3 text-slate-500" />
@@ -688,10 +679,10 @@ export const PopupApp: React.FC = () => {
             </>
             )}
 
-            {/* HEALTH DASHBOARD TAB */}
+
             {tab === 'health' && (
               <div className="space-y-4">
-                {/* Security score ring */}
+
                 <div className="p-4 bg-white/70 border border-slate-900/8 rounded-xl flex items-center gap-4">
                   <div className="relative flex-shrink-0">
                     <svg width="84" height="84" viewBox="0 0 84 84">
@@ -720,7 +711,7 @@ export const PopupApp: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Stat chips */}
+
                 <div className="grid grid-cols-3 gap-2">
                   <div className="p-2.5 bg-white/70 border border-slate-900/8 rounded-lg text-center">
                     <div className="text-lg font-extrabold text-brand-emerald leading-none">{health.strong}</div>
@@ -736,7 +727,7 @@ export const PopupApp: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Strength distribution */}
+
                 {health.totalLogins > 0 && (
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
@@ -750,7 +741,7 @@ export const PopupApp: React.FC = () => {
                   </div>
                 )}
 
-                {/* Category breakdown */}
+
                 <div className="space-y-2">
                   <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
                     <LayoutGrid className="w-3 h-3" /> By category
