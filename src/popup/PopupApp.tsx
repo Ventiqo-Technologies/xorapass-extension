@@ -29,9 +29,11 @@ import {
   Activity,
   TrendingUp,
   CheckCircle2,
-  X
+  X,
+  Bot,
+  Ban
 } from 'lucide-react';
-import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
+import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes, bytesToBase64 } from '../utils/crypto';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
 import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
 import {
@@ -90,6 +92,48 @@ const AUTO_LOCK_OPTIONS = [
   { label: '1 hour', value: 60 },
   { label: 'Never', value: 0 },
 ];
+
+interface AiRequest {
+  id: string;
+  ai_tool_name: string;
+  action: string;
+  domain: string;
+  environment: string;
+  risk_level: string;
+  reason: string;
+  requested_scopes: string[];
+  credential_label: string;
+  status: string;
+}
+
+interface AiSession {
+  id: string;
+  ai_tool_name: string;
+  action: string;
+  domain: string;
+  granted_scopes: string[];
+  max_uses: number;
+  use_count: number;
+  expires_at: string;
+  status: string;
+}
+
+const RISK_COLORS: Record<string, string> = {
+  low: '#2dd4bf',
+  medium: '#f59e0b',
+  high: '#f97316',
+  critical: '#f43f5e',
+};
+
+function fmtExpiresIn(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return 'expired';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
 
 interface DecryptedItem {
   id: string;
@@ -150,7 +194,7 @@ export const PopupApp: React.FC = () => {
   const [clipboardClearSeconds, setClipboardClearSeconds] = useState(
     DEFAULT_CLIPBOARD_CLEAR_SECONDS
   );
-  const [tab, setTab] = useState<'vault' | 'generate' | 'health' | 'settings'>('vault');
+  const [tab, setTab] = useState<'vault' | 'generate' | 'health' | 'settings' | 'ai'>('vault');
   const [selectedItem, setSelectedItem] = useState<DecryptedItem | null>(null);
   const [showDetailPassword, setShowDetailPassword] = useState(false);
   const [genOptions, setGenOptions] = useState<GeneratorOptions>(DEFAULT_OPTIONS);
@@ -161,6 +205,30 @@ export const PopupApp: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
+
+  // AI Access: pending requests + active scoped sessions for this account.
+  // Every call here authenticates as the human's own login -- an AI bridge
+  // token is never accepted on these endpoints, by server-side design.
+  const [aiRequests, setAiRequests] = useState<AiRequest[]>([]);
+  const [aiSessions, setAiSessions] = useState<AiSession[]>([]);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiBusyId, setAiBusyId] = useState<string | null>(null);
+
+  // Personal secret-paste-guard mode (stored locally; the background reads it as
+  // the effective policy until a business/admin policy exists on the backend).
+  const [pasteMode, setPasteMode] = useState<'off' | 'warn' | 'block'>('warn');
+  useEffect(() => {
+    browser.storage.local.get(['pastePolicy']).then((res: any) => {
+      const m = res?.pastePolicy?.mode;
+      if (m === 'off' || m === 'warn' || m === 'block') setPasteMode(m);
+    });
+  }, []);
+  const changePasteMode = (mode: 'off' | 'warn' | 'block') => {
+    setPasteMode(mode);
+    browser.storage.local.set({
+      pastePolicy: { mode, allowDismiss: mode !== 'block', scope: 'ai_sites', source: 'user' },
+    });
+  };
 
   const [step, setStep] = useState<'login' | 'mfa'>('login');
   const [mfaCode, setMfaCode] = useState('');
@@ -271,6 +339,44 @@ export const PopupApp: React.FC = () => {
     browser.runtime.sendMessage({ type: 'SET_CLIPBOARD_CLEAR', payload: { seconds } });
   };
 
+  const fetchAiData = () => {
+    setAiError(null);
+    Promise.all([
+      browser.runtime.sendMessage({ type: 'AI_LIST_REQUESTS' }),
+      browser.runtime.sendMessage({ type: 'AI_LIST_SESSIONS' }),
+    ]).then(([reqRes, sessRes]: any[]) => {
+      setAiRequests(((reqRes?.requests || []) as AiRequest[]).filter((r) => r.status === 'pending'));
+      setAiSessions(((sessRes?.sessions || []) as AiSession[]).filter((s) => s.status === 'active'));
+      if (reqRes?.error || sessRes?.error) setAiError(reqRes?.error || sessRes?.error);
+    });
+  };
+
+  useEffect(() => {
+    if (unlocked && tab === 'ai') fetchAiData();
+  }, [unlocked, tab]);
+
+  const decideAiRequest = (requestId: string, decision: 'approve' | 'deny') => {
+    setAiBusyId(requestId);
+    browser.runtime
+      .sendMessage({ type: 'AI_DECIDE_REQUEST', payload: { requestId, decision } })
+      .then((res: any) => {
+        if (res?.error) setAiError(res.error);
+        fetchAiData();
+      })
+      .finally(() => setAiBusyId(null));
+  };
+
+  const revokeAiSession = (sessionId: string) => {
+    setAiBusyId(sessionId);
+    browser.runtime
+      .sendMessage({ type: 'AI_REVOKE_SESSION', payload: { sessionId } })
+      .then((res: any) => {
+        if (res?.error) setAiError(res.error);
+        fetchAiData();
+      })
+      .finally(() => setAiBusyId(null));
+  };
+
   const fetchCachedCredentials = () => {
     browser.storage.session.get(['vaultItems']).then((data) => {
       if (data.vaultItems) {
@@ -326,6 +432,7 @@ export const PopupApp: React.FC = () => {
         email: accountEmail,
         token,
         encKey: bytesToHex(encKey),
+        jwt: token,
         offline: isOffline,
       }
     });
@@ -830,6 +937,17 @@ export const PopupApp: React.FC = () => {
                 className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${tab === 'settings' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
               >
                 <Settings className="w-3.5 h-3.5" /> Settings
+              </button>
+              <button
+                onClick={() => setTab('ai')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer relative ${tab === 'ai' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-400 hover:text-white'}`}
+              >
+                <Bot className="w-3.5 h-3.5" /> AI
+                {aiRequests.length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 flex items-center justify-center rounded-full bg-brand-ruby text-white text-[9px] font-bold">
+                    {aiRequests.length}
+                  </span>
+                )}
               </button>
             </div>
 
@@ -1379,7 +1497,129 @@ export const PopupApp: React.FC = () => {
                       <span className="text-brand-cyan font-black text-sm uppercase">
                         {email ? email[0] : 'U'}
                       </span>
-                    </div>
+                      {/* AI ACCESS TAB */}
+            {tab === 'ai' && (
+              <div className="space-y-3 flex-1 overflow-y-auto custom-scrollbar">
+                <p className="text-[10px] text-slate-500 leading-snug">
+                  AI tools never see your passwords. Approving here only grants a scoped,
+                  time-limited session — the credential stays encrypted in your vault.
+                </p>
+
+                {/* Secret paste guard */}
+                <div className="p-2.5 bg-slate-900/60 border border-white/8 rounded-xl space-y-2">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    <ShieldAlert className="w-3 h-3" /> Secret paste guard
+                  </div>
+                  <p className="text-[9px] text-slate-500 leading-snug">
+                    Warns before you paste passwords, API keys, or tokens into AI tools.
+                    Detection runs entirely on your device.
+                  </p>
+                  <div className="flex gap-1 p-0.5 bg-slate-950/60 border border-white/5 rounded-lg">
+                    {(['warn', 'block', 'off'] as const).map((m) => (
+                      <button
+                        key={m}
+                        onClick={() => changePasteMode(m)}
+                        className={`flex-1 py-1 rounded-md text-[10px] font-bold capitalize transition cursor-pointer ${
+                          pasteMode === m ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {aiError && (
+                  <div className="p-2 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-lg text-[10px]">
+                    {aiError}
+                  </div>
+                )}
+
+                {/* Pending requests */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                    <ShieldAlert className="w-3 h-3" /> Awaiting your decision
+                  </div>
+                  {aiRequests.length === 0 ? (
+                    <p className="text-[10px] text-slate-600 py-2">No pending requests.</p>
+                  ) : (
+                    aiRequests.map((r) => (
+                      <div key={r.id} className="p-2.5 bg-slate-900/60 border border-white/8 rounded-xl space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <Bot className="w-3.5 h-3.5 text-brand-cyan flex-shrink-0" />
+                            <span className="text-xs font-bold text-white truncate">{r.ai_tool_name}</span>
+                          </div>
+                          <span
+                            className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded"
+                            style={{
+                              color: RISK_COLORS[r.risk_level] || '#94a3b8',
+                              background: `${RISK_COLORS[r.risk_level] || '#94a3b8'}22`,
+                            }}
+                          >
+                            {r.risk_level}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-400">
+                          wants to <b className="text-slate-200">{r.action}</b> on{' '}
+                          <b className="text-slate-200">{r.domain || r.credential_label}</b>
+                        </p>
+                        {r.reason && <p className="text-[9px] text-slate-500 italic truncate">"{r.reason}"</p>}
+                        <div className="flex gap-1.5 pt-0.5">
+                          <button
+                            disabled={aiBusyId === r.id}
+                            onClick={() => decideAiRequest(r.id, 'approve')}
+                            className="flex-1 py-1 bg-brand-emerald/15 text-brand-emerald rounded-md text-[10px] font-bold cursor-pointer disabled:opacity-50"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            disabled={aiBusyId === r.id}
+                            onClick={() => decideAiRequest(r.id, 'deny')}
+                            className="flex-1 py-1 bg-brand-ruby/15 text-brand-ruby rounded-md text-[10px] font-bold cursor-pointer disabled:opacity-50"
+                          >
+                            Deny
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Active sessions */}
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                    <Key className="w-3 h-3" /> Active sessions
+                  </div>
+                  {aiSessions.length === 0 ? (
+                    <p className="text-[10px] text-slate-600 py-2">No active AI sessions.</p>
+                  ) : (
+                    aiSessions.map((s) => (
+                      <div key={s.id} className="p-2.5 bg-brand-emerald/5 border border-brand-emerald/20 rounded-xl space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-white truncate">{s.ai_tool_name}</span>
+                          <span className="text-[9px] text-brand-emerald font-mono flex-shrink-0">
+                            {fmtExpiresIn(s.expires_at)} left
+                          </span>
+                        </div>
+                        <p className="text-[9px] text-slate-500 truncate">
+                          {s.action} · {s.domain} · {s.granted_scopes.join(', ')}
+                        </p>
+                        <button
+                          disabled={aiBusyId === s.id}
+                          onClick={() => revokeAiSession(s.id)}
+                          className="w-full flex items-center justify-center gap-1 py-1 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-md text-[10px] font-bold cursor-pointer disabled:opacity-50"
+                        >
+                          <Ban className="w-3 h-3" /> Revoke
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+
+          </div>
                     <div className="min-w-0 flex-1">
                       <div className="text-xs font-bold text-slate-900 font-mono truncate">{email || 'Not signed in'}</div>
                       <div className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1 mt-0.5">

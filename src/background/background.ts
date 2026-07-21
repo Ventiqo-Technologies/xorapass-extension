@@ -9,6 +9,8 @@ import {
   clearDelayInMinutes,
   normalizeClearSeconds,
 } from '../utils/clipboardPolicy';
+import { coercePolicy, DEFAULT_POLICY, PastePolicy } from '../utils/pasteGuard';
+import { base64ToBytes } from '../utils/crypto';
 
 // Logged on every service-worker (cold) start. If the session were cleared by a
 // mere page refresh you would NOT see this line on refresh — it only prints when
@@ -19,6 +21,13 @@ const DISABLED_SITES_KEY = 'disabledSites';
 const AUTO_LOCK_KEY = 'autoLockMinutes';
 const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
 const DEFAULT_AUTO_LOCK_MINUTES = 15;
+
+// AI Access heartbeat: chrome.alarms cannot fire faster than once a minute in
+// MV3, so this is a backstop only -- the primary triggers for noticing a
+// newly-approved AI session are the content script asking on page load/focus
+// (AI_CHECK_TAB) and tab activation/navigation (see below), both of which are
+// much faster in practice.
+const AI_HEARTBEAT_ALARM = 'xorapass-ai-heartbeat';
 const CLIPBOARD_KEY = 'clipboardClearSeconds';
 const CLIPBOARD_ALARM = 'xorapass-clipboard-clear';
 const CLIPBOARD_PENDING_KEY = 'clipboardPending';
@@ -40,6 +49,20 @@ async function scheduleAutoLock() {
   if (minutes > 0) {
     browser.alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: minutes });
   }
+}
+
+async function scheduleAiHeartbeat() {
+  await browser.alarms.create(AI_HEARTBEAT_ALARM, { periodInMinutes: 1 });
+}
+async function clearAiHeartbeat() {
+  await browser.alarms.clear(AI_HEARTBEAT_ALARM);
+}
+
+async function scheduleAiHeartbeat() {
+  await browser.alarms.create(AI_HEARTBEAT_ALARM, { periodInMinutes: 1 });
+}
+async function clearAiHeartbeat() {
+  await browser.alarms.clear(AI_HEARTBEAT_ALARM);
 }
 
 // ── Clipboard auto-clear ────────────────────────────────────────────────────
@@ -140,6 +163,11 @@ browser.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name === CLIPBOARD_ALARM) {
     void clearClipboard();
+    void clearAiHeartbeat();
+    return;
+  }
+  if (alarm.name === AI_HEARTBEAT_ALARM) {
+    void pushAiFillToActiveTabs();
   }
 });
 
@@ -213,6 +241,325 @@ browser.tabs.onRemoved.addListener((tabId) => {
   void setLastUsername(tabId, null);
 });
 
+// ── AI Access ────────────────────────────────────────────────────────────────
+// The extension is the trusted client surface for the AI-credential-firewall
+// story: once a human has approved an AI's request (in the web app, the Tk
+// console -- anywhere), XoraPass mints a scoped, time-bound session. This
+// worker notices that session and offers to perform the fill -- it is the
+// piece described in ai.go's BrokerAction comment ("applied by XoraPass on
+// the user's device") that did not exist until now.
+//
+// This ALWAYS authenticates with the human's own login (the same session the
+// popup uses to fetch/decrypt the vault) -- never a bridge token. A bridge
+// token is the AI's credential and is deliberately rejected on every one of
+// these endpoints; the extension acts only after a human has already decided.
+
+interface AiSession {
+  id: string;
+  request_id: string;
+  status: string;
+  granted_scopes: string[];
+  ai_tool_name: string;
+  vault_entry_id?: string;
+  action: string;
+  domain: string;
+  environment: string;
+  expires_at: string;
+}
+
+interface AiFillOffer {
+  sessionId: string;
+  vaultEntryId: string;
+  aiToolName: string;
+  action: string;
+  domain: string;
+  environment: string;
+  grantedScopes: string[];
+  expiresAt: string;
+}
+
+// Per-tab set of session ids the user already dismissed/handled, so the same
+// offer isn't re-shown on every check. Cleared on navigation to a fresh page.
+const dismissedByTab = new Map<number, Set<string>>();
+browser.tabs.onRemoved.addListener((tabId) => {
+  dismissedByTab.delete(tabId);
+});
+
+async function getJwt(): Promise<string> {
+  const res = await browser.storage.session.get(['jwt']);
+  const jwt = (res as Record<string, unknown>).jwt;
+  return typeof jwt === 'string' ? jwt : '';
+}
+
+/** Calls core-api authenticated as the logged-in human -- never a bridge token. */
+async function apiJwt(
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<{ ok: boolean; status: number; data: any }> {
+  const jwt = await getJwt();
+  if (!jwt) return { ok: false, status: 0, data: { detail: 'locked' } };
+  try {
+    const res = await fetch(`${API_BASE_URL}/api${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    let data: any = {};
+    try {
+      data = await res.json();
+    } catch {
+      /* empty body, e.g. some 204s */
+    }
+    return { ok: res.ok, status: res.status, data };
+  } catch (e) {
+    console.warn('[XoraPass] AI Access API call failed:', e);
+    return { ok: false, status: 0, data: { detail: 'network error' } };
+  }
+}
+
+// ── Secret paste guard ──────────────────────────────────────────────────────
+// The content script detects secrets on-device and asks here for (a) the
+// effective policy, (b) to record a secret-FREE warning event, and (c) to save
+// a detected secret into the vault. Detection never leaves the device; only the
+// detected type NAMES and the action ever cross to the background/backend.
+
+const PASTE_POLICY_KEY = 'pastePolicy'; // local user override (storage.local)
+
+// Short-lived cache of the backend (org/admin) policy, so we don't fetch on
+// every page load. Refreshed lazily.
+let orgPolicyCache: { policy: PastePolicy | null; at: number } | null = null;
+const ORG_POLICY_TTL_MS = 60_000;
+
+function stricter(a: PastePolicy, b: PastePolicy): PastePolicy {
+  const rank = (m: string) => (m === 'block' ? 3 : m === 'warn' ? 2 : 1);
+  return {
+    mode: rank(b.mode) > rank(a.mode) ? b.mode : a.mode,
+    allowDismiss: a.allowDismiss && b.allowDismiss,
+    scope: a.scope === 'all_sites' || b.scope === 'all_sites' ? 'all_sites' : 'ai_sites',
+    source: b.source === 'admin' ? 'admin' : a.source,
+  };
+}
+
+// Fetch the admin/org policy from the backend (JWT-authed). Returns null when
+// the vault is locked, the call fails, or there's no org policy -- all of which
+// fall back to the local/default policy. Snake_case → the policy shape.
+async function fetchOrgPolicy(): Promise<PastePolicy | null> {
+  const { ok, data } = await apiJwt('GET', '/ai/paste-policy');
+  if (!ok || !data?.policy) return null;
+  const p = data.policy;
+  if (p.source !== 'admin') return null; // a "default" response adds nothing
+  return coercePolicy({ mode: p.mode, allowDismiss: p.allow_dismiss, scope: p.scope, source: 'admin' });
+}
+
+/**
+ * Resolves the effective paste policy: the STRICTER of the user's local choice
+ * (or the safe default) and the org/admin policy from the backend. Fails safe --
+ * if the backend is unreachable or the vault is locked, the local/default
+ * policy still protects the user.
+ */
+async function getPastePolicy(): Promise<PastePolicy> {
+  const res = await browser.storage.local.get([PASTE_POLICY_KEY]);
+  const stored = (res as Record<string, unknown>)[PASTE_POLICY_KEY];
+  const local = stored ? coercePolicy({ ...(stored as object), source: 'user' }) : DEFAULT_POLICY;
+
+  // Use the cached org policy if fresh; otherwise refresh in the background and
+  // combine what we have now (never block on the network for a paste decision).
+  const now = Date.now();
+  if (!orgPolicyCache || now - orgPolicyCache.at > ORG_POLICY_TTL_MS) {
+    orgPolicyCache = { policy: orgPolicyCache?.policy ?? null, at: now };
+    fetchOrgPolicy()
+      .then((p) => {
+        orgPolicyCache = { policy: p, at: Date.now() };
+      })
+      .catch(() => {});
+  }
+  return orgPolicyCache.policy ? stricter(local, orgPolicyCache.policy) : local;
+}
+
+/**
+ * Records a paste-warning event. By contract this NEVER contains a secret
+ * value -- only the hostname, the detected type NAMES, and the action taken.
+ * Posts to the backend audit trail (when unlocked) and also keeps a small local
+ * ring buffer; both are best-effort and never block the paste flow.
+ */
+async function recordPasteEvent(evt: {
+  hostname: string;
+  types: string[];
+  action: string;
+  isAiSite?: boolean;
+}) {
+  const entry = { ...evt, ts: new Date().toISOString() };
+
+  // Backend audit (secret-free body). Silently no-ops when locked / offline.
+  void apiJwt('POST', '/ai/paste-events', {
+    hostname: evt.hostname,
+    types: evt.types,
+    action: evt.action,
+    is_ai_site: !!evt.isAiSite,
+  });
+
+  try {
+    const res = await browser.storage.session.get(['pasteEvents']);
+    const log = Array.isArray((res as any).pasteEvents) ? (res as any).pasteEvents : [];
+    log.push(entry);
+    await browser.storage.session.set({ pasteEvents: log.slice(-50) });
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Encrypts a captured secret client-side and stores it as a new vault entry,
+ * so the user can save a value instead of pasting it into an AI. The plaintext
+ * is encrypted here with the session encKey and only ciphertext is sent to the
+ * server (zero-knowledge, exactly like the popup's normal flow).
+ */
+async function saveSecretToVault(input: {
+  value: string;
+  label?: string;
+  url?: string;
+  username?: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const sess = await browser.storage.session.get(['encKey', 'vaultItems']);
+  const encKeyB64 = (sess as Record<string, unknown>).encKey as string | undefined;
+  if (!encKeyB64) return { ok: false, error: 'Vault is locked — unlock XoraPass first.' };
+
+  let encKey: Uint8Array;
+  try {
+    encKey = base64ToBytes(encKeyB64);
+  } catch {
+    return { ok: false, error: 'Could not access the vault key — unlock again.' };
+  }
+
+  const label = (input.label || 'Secret captured from paste').slice(0, 120);
+  const plaintext = JSON.stringify({
+    label,
+    username: input.username || '',
+    value: input.value,
+    notes: 'Captured by the XoraPass paste guard.',
+    category: 'other',
+    url: input.url || '',
+    organization: '',
+  });
+
+  let payload;
+  try {
+    payload = encryptPayload(plaintext, encKey);
+  } catch (e) {
+    console.warn('[XoraPass] paste-guard encrypt failed:', e);
+    return { ok: false, error: 'Encryption failed.' };
+  }
+
+  const { ok, status, data } = await apiJwt('POST', '/vault', {
+    encrypted_payload: { ciphertext: payload.ciphertext, tag: payload.tag, keyVersion: payload.keyVersion },
+    nonce: payload.nonce,
+  });
+  if (!ok) return { ok: false, error: data?.detail || `HTTP ${status}` };
+
+  // Keep the in-memory session cache consistent so the new item is
+  // immediately available for autofill without a full re-fetch.
+  try {
+    const items = Array.isArray((sess as any).vaultItems) ? (sess as any).vaultItems : [];
+    items.push({ id: data?.id, label, username: input.username || '', value: input.value, url: input.url || '', category: 'other' });
+    await browser.storage.session.set({ vaultItems: items });
+  } catch {
+    /* non-fatal */
+  }
+  return { ok: true };
+}
+
+// Tab switches and page loads each independently trigger a check, and both
+// can fire together for the same tab (e.g. onActivated + onUpdated). Without
+// this, rapid tab-switching would multiply into that many /ai/sessions calls
+// in the same instant -- sharing one short-lived result keeps the offer
+// discovery path cheap regardless of how many tabs trigger it at once. The
+// fill-confirmation check (AI_FILL_CONFIRM) deliberately does NOT use this
+// cache -- that one call is the moment-of-truth check right before a secret
+// is used, and always reads live state.
+let sessionsCache: { data: AiSession[]; fetchedAt: number } | null = null;
+const SESSIONS_CACHE_MS = 4000;
+
+async function getActiveAiSessions(): Promise<AiSession[]> {
+  const now = Date.now();
+  if (sessionsCache && now - sessionsCache.fetchedAt < SESSIONS_CACHE_MS) {
+    return sessionsCache.data;
+  }
+  const { ok, data } = await apiJwt('GET', '/ai/sessions');
+  const sessions = ok && Array.isArray(data) ? (data as AiSession[]) : [];
+  sessionsCache = { data: sessions, fetchedAt: now };
+  return sessions;
+}
+
+/**
+ * Finds an active AI session, scoped to `autofill`, whose domain matches the
+ * given hostname and hasn't already been dismissed in this tab. Returns null
+ * when the vault is locked, nothing matches, or the call fails -- all
+ * fail-closed (no offer), never fail-open.
+ */
+async function getAiFillForHostname(hostname: string, tabId: number): Promise<AiFillOffer | null> {
+  if (!hostname) return null;
+  const data = await getActiveAiSessions();
+
+  const dismissed = dismissedByTab.get(tabId);
+  const match = data.find(
+    (s) =>
+      s.status === 'active' &&
+      !!s.domain &&
+      isDomainMatch(hostname, s.domain) &&
+      s.granted_scopes.includes('autofill') &&
+      !(dismissed && dismissed.has(s.id))
+  );
+  if (!match || !match.vault_entry_id) return null;
+
+  return {
+    sessionId: match.id,
+    vaultEntryId: match.vault_entry_id,
+    aiToolName: match.ai_tool_name || 'An AI tool',
+    action: match.action,
+    domain: match.domain,
+    environment: match.environment,
+    grantedScopes: match.granted_scopes,
+    expiresAt: match.expires_at,
+  };
+}
+
+/** Push an offer to a specific tab if one exists. Never throws. */
+async function pushAiFillCheck(tabId: number, url?: string) {
+  const hostname = url ? extractHostname(url) : '';
+  if (!hostname) return;
+  const offer = await getAiFillForHostname(hostname, tabId);
+  if (offer) {
+    browser.tabs.sendMessage(tabId, { type: 'AI_FILL_AVAILABLE', payload: offer }).catch(() => {
+      /* content script not present on this page (e.g. chrome:// tab) */
+    });
+  }
+}
+
+/** Backstop: re-checks every window's active tab once a minute. */
+async function pushAiFillToActiveTabs() {
+  const jwt = await getJwt();
+  if (!jwt) return;
+  const tabs = await browser.tabs.query({ active: true });
+  for (const tab of tabs) {
+    if (tab.id !== undefined) void pushAiFillCheck(tab.id, tab.url);
+  }
+}
+
+// Re-check on tab switch (fast, cheap) and on navigation completing. A fresh
+// navigation also clears this tab's dismissed set, so a re-visit can re-offer.
+browser.tabs.onActivated.addListener(({ tabId }) => {
+  browser.tabs.get(tabId).then((tab) => void pushAiFillCheck(tabId, tab.url)).catch(() => {});
+});
+browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'loading' && changeInfo.url) {
+    dismissedByTab.delete(tabId);
+  }
+  if (changeInfo.status === 'complete') {
+    void pushAiFillCheck(tabId, tab.url);
+  }
+});
+
 /** Normalized set of hostnames on which the user has disabled autofill. */
 async function getDisabledSites(): Promise<string[]> {
   const res = await browser.storage.local.get([DISABLED_SITES_KEY]);
@@ -265,7 +612,15 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'UNLOCK_VAULT') {
-    const { decryptedItems, email, token, encKey, offline } = msg.payload;
+    // jwt is optional for backward compatibility, but the popup always sends
+    // it now -- without it, the AI Access checks below simply find nothing
+    // (getJwt() returns '' and apiJwt() fails closed), never an error state.
+    const { decryptedItems, email, jwt, encKey, token, offline } = msg.payload as {
+      decryptedItems: unknown;
+      email: string;
+      jwt?: string;
+      encKey?: string; // base64 -- needed only so "save to vault" can encrypt new entries
+    };
     // token and encKey are held so the popup can re-fetch and decrypt the vault
     // without a full re-authentication. They live in storage.session, which is
     // memory-only, cleared on browser restart, and already restricted to
@@ -274,7 +629,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       .set({
         unlocked: true,
         email,
-        vaultItems: decryptedItems,
+        vaultItems: decryptedItems, jwt: jwt || '', encKey: encKey || '',
         token,
         encKey,
         // An offline unlock came from the cache and has no access token, so
@@ -283,7 +638,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       })
       .then(() => {
         void scheduleAutoLock();
-        console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', decryptedItems.length, 'items )');
+        void scheduleAiHeartbeat();
+        console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', (decryptedItems as unknown[]).length, 'items )');
         return { success: true };
       });
   }
@@ -291,6 +647,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (type === 'LOCK_VAULT') {
     console.debug('[XoraPass] LOCK_VAULT -> clearing session');
     void browser.alarms.clear(AUTO_LOCK_ALARM);
+    void clearAiHeartbeat();
+    dismissedByTab.clear();
     // Same ordering as auto-lock: drain the clipboard before the pending
     // marker is wiped along with the rest of the session.
     return clearClipboard()
@@ -487,6 +845,133 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const tabId = sender.tab?.id;
     if (!tabId) return Promise.resolve({ error: 'no_tab' });
     return savePendingCredential(tabId);
+  }
+
+  // ── AI Access messages ──────────────────────────────────────────────────
+
+  if (type === 'AI_CHECK_TAB') {
+    const hostname: string = msg.payload.hostname;
+    const tabId = sender.tab?.id;
+    if (tabId === undefined) return Promise.resolve({ offer: null });
+    return getAiFillForHostname(hostname, tabId).then((offer) => ({ offer }));
+  }
+
+  if (type === 'AI_FILL_CONFIRM') {
+    // Re-verify against the LIVE server state at the moment of the click --
+    // the banner may have been sitting open for a while, and the session
+    // could have expired or been revoked (from the popup, the web app,
+    // anywhere) since it was rendered. The vault entry to fill is also taken
+    // from the server's own session record, never trusted from the caller --
+    // a session only ever unlocks the one credential it was actually
+    // approved for.
+    const { sessionId } = msg.payload as { sessionId: string };
+    return apiJwt('GET', '/ai/sessions').then(({ ok, data }) => {
+      if (!ok || !Array.isArray(data)) {
+        return { error: 'Could not verify this AI session -- try again.' };
+      }
+      const session = (data as AiSession[]).find((s) => s.id === sessionId);
+      if (!session || session.status !== 'active' || !session.granted_scopes.includes('autofill') || !session.vault_entry_id) {
+        return { error: 'This AI session is no longer active.' };
+      }
+      return browser.storage.session.get(['vaultItems']).then((res) => {
+        const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
+        const item = items?.find((i) => i.id === session.vault_entry_id);
+        if (!item) return { error: 'Credential not found in this session -- try unlocking again.' };
+        return { username: item.username, value: item.value };
+      });
+    });
+  }
+
+  if (type === 'AI_FILL_HANDLED') {
+    const { sessionId } = msg.payload;
+    const tabId = sender.tab?.id;
+    if (tabId !== undefined) {
+      const set = dismissedByTab.get(tabId) || new Set<string>();
+      set.add(sessionId);
+      dismissedByTab.set(tabId, set);
+    }
+    return Promise.resolve({ success: true });
+  }
+
+  if (type === 'AI_REVOKE_SESSION') {
+    const { sessionId } = msg.payload;
+    return apiJwt('POST', `/ai/sessions/${sessionId}/revoke`).then(({ ok, status, data }) => {
+      if (ok) {
+        for (const set of dismissedByTab.values()) set.add(sessionId);
+        sessionsCache = null; // don't let a cached pre-revoke list re-offer it within the TTL
+      }
+      return ok ? { success: true } : { error: data?.detail || `HTTP ${status}` };
+    });
+  }
+
+  if (type === 'AI_LIST_REQUESTS') {
+    return apiJwt('GET', '/ai/access-requests').then(({ ok, data }) =>
+      ok ? { requests: data } : { error: data?.detail || 'Failed to load requests', requests: [] }
+    );
+  }
+
+  if (type === 'AI_LIST_SESSIONS') {
+    return apiJwt('GET', '/ai/sessions').then(({ ok, data }) =>
+      ok ? { sessions: data } : { error: data?.detail || 'Failed to load sessions', sessions: [] }
+    );
+  }
+
+  if (type === 'AI_DECIDE_REQUEST') {
+    const { requestId, decision, grantedScopes, durationSeconds, maxUses } = msg.payload as {
+      requestId: string;
+      decision: 'approve' | 'deny';
+      grantedScopes?: string[];
+      durationSeconds?: number;
+      maxUses?: number;
+    };
+    const path = `/ai/access-requests/${requestId}/${decision}`;
+    const body =
+      decision === 'approve'
+        ? {
+            ...(grantedScopes && grantedScopes.length ? { granted_scopes: grantedScopes } : {}),
+            ...(durationSeconds ? { duration_seconds: durationSeconds } : {}),
+            ...(maxUses ? { max_uses: maxUses } : {}),
+          }
+        : undefined;
+    return apiJwt('POST', path, body).then(({ ok, status, data }) =>
+      ok ? { success: true, data } : { error: data?.detail || `HTTP ${status}` }
+    );
+  }
+
+  // ── Secret paste guard messages ─────────────────────────────────────────
+
+  if (type === 'AI_PASTE_POLICY') {
+    return getPastePolicy().then((policy) => ({ policy }));
+  }
+
+  if (type === 'AI_PASTE_EVENT') {
+    const { hostname, types, action, isAiSite } = msg.payload as {
+      hostname: string;
+      types: string[];
+      action: string;
+      isAiSite?: boolean;
+    };
+    // Defensive: only ever forward the type NAMES, never any value the caller
+    // might have mistakenly attached.
+    void recordPasteEvent({
+      hostname,
+      types: types.map(String).slice(0, 20),
+      action,
+      isAiSite: !!isAiSite,
+    });
+    return Promise.resolve({ success: true });
+  }
+
+  if (type === 'AI_SAVE_SECRET') {
+    const { value, label, url, username } = msg.payload as {
+      value: string;
+      label?: string;
+      url?: string;
+      username?: string;
+    };
+    return saveSecretToVault({ value, label, url, username }).then((r) =>
+      r.ok ? { success: true } : { error: r.error }
+    );
   }
 
   // Should be unreachable because validateMessage allowlists types.
