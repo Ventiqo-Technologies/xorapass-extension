@@ -4,30 +4,38 @@
   --font-sans: "Plus Jakarta Sans", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "Geist Mono", "JetBrains Mono", monospace;
 
-  --color-brand-cyan: #2dd4bf;
-  --color-brand-teal: #34d399;
-  --color-brand-purple: #8b5cf6;
-  --color-brand-emerald: #10b981;
-  --color-brand-ruby: #f43f5e;
-  --color-brand-amber: #f59e0b;
+  /* Light-theme brand accents, matching the web app's .light block. The teal
+     and emerald are stepped down to the 600 shades because the dark-theme
+     values (#2dd4bf / #34d399) fail contrast on a white surface. */
+  --color-brand-cyan: #0d9488;
+  --color-brand-teal: #059669;
+  --color-brand-purple: #7c3aed;
+  --color-brand-emerald: #059669;
+  --color-brand-ruby: #e11d48;
+  --color-brand-amber: #b45309;
 }
 
 :root {
-  --bg-page: #0a1412;
-  --color-text-main: #f0f5f3;
-  --color-text-muted: #9db4ac;
-  --bg-glass: rgba(16, 32, 28, 0.42);
-  --border-glass: rgba(255, 255, 255, 0.10);
-  --shadow-glass: 0 30px 60px rgba(0, 0, 0, 0.5);
-  --bg-field: rgba(7, 18, 15, 0.8);
-  --border-field: rgba(255, 255, 255, 0.09);
-  --security-grid-color: rgba(255, 255, 255, 0.025);
+  /* Light theme, ported from apps/web src/index.css `.light`. Declaring the
+     scheme keeps native UI — <select> menus, scrollbars, Chrome's autofill
+     shading — consistent with the page instead of rendering dark over it. */
+  color-scheme: light;
+
+  --bg-page: #f6f9f8;
+  --color-text-main: #0f172a;
+  --color-text-muted: #475569;
+  --bg-glass: rgba(255, 255, 255, 0.45);
+  --border-glass: rgba(255, 255, 255, 0.6);
+  --shadow-glass: 0 20px 40px -15px rgba(15, 23, 42, 0.05), 0 0 1px 0 rgba(15, 23, 42, 0.05);
+  --bg-field: rgba(255, 255, 255, 0.85);
+  --border-field: rgba(15, 23, 42, 0.06);
+  --security-grid-color: rgba(15, 23, 42, 0.02);
 
   --bg-vault-image:
-    radial-gradient(ellipse 65% 65% at 15% 20%, rgba(20, 184, 166, 0.14) 0%, transparent 60%),
-    radial-gradient(ellipse 70% 70% at 85% 75%, rgba(16, 185, 129, 0.13) 0%, transparent 60%),
-    radial-gradient(ellipse 55% 55% at 50% 15%, rgba(45, 212, 191, 0.10) 0%, transparent 50%),
-    radial-gradient(ellipse 50% 50% at 10% 85%, rgba(56, 189, 248, 0.07) 0%, transparent 50%);
+    radial-gradient(ellipse 65% 65% at 15% 20%, rgba(13, 148, 136, 0.07) 0%, transparent 60%),
+    radial-gradient(ellipse 70% 70% at 85% 75%, rgba(16, 185, 129, 0.06) 0%, transparent 60%),
+    radial-gradient(ellipse 55% 55% at 50% 15%, rgba(56, 189, 248, 0.06) 0%, transparent 50%),
+    #f6f9f8;
 }
 
 @layer utilities {
@@ -38,7 +46,7 @@
     border: 1px solid var(--border-glass);
     box-shadow:
       var(--shadow-glass),
-      inset 0 1.5px 0 rgba(255, 255, 255, 0.12);
+      inset 0 1.5px 0 rgba(255, 255, 255, 0.6);
   }
 
   .field-surface {
@@ -47,15 +55,15 @@
   }
 
   .glow-cyan {
-    box-shadow: 0 8px 24px rgba(45, 212, 191, 0.15);
+    box-shadow: 0 8px 24px rgba(13, 148, 136, 0.18);
   }
 
   .glow-emerald {
-    box-shadow: 0 8px 24px rgba(16, 185, 129, 0.15);
+    box-shadow: 0 8px 24px rgba(5, 150, 105, 0.18);
   }
 
   .glow-ruby {
-    box-shadow: 0 8px 24px rgba(244, 63, 94, 0.15);
+    box-shadow: 0 8px 24px rgba(225, 29, 72, 0.18);
   }
 
   .custom-scrollbar::-webkit-scrollbar {
@@ -63,29 +71,29 @@
     height: 6px;
   }
   .custom-scrollbar::-webkit-scrollbar-track {
-    background: rgba(15, 23, 42, 0.2);
+    background: rgba(15, 23, 42, 0.04);
   }
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(15, 23, 42, 0.15);
     border-radius: 9999px;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(45, 212, 191, 0.3);
+    background: rgba(13, 148, 136, 0.45);
   }
 }
 
 @layer components {
   .btn-primary {
     background: linear-gradient(135deg, var(--color-brand-cyan), var(--color-brand-teal));
-    color: #04231d;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    box-shadow: 0 10px 24px rgba(45, 212, 191, 0.18);
+    color: #ffffff;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    box-shadow: 0 10px 24px rgba(13, 148, 136, 0.22);
     font-weight: 700;
     transition: filter 0.2s ease, box-shadow 0.2s ease;
   }
 
   .btn-primary:hover:not(:disabled) {
-    box-shadow: 0 14px 30px rgba(45, 212, 191, 0.25);
+    box-shadow: 0 14px 30px rgba(13, 148, 136, 0.3);
     filter: brightness(1.05);
   }
 }
@@ -97,6 +105,27 @@ body {
   background-image: var(--bg-vault-image);
   margin: 0;
   overflow: hidden;
+}
+
+/* Chrome overrides the background of autofilled inputs with its own pale
+   yellow regardless of color-scheme. There is no property to disable it, so
+   the standard workaround is an inset shadow large enough to cover the field,
+   plus -webkit-text-fill-color for the text. The absurd transition delay stops
+   the yellow flashing in before the shadow paints. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-text-main);
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset;
+  caret-color: var(--color-text-main);
+  transition: background-color 600000s 0s;
+}
+
+/* Linux/Windows render <option> from the system palette rather than inheriting
+   the control's colours, so set them explicitly. */
+select option {
+  background-color: #ffffff;
+  color: var(--color-text-main);
 }
 
 .security-grid {
