@@ -49,8 +49,9 @@ const AUTO_LOCK_OPTIONS = [
   { label: 'Never', value: 0 },
 ];
 
-// Setup API URL
-const API_BASE_URL = 'https://app.xorapass.com';
+// API origin. Set VITE_API_BASE_URL (see .env.local) to point a development
+// build at a local core-api; production builds fall back to the hosted app.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://app.xorapass.com';
 
 interface DecryptedItem {
   id: string;

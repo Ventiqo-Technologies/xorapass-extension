@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XoraPass Autofill Lab</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #020617; color: #e2e8f0;
+    font-family: Inter, system-ui, sans-serif; font-size: 14px;
+  }
+  header {
+    position: sticky; top: 0; z-index: 50;
+    background: #0a1412; border-bottom: 1px solid rgba(45,212,191,.25);
+    padding: 12px 20px; display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { font-size: 14px; margin: 0; color: #2dd4bf; letter-spacing: .05em; text-transform: uppercase; }
+  header span { color: #64748b; font-size: 12px; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 20px 120px; }
+  section {
+    border: 1px solid rgba(255,255,255,.08); border-radius: 12px;
+    padding: 18px; margin-bottom: 20px; background: #0f172a;
+  }
+  h2 { font-size: 13px; margin: 0 0 4px; color: #2dd4bf; }
+  .why { font-size: 12px; color: #94a3b8; margin: 0 0 14px; line-height: 1.5; }
+  label { display: block; font-size: 11px; color: #94a3b8; margin: 10px 0 4px; }
+  input {
+    width: 100%; padding: 9px 11px; border-radius: 7px;
+    border: 1px solid rgba(255,255,255,.12); background: #020617;
+    color: #e2e8f0; font-size: 13px; font-family: inherit;
+  }
+  input:focus { outline: none; border-color: #2dd4bf; }
+  button.act {
+    margin-top: 12px; padding: 8px 14px; border-radius: 7px; border: none;
+    background: linear-gradient(135deg,#2dd4bf,#34d399); color: #04231d;
+    font-weight: 700; font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  .scroller { height: 170px; overflow-y: auto; border: 1px dashed rgba(255,255,255,.15); border-radius: 8px; padding: 12px; }
+  .spacer { height: 130px; }
+  .status { font-size: 11px; margin-top: 8px; font-family: ui-monospace, monospace; color: #64748b; min-height: 14px; }
+  .status.ok { color: #34d399; }
+  .status.bad { color: #f87171; }
+  .modal-back {
+    display: none; position: fixed; inset: 0; background: rgba(2,6,23,.75);
+    z-index: 100; align-items: center; justify-content: center;
+  }
+  .modal-back.open { display: flex; }
+  .modal-box { background: #0f172a; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 20px; width: 340px; }
+  iframe { width: 100%; height: 190px; border: 1px dashed rgba(255,255,255,.15); border-radius: 8px; background: #020617; }
+  code { background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>XoraPass Autofill Lab</h1>
+  <span>seeded credential: <code>localuser</code> @ localhost:4173</span>
+</header>
+
+<main>
+
+<section>
+  <h2>1 · Baseline form</h2>
+  <p class="why">Plain <code>&lt;form&gt;</code> with username + password. The icon should appear inside the right edge of both fields, vertically centred.</p>
+  <form onsubmit="return false">
+    <label>Email</label>
+    <input type="email" name="email" autocomplete="username">
+    <label>Password</label>
+    <input type="password" name="password" autocomplete="current-password">
+    <button class="act" type="submit">Sign in</button>
+  </form>
+</section>
+
+<section>
+  <h2>2 · No wrapping form</h2>
+  <p class="why">Inputs are siblings with no <code>&lt;form&gt;</code>. Exercises the document-wide fallback in <code>findUsernameField</code>.</p>
+  <label>Username</label>
+  <input type="text" name="user_login">
+  <label>Password</label>
+  <input type="password" name="pass">
+</section>
+
+<section>
+  <h2>3 · Decoy fields</h2>
+  <p class="why">A search box and a promo code sit before the password. The negative-hint rule should skip both and pick <em>Account email</em> — if the icon lands on search or promo, the heuristic regressed.</p>
+  <label>Search (must be skipped)</label>
+  <input type="text" name="user_search" placeholder="Search users">
+  <label>Promo code (must be skipped)</label>
+  <input type="text" name="account" placeholder="Promo code">
+  <label>Account email (correct target)</label>
+  <input type="email" name="account_email">
+  <label>Password</label>
+  <input type="password" name="pw3">
+</section>
+
+<section>
+  <h2>4 · Inside a scroll container</h2>
+  <p class="why">Scroll <em>within</em> the dashed box. The icon must track the field and disappear once the input leaves the box. This is where fixed-position overlays usually fail.</p>
+  <div class="scroller">
+    <div class="spacer"></div>
+    <label>Email</label>
+    <input type="email" name="scroll_email">
+    <label>Password</label>
+    <input type="password" name="scroll_pw">
+    <div class="spacer"></div>
+  </div>
+</section>
+
+<section>
+  <h2>5 · React-style controlled input</h2>
+  <p class="why">
+    Reproduces React's <code>_valueTracker</code>. A plain <code>el.value = x</code> hits the instance setter, so the tracker updates and the change is swallowed — the old bug. The fix calls the <em>prototype</em> setter, bypassing the tracker, so the change is seen.
+  </p>
+  <label>Email</label>
+  <input type="email" name="react_email" id="reactUser">
+  <label>Password (watch the status line)</label>
+  <input type="password" name="react_pw" id="reactPw">
+  <div class="status" id="reactStatus">awaiting fill…</div>
+</section>
+
+<section>
+  <h2>6 · Injected after load (SPA)</h2>
+  <p class="why">Click to inject a login form. The <code>MutationObserver</code> should decorate it within a frame or two — the old 2.5s poll lagged noticeably here.</p>
+  <button class="act" id="injectBtn">Inject login form</button>
+  <div id="injectTarget"></div>
+</section>
+
+<section>
+  <h2>7 · Inside a modal</h2>
+  <p class="why">Opens a fixed-position overlay at z-index 100. The XoraPass icon must render <em>above</em> it (the overlay layer sits at max z-index).</p>
+  <button class="act" id="modalBtn">Open modal</button>
+</section>
+
+<section>
+  <h2>8 · Cross-origin iframe</h2>
+  <p class="why">
+    Framed from <code>127.0.0.1</code> while the page is <code>localhost</code> — a different origin. Autofill must be <strong>blocked</strong> inside it. Check the iframe's console for
+    <code>Autofill disabled inside third-party iframe</code>. An icon appearing here is a security regression.
+  </p>
+  <iframe src="http://127.0.0.1:4173/test-pages/frame-login.html"></iframe>
+</section>
+
+<section>
+  <h2>9 · Same-origin iframe</h2>
+  <p class="why">Same origin as the parent, so autofill <strong>should</strong> work here — confirms the frame check isn't over-blocking.</p>
+  <iframe src="/test-pages/frame-login.html"></iframe>
+</section>
+
+</main>
+
+<div class="modal-back" id="modalBack">
+  <div class="modal-box">
+    <h2>Modal sign-in</h2>
+    <label>Email</label>
+    <input type="email" name="modal_email">
+    <label>Password</label>
+    <input type="password" name="modal_pw">
+    <button class="act" id="modalClose">Close</button>
+  </div>
+</div>
+
+<script>
+// ── 5. React-style value tracker ────────────────────────────────────────────
+// React installs an own-property 'value' descriptor on the element. Any write
+// through it updates the tracker, so React concludes nothing changed and
+// re-renders the old state. Writing through the prototype descriptor skips the
+// tracker, which is how a correct autofill makes React notice.
+(function () {
+  const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  const status = document.getElementById('reactStatus');
+
+  function track(el) {
+    let tracked = el.value;
+    Object.defineProperty(el, 'value', {
+      configurable: true,
+      get() { return proto.get.call(this); },
+      set(v) { tracked = String(v); proto.set.call(this, v); },
+    });
+    el.addEventListener('input', function () {
+      const actual = proto.get.call(el);
+      if (actual === tracked) {
+        status.textContent = '✗ change swallowed — instance setter used (old bug)';
+        status.className = 'status bad';
+        proto.set.call(el, ''); // React would revert to prior state
+      } else {
+        tracked = actual;
+        status.textContent = '✓ change detected — prototype setter used (fix works)';
+        status.className = 'status ok';
+      }
+    });
+  }
+
+  track(document.getElementById('reactUser'));
+  track(document.getElementById('reactPw'));
+})();
+
+// ── 6. SPA injection ────────────────────────────────────────────────────────
+document.getElementById('injectBtn').addEventListener('click', function () {
+  const t = document.getElementById('injectTarget');
+  t.innerHTML =
+    '<label>Email</label><input type="email" name="spa_email">' +
+    '<label>Password</label><input type="password" name="spa_pw">';
+});
+
+// ── 7. Modal ────────────────────────────────────────────────────────────────
+document.getElementById('modalBtn').addEventListener('click', function () {
+  document.getElementById('modalBack').classList.add('open');
+});
+document.getElementById('modalClose').addEventListener('click', function () {
+  document.getElementById('modalBack').classList.remove('open');
+});
+</script>
+
+</body>
+</html>
