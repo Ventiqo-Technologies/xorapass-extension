@@ -27,6 +27,8 @@ export const KNOWN_MESSAGE_TYPES = [
   'SET_SITE_DISABLED',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  'SET_CLIPBOARD_CLEAR',
+  'CLIPBOARD_COPIED',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -42,6 +44,10 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'GET_STATUS',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  'SET_CLIPBOARD_CLEAR',
+  // A page has no business arming (or re-arming, and so postponing) the
+  // clipboard clear; only the popup copies passwords.
+  'CLIPBOARD_COPIED',
 ]);
 
 export interface GuardResult {
@@ -156,7 +162,14 @@ export function validateMessage(
         return { ok: false, reason: 'bad-payload' };
       }
       break;
-    // GET_STATUS, LOCK_VAULT and GET_SETTINGS need no payload.
+    case 'SET_CLIPBOARD_CLEAR':
+      if (!payload || typeof payload.seconds !== 'number' || !Number.isFinite(payload.seconds)) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    // GET_STATUS, LOCK_VAULT, GET_SETTINGS and CLIPBOARD_COPIED need no
+    // payload — CLIPBOARD_COPIED deliberately carries no secret, it is only a
+    // signal that the popup put a password on the clipboard.
   }
 
   return { ok: true, type: type as MessageType };

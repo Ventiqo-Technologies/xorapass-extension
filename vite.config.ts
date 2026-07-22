@@ -6,8 +6,9 @@ import { resolve } from 'path';
 // https://vite.dev/config/
 //
 // Two build passes (run in sequence by `npm run build`):
-//   - default mode: popup + background as ES modules (they load as modules, so
-//     sharing chunks such as webextension-polyfill is fine).
+//   - default mode: popup, offscreen document and background as ES modules
+//     (they load as modules, so sharing chunks such as webextension-polyfill is
+//     fine).
 //   - `--mode content`: the content script as a self-contained IIFE. MV3 content
 //     scripts run as classic scripts and CANNOT use ES `import`, so it must be
 //     bundled with all dependencies (incl. webextension-polyfill) inlined and no
@@ -44,6 +45,7 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         input: {
           popup: resolve(__dirname, 'popup.html'),
+          offscreen: resolve(__dirname, 'offscreen.html'),
           background: resolve(__dirname, 'src/background/background.ts'),
         },
         output: {

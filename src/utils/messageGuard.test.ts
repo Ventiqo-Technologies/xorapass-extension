@@ -120,4 +120,34 @@ describe('validateMessage — payload validation', () => {
       validateMessage({ type: 'SET_AUTO_LOCK', payload: { minutes: 5 } }, contentSender()).reason
     ).toBe('privileged-from-content');
   });
+  it('accepts a valid SET_CLIPBOARD_CLEAR from the popup', () => {
+    const res = validateMessage(
+      { type: 'SET_CLIPBOARD_CLEAR', payload: { seconds: 30 } },
+      popupSender()
+    );
+    expect(res.ok).toBe(true);
+  });
+  it('rejects SET_CLIPBOARD_CLEAR with a non-numeric payload', () => {
+    const res = validateMessage(
+      { type: 'SET_CLIPBOARD_CLEAR', payload: { seconds: 'later' } },
+      popupSender()
+    );
+    expect(res.reason).toBe('bad-payload');
+  });
+  it('accepts a payload-free CLIPBOARD_COPIED from the popup', () => {
+    expect(validateMessage({ type: 'CLIPBOARD_COPIED' }, popupSender()).ok).toBe(true);
+  });
+  it('rejects clipboard messages from a content script (privileged)', () => {
+    // A page could otherwise re-arm the timer repeatedly and postpone the
+    // clear indefinitely.
+    expect(validateMessage({ type: 'CLIPBOARD_COPIED' }, contentSender()).reason).toBe(
+      'privileged-from-content'
+    );
+    expect(
+      validateMessage(
+        { type: 'SET_CLIPBOARD_CLEAR', payload: { seconds: 0 } },
+        contentSender()
+      ).reason
+    ).toBe('privileged-from-content');
+  });
 });

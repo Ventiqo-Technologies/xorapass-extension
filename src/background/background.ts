@@ -4,6 +4,11 @@ import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain 
 import { validateMessage } from '../utils/messageGuard';
 import { encryptPayload, hexToBytes } from '../utils/crypto';
 import { API_BASE_URL } from '../utils/config';
+import {
+  CLIPBOARD_PLACEHOLDER,
+  clearDelayInMinutes,
+  normalizeClearSeconds,
+} from '../utils/clipboardPolicy';
 
 // Logged on every service-worker (cold) start. If the session were cleared by a
 // mere page refresh you would NOT see this line on refresh — it only prints when
@@ -14,6 +19,11 @@ const DISABLED_SITES_KEY = 'disabledSites';
 const AUTO_LOCK_KEY = 'autoLockMinutes';
 const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
 const DEFAULT_AUTO_LOCK_MINUTES = 15;
+const CLIPBOARD_KEY = 'clipboardClearSeconds';
+const CLIPBOARD_ALARM = 'xorapass-clipboard-clear';
+const CLIPBOARD_PENDING_KEY = 'clipboardPending';
+const OFFSCREEN_TARGET = 'xorapass-offscreen';
+const OFFSCREEN_URL = 'offscreen.html';
 
 /** Idle-timeout (minutes) after which the vault auto-locks. 0 = never. */
 async function getAutoLockMinutes(): Promise<number> {
@@ -32,11 +42,104 @@ async function scheduleAutoLock() {
   }
 }
 
-// When the idle timer fires, purge the decrypted vault from session storage.
+// ── Clipboard auto-clear ────────────────────────────────────────────────────
+//
+// The popup writes the password to the clipboard itself (it has a DOM and a
+// user gesture), then tells us a copy happened. The secret never reaches the
+// worker for this; we only own the timer, because the popup is torn down the
+// moment it loses focus and any timer living inside it dies with it.
+
+/** Delay (seconds) before a copied password is overwritten. 0 = never. */
+async function getClipboardClearSeconds(): Promise<number> {
+  const res = await browser.storage.local.get([CLIPBOARD_KEY]);
+  return normalizeClearSeconds((res as Record<string, unknown>)[CLIPBOARD_KEY]);
+}
+
+/**
+ * Creates the offscreen document if it is not already up. Returns false when
+ * the browser has no offscreen API (Firefox, Safari), which leaves the
+ * clipboard untouched rather than throwing.
+ */
+async function ensureOffscreenDocument(): Promise<boolean> {
+  const api = (globalThis as any).chrome;
+  if (!api?.offscreen?.createDocument) return false;
+
+  try {
+    if (api.runtime?.getContexts) {
+      const contexts = await api.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+        documentUrls: [browser.runtime.getURL(OFFSCREEN_URL)],
+      });
+      if (contexts.length > 0) return true;
+    }
+    await api.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: ['CLIPBOARD'],
+      justification: 'Clear a copied password from the clipboard on a timer.',
+    });
+    return true;
+  } catch (err) {
+    // Two concurrent clears can race to create the document; losing that race
+    // is fine, the document we wanted exists either way.
+    if (String(err).includes('Only a single offscreen')) return true;
+    console.warn('[XoraPass] offscreen document unavailable:', err);
+    return false;
+  }
+}
+
+/** Overwrites the clipboard and drops the pending marker. */
+async function clearClipboard(): Promise<void> {
+  await browser.alarms.clear(CLIPBOARD_ALARM);
+  const pending = await browser.storage.session.get([CLIPBOARD_PENDING_KEY]);
+  if (!pending[CLIPBOARD_PENDING_KEY]) return;
+  await browser.storage.session.remove(CLIPBOARD_PENDING_KEY);
+
+  if (!(await ensureOffscreenDocument())) return;
+  try {
+    await browser.runtime.sendMessage({
+      target: OFFSCREEN_TARGET,
+      type: 'CLIPBOARD_WRITE',
+      text: CLIPBOARD_PLACEHOLDER,
+    });
+    console.debug('[XoraPass] clipboard cleared');
+  } catch (err) {
+    console.warn('[XoraPass] clipboard clear failed:', err);
+  } finally {
+    const api = (globalThis as any).chrome;
+    try {
+      await api?.offscreen?.closeDocument?.();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/** Arms the clear timer after the popup reports a password copy. */
+async function scheduleClipboardClear(): Promise<number> {
+  const seconds = await getClipboardClearSeconds();
+  await browser.alarms.clear(CLIPBOARD_ALARM);
+  const delayInMinutes = clearDelayInMinutes(seconds);
+  if (delayInMinutes === null) {
+    await browser.storage.session.remove(CLIPBOARD_PENDING_KEY);
+    return 0;
+  }
+  await browser.storage.session.set({ [CLIPBOARD_PENDING_KEY]: true });
+  browser.alarms.create(CLIPBOARD_ALARM, { delayInMinutes });
+  return seconds;
+}
+
 browser.alarms.onAlarm.addListener((alarm) => {
+  // When the idle timer fires, purge the decrypted vault from session storage.
   if (alarm.name === AUTO_LOCK_ALARM) {
     console.debug('[XoraPass] auto-lock fired -> clearing session');
-    browser.storage.session.clear();
+    // Locking must not leave a password sitting in the clipboard, so clear it
+    // first — storage.session.clear() would otherwise drop the pending marker
+    // and make the clear a no-op.
+    void clearClipboard().finally(() => browser.storage.session.clear());
+    return;
+  }
+  if (alarm.name === CLIPBOARD_ALARM) {
+    void clearClipboard();
   }
 });
 
@@ -179,11 +282,33 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (type === 'LOCK_VAULT') {
     console.debug('[XoraPass] LOCK_VAULT -> clearing session');
     void browser.alarms.clear(AUTO_LOCK_ALARM);
-    return browser.storage.session.clear().then(() => ({ success: true }));
+    // Same ordering as auto-lock: drain the clipboard before the pending
+    // marker is wiped along with the rest of the session.
+    return clearClipboard()
+      .catch(() => undefined)
+      .then(() => browser.storage.session.clear())
+      .then(() => ({ success: true }));
   }
 
   if (type === 'GET_SETTINGS') {
-    return getAutoLockMinutes().then((autoLockMinutes) => ({ autoLockMinutes }));
+    return Promise.all([getAutoLockMinutes(), getClipboardClearSeconds()]).then(
+      ([autoLockMinutes, clipboardClearSeconds]) => ({ autoLockMinutes, clipboardClearSeconds })
+    );
+  }
+
+  if (type === 'SET_CLIPBOARD_CLEAR') {
+    const seconds = normalizeClearSeconds(msg.payload.seconds);
+    return browser.storage.local
+      .set({ [CLIPBOARD_KEY]: seconds })
+      .then(() => ({ success: true, clipboardClearSeconds: seconds }));
+  }
+
+  if (type === 'CLIPBOARD_COPIED') {
+    // No secret in the payload — this is only the signal to start the timer.
+    return scheduleClipboardClear().then((clipboardClearSeconds) => ({
+      success: true,
+      clipboardClearSeconds,
+    }));
   }
 
   if (type === 'SET_AUTO_LOCK') {

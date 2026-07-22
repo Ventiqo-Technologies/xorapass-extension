@@ -18,6 +18,7 @@ import {
   ShieldOff,
   ShieldCheck,
   Clock,
+  ClipboardCheck,
   AlertTriangle,
   LayoutGrid,
   Wand2,
@@ -35,6 +36,10 @@ import {
   MIN_LENGTH,
   type GeneratorOptions,
 } from '../utils/passwordGenerator';
+import {
+  CLIPBOARD_CLEAR_OPTIONS,
+  DEFAULT_CLIPBOARD_CLEAR_SECONDS,
+} from '../utils/clipboardPolicy';
 import { LogoIcon, LogoHorizontal } from './Logo';
 import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL } from '../utils/config';
 import browser from 'webextension-polyfill';
@@ -87,6 +92,9 @@ export const PopupApp: React.FC = () => {
   const [currentProtocol, setCurrentProtocol] = useState('');
   const [siteDisabled, setSiteDisabled] = useState(false);
   const [autoLockMinutes, setAutoLockMinutes] = useState(15);
+  const [clipboardClearSeconds, setClipboardClearSeconds] = useState(
+    DEFAULT_CLIPBOARD_CLEAR_SECONDS
+  );
   const [tab, setTab] = useState<'vault' | 'generate' | 'health'>('vault');
   const [genOptions, setGenOptions] = useState<GeneratorOptions>(DEFAULT_OPTIONS);
   const [generated, setGenerated] = useState(() => generatePassword(DEFAULT_OPTIONS));
@@ -116,6 +124,9 @@ export const PopupApp: React.FC = () => {
             void refreshVault();
             browser.runtime.sendMessage({ type: 'GET_SETTINGS' }).then((s: any) => {
               if (s && typeof s.autoLockMinutes === 'number') setAutoLockMinutes(s.autoLockMinutes);
+              if (s && typeof s.clipboardClearSeconds === 'number') {
+                setClipboardClearSeconds(s.clipboardClearSeconds);
+              }
             });
           } else if (!res && attempt < 3) {
             setTimeout(() => checkStatus(attempt + 1), 150);
@@ -178,6 +189,11 @@ export const PopupApp: React.FC = () => {
   const changeAutoLock = (minutes: number) => {
     setAutoLockMinutes(minutes);
     browser.runtime.sendMessage({ type: 'SET_AUTO_LOCK', payload: { minutes } });
+  };
+
+  const changeClipboardClear = (seconds: number) => {
+    setClipboardClearSeconds(seconds);
+    browser.runtime.sendMessage({ type: 'SET_CLIPBOARD_CLEAR', payload: { seconds } });
   };
 
   const fetchCachedCredentials = () => {
@@ -349,6 +365,11 @@ export const PopupApp: React.FC = () => {
     navigator.clipboard.writeText(text);
     setCopiedField({ id, field });
     setTimeout(() => setCopiedField(null), 2000);
+    // Hand the countdown to the background worker: this popup is destroyed as
+    // soon as it loses focus, so a timer here would never fire.
+    if (field === 'password') {
+      void browser.runtime.sendMessage({ type: 'CLIPBOARD_COPIED' }).catch(() => undefined);
+    }
   };
 
 
@@ -755,7 +776,20 @@ export const PopupApp: React.FC = () => {
             </div>
 
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-900/8">
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-900/8">
+              <div className="flex items-center gap-1.5" title="Wipe a copied password from the clipboard after this delay">
+                <ClipboardCheck className="w-3 h-3 text-slate-500" />
+                <span className="text-[10px] text-slate-500">Clear copy</span>
+                <select
+                  value={clipboardClearSeconds}
+                  onChange={(e) => changeClipboardClear(Number(e.target.value))}
+                  className="bg-white border border-slate-900/10 rounded-md text-[10px] text-slate-800 px-1.5 py-0.5 focus:outline-none focus:border-brand-cyan cursor-pointer"
+                >
+                  {CLIPBOARD_CLEAR_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
               <div className="flex items-center gap-1.5" title="Automatically lock the vault after this idle period">
                 <Clock className="w-3 h-3 text-slate-500" />
                 <span className="text-[10px] text-slate-500">Auto-lock</span>
