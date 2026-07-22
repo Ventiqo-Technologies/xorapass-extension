@@ -256,22 +256,31 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const msg = message as { type: string; payload?: any };
 
   if (type === 'GET_STATUS') {
-    return browser.storage.session.get(['unlocked', 'email']).then((res) => {
+    return browser.storage.session.get(['unlocked', 'email', 'offline']).then((res) => {
       // The popup opening counts as activity: restart the idle auto-lock timer.
       if (res.unlocked) void scheduleAutoLock();
       console.debug('[XoraPass] GET_STATUS -> unlocked =', !!res.unlocked);
-      return { unlocked: !!res.unlocked, email: res.email || null };
+      return { unlocked: !!res.unlocked, email: res.email || null, offline: !!res.offline };
     });
   }
 
   if (type === 'UNLOCK_VAULT') {
-    const { decryptedItems, email, token, encKey } = msg.payload;
+    const { decryptedItems, email, token, encKey, offline } = msg.payload;
     // token and encKey are held so the popup can re-fetch and decrypt the vault
     // without a full re-authentication. They live in storage.session, which is
     // memory-only, cleared on browser restart, and already restricted to
     // TRUSTED_CONTEXTS — the same place the decrypted vault itself sits.
     return browser.storage.session
-      .set({ unlocked: true, email, vaultItems: decryptedItems, token, encKey })
+      .set({
+        unlocked: true,
+        email,
+        vaultItems: decryptedItems,
+        token,
+        encKey,
+        // An offline unlock came from the cache and has no access token, so
+        // writes have to wait for a connection.
+        offline: !!offline,
+      })
       .then(() => {
         void scheduleAutoLock();
         console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', decryptedItems.length, 'items )');
@@ -494,8 +503,18 @@ async function savePendingCredential(
   const pending = all[String(tabId)];
   if (!pending) return { error: 'nothing_pending' };
 
-  const session = await browser.storage.session.get(['unlocked', 'token', 'encKey', 'vaultItems']);
-  if (!session.unlocked || !session.token || !session.encKey) return { error: 'locked' };
+  const session = await browser.storage.session.get([
+    'unlocked',
+    'token',
+    'encKey',
+    'vaultItems',
+    'offline',
+  ]);
+  if (!session.unlocked || !session.encKey) return { error: 'locked' };
+  // Unlocked from the cache: readable and fillable, but there is no session to
+  // write through. Saying "locked" here would send the user to re-unlock a
+  // vault that is already open.
+  if (!session.token || session.offline) return { error: 'offline' };
 
   const encKey = hexToBytes(session.encKey as string);
   const items = (session.vaultItems as VaultItem[]) || [];

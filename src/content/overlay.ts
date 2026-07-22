@@ -1093,7 +1093,9 @@ export function showSavePrompt(opts: SavePromptOptions): void {
           ? 'Your session expired. Unlock XoraPass and try again.'
           : res?.error === 'locked'
             ? 'XoraPass is locked. Unlock it and try again.'
-            : "Couldn't save. Please try again.";
+            : res?.error === 'offline'
+              ? "You're offline. Reconnect and unlock XoraPass to save this."
+              : "Couldn't save. Please try again.";
     if (!status.isConnected) {
       // Insert the error above the footer rather than at the card bottom.
       card.insertBefore(status, footer);

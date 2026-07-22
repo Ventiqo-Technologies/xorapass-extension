@@ -18,6 +18,7 @@ import {
   ShieldOff,
   ShieldCheck,
   Clock,
+  CloudOff,
   ClipboardCheck,
   AlertTriangle,
   LayoutGrid,
@@ -40,6 +41,17 @@ import {
   CLIPBOARD_CLEAR_OPTIONS,
   DEFAULT_CLIPBOARD_CLEAR_SECONDS,
 } from '../utils/clipboardPolicy';
+import {
+  canVerifyOffline,
+  clearVaultCache,
+  readVaultCache,
+  updateCachedEntries,
+  verifiesAgainstCache,
+  writeVaultCache,
+  type RawVaultEntry,
+  type VaultCache,
+} from '../utils/vaultCache';
+import { isAuthError, isOfflineError } from '../utils/netErrors';
 import { LogoIcon, LogoHorizontal } from './Logo';
 import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL } from '../utils/config';
 import browser from 'webextension-polyfill';
@@ -102,12 +114,16 @@ export const PopupApp: React.FC = () => {
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  // Unlocked from the cache with no server session: the vault reads fine but
+  // nothing can be saved or synced until there is a connection again.
+  const [offline, setOffline] = useState(false);
 
 
   const [step, setStep] = useState<'login' | 'mfa'>('login');
   const [mfaCode, setMfaCode] = useState('');
   const [mfaToken, setMfaToken] = useState('');
   const [tempEncKey, setTempEncKey] = useState<Uint8Array | null>(null);
+  const [tempSalt, setTempSalt] = useState('');
   
 
   useEffect(() => {
@@ -118,10 +134,13 @@ export const PopupApp: React.FC = () => {
           if (res && res.unlocked) {
             setUnlocked(true);
             setEmail(res.email || '');
+            setOffline(!!res.offline);
             // Render the cached snapshot immediately, then sync in the
             // background so entries added elsewhere show up without a re-unlock.
             fetchCachedCredentials();
-            void refreshVault();
+            // An offline session has no token; refreshVault would no-op, but
+            // asking is pointless noise.
+            if (!res.offline) void refreshVault();
             browser.runtime.sendMessage({ type: 'GET_SETTINGS' }).then((s: any) => {
               if (s && typeof s.autoLockMinutes === 'number') setAutoLockMinutes(s.autoLockMinutes);
               if (s && typeof s.clipboardClearSeconds === 'number') {
@@ -204,6 +223,20 @@ export const PopupApp: React.FC = () => {
     });
   };
 
+  /**
+   * Whether an entry opens with this key. XChaCha20-Poly1305 is authenticated,
+   * so a wrong key fails the tag check instead of yielding garbage — which
+   * makes this a sound master-password check with no server involved.
+   */
+  const canDecrypt = (entry: RawVaultEntry, encKey: Uint8Array): boolean => {
+    try {
+      decryptPayload({ ...entry.encrypted_payload, nonce: entry.nonce }, encKey);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const decryptEntries = (entries: any[], encKey: Uint8Array): DecryptedItem[] =>
     entries.map((entry: any) => {
       try {
@@ -228,7 +261,13 @@ export const PopupApp: React.FC = () => {
       }
     });
 
-  const storeSession = (items: DecryptedItem[], token: string, encKey: Uint8Array, accountEmail: string) =>
+  const storeSession = (
+    items: DecryptedItem[],
+    token: string,
+    encKey: Uint8Array,
+    accountEmail: string,
+    isOffline = false
+  ) =>
     browser.runtime.sendMessage({
       type: 'UNLOCK_VAULT',
       payload: {
@@ -236,10 +275,11 @@ export const PopupApp: React.FC = () => {
         email: accountEmail,
         token,
         encKey: bytesToHex(encKey),
+        offline: isOffline,
       }
     });
 
-  const processVault = async (token: string, encKey: Uint8Array) => {
+  const processVault = async (token: string, encKey: Uint8Array, masterSalt: string) => {
     const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
       headers: { Authorization: `Bearer ${token}` }
     });
@@ -248,13 +288,35 @@ export const PopupApp: React.FC = () => {
 
     const res: any = await storeSession(decrypted, token, encKey, email);
     if (res && res.success) {
+      // Persist the ciphertext exactly as it arrived, so the next unlock can
+      // skip the network entirely.
+      await writeVaultCache(email, masterSalt, vaultRes.data as RawVaultEntry[]);
       setUnlocked(true);
+      setOffline(false);
       setVaultItems(decrypted);
       setPassword('');
       setStep('login');
     } else {
       setError("Couldn't start the extension session. Try unlocking again.");
     }
+  };
+
+  /**
+   * Opens the cached vault with a key we have already confirmed against it.
+   * There is no access token here, so this session is read-only.
+   */
+  const unlockFromCache = async (cache: VaultCache, encKey: Uint8Array) => {
+    const decrypted = decryptEntries(cache.entries, encKey);
+    const res: any = await storeSession(decrypted, '', encKey, cache.email, true);
+    if (!res || !res.success) {
+      setError("Couldn't start the extension session. Try unlocking again.");
+      return;
+    }
+    setUnlocked(true);
+    setOffline(true);
+    setVaultItems(decrypted);
+    setPassword('');
+    setStep('login');
   };
 
   const refreshVault = async (manual = false) => {
@@ -269,15 +331,20 @@ export const PopupApp: React.FC = () => {
         headers: { Authorization: `Bearer ${token}` }
       });
       const encKey = hexToBytes(encKeyHex);
+      const accountEmail = (session.email as string) || email;
       const decrypted = decryptEntries(vaultRes.data, encKey);
-      await storeSession(decrypted, token, encKey, (session.email as string) || email);
+      await storeSession(decrypted, token, encKey, accountEmail);
+      // Keep the on-disk copy in step with what we just rendered. The salt and
+      // owner come from the existing cache — a sync has no business creating
+      // one, or changing whose vault it is.
+      await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
       setVaultItems(decrypted);
       setSyncError(null);
     } catch (err: any) {
       // Access tokens last 30 minutes but auto-lock can be set to Never, so an
       // unlocked vault routinely outlives its token. Say so plainly rather than
       // leaving a silently stale list on screen.
-      if (err?.response?.status === 401 || err?.response?.status === 403) {
+      if (isAuthError(err)) {
         setSyncError('Session expired — lock and unlock to sync.');
       } else if (manual) {
         setSyncError("Couldn't reach the server.");
@@ -287,6 +354,18 @@ export const PopupApp: React.FC = () => {
     }
   };
 
+  const discoverSalt = async (): Promise<string> => {
+    const res = await axios.post(`${API_BASE_URL}/api/auth/discover`, { email });
+    if (!res.data.exists) throw new Error('Invalid credentials or account does not exist.');
+    return res.data.master_salt;
+  };
+
+  const deriveKeys = async (salt: string) =>
+    splitMasterKey(await deriveMasterKey(password, salt));
+
+  const login = (clientAuthHash: string) =>
+    axios.post(`${API_BASE_URL}/api/auth/login`, { email, client_auth_hash: clientAuthHash });
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) return;
@@ -295,32 +374,48 @@ export const PopupApp: React.FC = () => {
     setError(null);
 
     try {
+      // A cache carries the salt, so a returning user derives their key without
+      // touching /auth/discover — which is what lets unlock work offline.
+      const cache = await readVaultCache(email);
+      let salt = cache ? cache.masterSalt : await discoverSalt();
 
-      const discoverRes = await axios.post(`${API_BASE_URL}/api/auth/discover`, { email });
-      if (!discoverRes.data.exists) {
-        throw new Error("Invalid credentials or account does not exist.");
+      let derived = await deriveKeys(salt);
+      let loginRes;
+      try {
+        loginRes = await login(derived.clientAuthHash);
+      } catch (err: any) {
+        // Only an unreachable server justifies the offline path. A rejected
+        // password is a rejected password, online or not.
+        if (isOfflineError(err)) {
+          if (!cache || !canVerifyOffline(cache)) throw err;
+          if (!verifiesAgainstCache(cache, (entry) => canDecrypt(entry, derived.encKey))) {
+            throw new Error('Incorrect master password.');
+          }
+          await unlockFromCache(cache, derived.encKey);
+          return;
+        }
+
+        // Changing the master password elsewhere rotates the salt, which makes
+        // the cached one derive a key the server will reject. Confirm against a
+        // fresh salt before telling the user their password is wrong.
+        if (!cache || !isAuthError(err)) throw err;
+        const freshSalt = await discoverSalt();
+        if (freshSalt === salt) throw err;
+        salt = freshSalt;
+        derived = await deriveKeys(salt);
+        loginRes = await login(derived.clientAuthHash);
       }
-      const salt = discoverRes.data.master_salt;
-
-
-      const masterKey = await deriveMasterKey(password, salt);
-      const { encKey, clientAuthHash } = await splitMasterKey(masterKey);
-
-
-      const loginRes = await axios.post(`${API_BASE_URL}/api/auth/login`, {
-        email,
-        client_auth_hash: clientAuthHash
-      });
 
       if (loginRes.data.mfa_required) {
         setMfaToken(loginRes.data.mfa_token);
-        setTempEncKey(encKey);
+        setTempEncKey(derived.encKey);
+        setTempSalt(salt);
         setStep('mfa');
         setLoading(false);
         return;
       }
 
-      await processVault(loginRes.data.access_token, encKey);
+      await processVault(loginRes.data.access_token, derived.encKey, salt);
 
     } catch (err: any) {
       console.error(err);
@@ -344,7 +439,7 @@ export const PopupApp: React.FC = () => {
         code: mfaCode
       });
       
-      await processVault(verifyRes.data.access_token, tempEncKey);
+      await processVault(verifyRes.data.access_token, tempEncKey, tempSalt);
     } catch (err: any) {
       console.error(err);
       setError(err.response?.data?.detail || "Invalid MFA code.");
@@ -353,12 +448,28 @@ export const PopupApp: React.FC = () => {
     }
   };
 
+  /**
+   * Locking drops the keys but keeps the encrypted cache, so the next unlock
+   * needs only the master password — no connection, no re-download.
+   */
   const handleLock = () => {
     browser.runtime.sendMessage({ type: 'LOCK_VAULT' }).then(() => {
       setUnlocked(false);
+      setOffline(false);
       setVaultItems([]);
       setSearchTerm('');
     });
+  };
+
+  /** Logging out is the deliberate one: it also takes the vault off the disk. */
+  const handleLogout = async () => {
+    await clearVaultCache();
+    await browser.runtime.sendMessage({ type: 'LOCK_VAULT' });
+    setUnlocked(false);
+    setOffline(false);
+    setVaultItems([]);
+    setSearchTerm('');
+    setEmail('');
   };
 
   const copyToClipboard = (text: string, id: string, field: 'username' | 'password' | 'url') => {
@@ -430,18 +541,25 @@ export const PopupApp: React.FC = () => {
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => refreshVault(true)}
-              disabled={refreshing}
+              disabled={refreshing || offline}
               className="p-1.5 bg-slate-900/5 border border-slate-900/8 hover:bg-slate-900/10 text-slate-500 hover:text-slate-700 rounded-md transition cursor-pointer flex items-center justify-center disabled:opacity-50"
-              title="Sync vault"
+              title={offline ? 'Sync needs a connection' : 'Sync vault'}
             >
               <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
             <button
-              onClick={handleLock}
-              className="p-1.5 bg-brand-ruby/10 border border-brand-ruby/20 hover:border-brand-ruby/40 text-brand-ruby rounded-md hover:bg-brand-ruby/20 transition cursor-pointer flex items-center justify-center"
-              title="Lock Vault"
+              onClick={handleLogout}
+              className="p-1.5 bg-slate-900/5 border border-slate-900/8 hover:bg-slate-900/10 text-slate-500 hover:text-slate-700 rounded-md transition cursor-pointer flex items-center justify-center"
+              title="Sign out — removes the offline copy of your vault from this browser"
             >
               <LogOut className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={handleLock}
+              className="p-1.5 bg-brand-ruby/10 border border-brand-ruby/20 hover:border-brand-ruby/40 text-brand-ruby rounded-md hover:bg-brand-ruby/20 transition cursor-pointer flex items-center justify-center"
+              title="Lock vault — unlocks again with just your master password"
+            >
+              <Lock className="w-3.5 h-3.5" />
             </button>
           </div>
         )}
@@ -589,6 +707,13 @@ export const PopupApp: React.FC = () => {
           </form>
         ) : (
           <div className="flex-1 flex flex-col space-y-4">
+
+            {offline && (
+              <div className="p-2 bg-brand-amber/10 border border-brand-amber/25 text-brand-amber rounded-lg text-[10px] flex items-start gap-1.5 leading-snug flex-shrink-0">
+                <CloudOff className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                <span>Offline — showing your last synced vault. New logins can't be saved yet.</span>
+              </div>
+            )}
 
             {syncError && (
               <div className="p-2 bg-brand-amber/10 border border-brand-amber/25 text-brand-amber rounded-lg text-[10px] flex items-start gap-1.5 leading-snug flex-shrink-0">
