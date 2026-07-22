@@ -3,6 +3,7 @@ import {
   looksLikeUsername,
   looksLikeNewPassword,
   computeIconPosition,
+  computeTrailingOffset,
   computeDropdownPosition,
   isRectVisible,
 } from './fieldHeuristics';
@@ -77,6 +78,58 @@ describe('computeIconPosition', () => {
     expect(pos.left).toBe(222);
     // 100 + 20 (half height) - 10 (half icon)
     expect(pos.top).toBe(110);
+  });
+});
+
+describe('computeTrailingOffset', () => {
+  // A 300px-wide field at x=50, 40px tall, icon 20px, default padding 8.
+  const field = { top: 100, left: 50, width: 300, height: 40 };
+
+  it('is zero when nothing sits in the icon slot', () => {
+    expect(computeTrailingOffset(field, [], 20)).toBe(0);
+    // A control on the far left never collides with the trailing icon.
+    const leftControl = { top: 108, left: 54, width: 24, height: 24 };
+    expect(computeTrailingOffset(field, [leftControl], 20)).toBe(0);
+  });
+
+  it('shifts left of a reveal-password eye at the right edge', () => {
+    // Eye button occupying the field's right ~28px: left 314, right 338.
+    const eye = { top: 108, left: 314, width: 24, height: 24 };
+    const offset = computeTrailingOffset(field, [eye], 20);
+    // iconRight = 50+300-8 = 342; offset = 342 - 314 + 6 = 34.
+    expect(offset).toBe(34);
+    // With that offset the icon now clears the eye's left edge.
+    const pos = computeIconPosition(field, 20, 8, offset);
+    expect(pos.left + 20).toBeLessThanOrEqual(eye.left);
+  });
+
+  it('clears the leftmost of two stacked trailing controls', () => {
+    const clear = { top: 110, left: 288, width: 20, height: 20 };
+    const eye = { top: 110, left: 314, width: 20, height: 20 };
+    const offset = computeTrailingOffset(field, [clear, eye], 20);
+    // Must move left of `clear` (the leftmost): 342 - 288 + 6 = 60.
+    expect(offset).toBe(60);
+  });
+
+  it('ignores controls off the field centre line', () => {
+    // A control well above the field's vertical centre is unrelated.
+    const above = { top: 40, left: 314, width: 24, height: 20 };
+    expect(computeTrailingOffset(field, [above], 20)).toBe(0);
+  });
+
+  it('ignores wide elements that are not adornments', () => {
+    // The input's own overlay or a full-width child should not count.
+    const wide = { top: 100, left: 50, width: 300, height: 40 };
+    expect(computeTrailingOffset(field, [wide], 20)).toBe(0);
+  });
+
+  it('never pushes the icon past the field padding', () => {
+    // A wide-but-valid trailing control whose left edge sits far in; the offset
+    // must stay clamped to the field's usable width.
+    const wideTrailing = { top: 108, left: 90, width: 180, height: 24 };
+    const offset = computeTrailingOffset(field, [wideTrailing], 20);
+    expect(offset).toBeLessThanOrEqual(300 - 20 - 16);
+    expect(offset).toBeGreaterThan(0);
   });
 });
 

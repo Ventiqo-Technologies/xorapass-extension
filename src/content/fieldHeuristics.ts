@@ -89,12 +89,59 @@ export interface Viewport {
  * Places the autofill icon inside the input's right edge, vertically centred.
  * Coordinates are viewport-relative because the overlay host is position:fixed,
  * which is what lets us avoid reparenting the page's own input elements.
+ *
+ * `offset` shifts the icon further left, to clear a control the site already
+ * put at the right edge — most often a show/hide-password eye button.
  */
-export function computeIconPosition(rect: Rect, iconSize: number, padding = 8): Point {
+export function computeIconPosition(rect: Rect, iconSize: number, padding = 8, offset = 0): Point {
   return {
-    left: rect.left + rect.width - iconSize - padding,
+    left: rect.left + rect.width - iconSize - padding - offset,
     top: rect.top + rect.height / 2 - iconSize / 2,
   };
+}
+
+/**
+ * How far left to shift the autofill icon so it does not sit on top of a
+ * control the page already placed at the field's right edge (a reveal-password
+ * eye, a clear button, a spinner). Given the field rect and the rects of nearby
+ * candidate controls, returns the horizontal offset to pass to
+ * computeIconPosition. Zero when the icon's default slot is clear.
+ *
+ * Kept pure — the DOM gathering of candidate rects lives in the overlay — so the
+ * geometry can be unit tested without a browser.
+ */
+export function computeTrailingOffset(
+  field: Rect,
+  controls: Rect[],
+  iconSize: number,
+  padding = 8,
+  gap = 6
+): number {
+  const base = field.left + field.width - padding; // the icon's right edge at offset 0
+  const centerY = field.top + field.height / 2;
+  // Only controls sitting in the field's right region are trailing adornments;
+  // ignore anything spanning the left/centre (labels, the input itself).
+  const rightZoneLeft = field.left + field.width - iconSize * 4;
+
+  // Left edge of the leftmost trailing control. The icon is placed to the left
+  // of the whole cluster rather than trying to nestle between controls, so two
+  // stacked adornments (e.g. clear + eye) are both cleared in one shift.
+  let clusterLeft = Infinity;
+  for (const c of controls) {
+    const cRight = c.left + c.width;
+    if (c.width > field.width * 0.6) continue; // too wide to be an adornment
+    if (c.height > field.height + 6) continue; // taller than the field
+    if (centerY < c.top - 2 || centerY > c.top + c.height + 2) continue; // off the centre line
+    if (cRight < rightZoneLeft) continue; // not near the right edge
+    clusterLeft = Math.min(clusterLeft, c.left);
+  }
+
+  if (clusterLeft === Infinity) return 0; // nothing in the way
+
+  const offset = base - (clusterLeft - gap);
+  // Never push the icon past the field's left padding.
+  const maxOffset = Math.max(0, field.width - iconSize - padding * 2);
+  return Math.min(Math.max(0, offset), maxOffset);
 }
 
 /**

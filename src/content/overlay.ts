@@ -14,8 +14,10 @@
 
 import {
   computeIconPosition,
+  computeTrailingOffset,
   computeDropdownPosition,
   isRectVisible,
+  type Rect,
 } from './fieldHeuristics';
 
 const HOST_ID = 'xorapass-overlay-host';
@@ -46,6 +48,10 @@ interface Registration {
   input: HTMLInputElement;
   icon: HTMLButtonElement;
   onActivate: () => void;
+  /** Cached left-shift to clear the site's own trailing controls. */
+  offset?: number;
+  /** Field width when `offset` was computed, so it recomputes on layout change. */
+  offsetAtWidth?: number;
 }
 
 let hostEl: HTMLDivElement | null = null;
@@ -598,6 +604,33 @@ export function attachIcon(input: HTMLInputElement, onActivate: () => void): boo
   return true;
 }
 
+// Elements the page has placed at or near a field's right edge that our icon
+// must not sit on top of — reveal-password eyes, clear buttons, spinners. The
+// search is scoped to the nearest wrapping container and to control-like tags,
+// so it stays cheap; the pure geometry in computeTrailingOffset does the
+// filtering by position and size.
+function trailingControls(input: HTMLInputElement, fieldRect: DOMRect): Rect[] {
+  const scope: Element =
+    input.closest('form, label, div, span') || input.parentElement || document.body;
+
+  const nodes = scope.querySelectorAll(
+    'button, [role="button"], a, svg, img, i, span[class]'
+  );
+
+  const out: Rect[] = [];
+  for (const node of nodes) {
+    if (node === input || node.contains(input)) continue;
+    const r = (node as Element).getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    // Cheap pre-filter: keep only things overlapping the field's right half,
+    // leaving the precise decision to computeTrailingOffset.
+    if (r.left < fieldRect.left + fieldRect.width / 2) continue;
+    out.push({ top: r.top, left: r.left, width: r.width, height: r.height });
+    if (out.length >= 12) break; // never let a pathological page balloon this
+  }
+  return out;
+}
+
 /** Re-syncs every icon (and any open menu) to its input's current rect. */
 export function reposition(): void {
   const viewport = { width: window.innerWidth, height: window.innerHeight };
@@ -621,7 +654,16 @@ export function reposition(): void {
       continue;
     }
 
-    const pos = computeIconPosition(rect, ICON_SIZE);
+    // Probe for the site's own trailing controls (a reveal-password eye, a
+    // clear button) only when the offset is unknown or the field width changed.
+    // Skipping it while the width is stable keeps scroll repositioning cheap, as
+    // collisions do not move relative to the field during a scroll.
+    if (reg.offset === undefined || Math.abs((reg.offsetAtWidth ?? -1) - rect.width) > 1) {
+      reg.offset = computeTrailingOffset(rect, trailingControls(reg.input, rect), ICON_SIZE);
+      reg.offsetAtWidth = rect.width;
+    }
+
+    const pos = computeIconPosition(rect, ICON_SIZE, 8, reg.offset);
     reg.icon.style.display = 'flex';
     reg.icon.style.left = `${pos.left}px`;
     reg.icon.style.top = `${pos.top}px`;

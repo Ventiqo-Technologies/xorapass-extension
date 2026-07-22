@@ -74,6 +74,24 @@
 </section>
 
 <section>
+  <h2>1b · Password field with a reveal (eye) button</h2>
+  <p class="why">
+    The site puts its own show/hide toggle at the field's right edge — exactly where the XoraPass icon wants to sit. The icon must shift <em>left</em> of the eye rather than overlapping it. Toggle the eye and confirm both stay clickable and don't stack.
+  </p>
+  <form onsubmit="return false">
+    <label>Email</label>
+    <input type="email" name="eye_email" autocomplete="username">
+    <label>Password</label>
+    <span style="position:relative; display:block;">
+      <input type="password" name="eye_pw" autocomplete="current-password" style="padding-right:38px;">
+      <button type="button" id="eyeToggle" aria-label="Show password"
+        style="position:absolute; right:8px; top:50%; transform:translateY(-50%); width:24px; height:24px; border:none; background:transparent; cursor:pointer; color:#94a3b8; font-size:15px;">👁</button>
+    </span>
+    <button class="act" type="submit">Sign in</button>
+  </form>
+</section>
+
+<section>
   <h2>2 · No wrapping form</h2>
   <p class="why">Inputs are siblings with no <code>&lt;form&gt;</code>. Exercises the document-wide fallback in <code>findUsernameField</code>.</p>
   <label>Username</label>
@@ -225,6 +243,12 @@
   track(document.getElementById('reactUser'));
   track(document.getElementById('reactPw'));
 })();
+
+// ── 1b. Reveal-password toggle ───────────────────────────────────────────────
+document.getElementById('eyeToggle').addEventListener('click', function () {
+  var pw = document.querySelector('input[name="eye_pw"]');
+  pw.type = pw.type === 'password' ? 'text' : 'password';
+});
 
 // ── 6. SPA injection ────────────────────────────────────────────────────────
 document.getElementById('injectBtn').addEventListener('click', function () {

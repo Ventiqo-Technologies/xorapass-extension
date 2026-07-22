@@ -17,6 +17,7 @@ import {
   hasIcon,
   openDropdown,
   closeDropdown,
+  isDropdownOpen,
   scheduleReposition,
   showConfirmDialog,
   showSavePrompt,
@@ -34,6 +35,14 @@ const fieldPairs = new WeakMap<HTMLInputElement, HTMLInputElement | null>();
 
 /** Password field -> whether it is choosing a new password rather than entering one. */
 const newPasswordFields = new WeakMap<HTMLInputElement, boolean>();
+
+/**
+ * Any decorated field (username or password) -> the password field its menu
+ * should act on. Focusing a mapped field opens that menu, the way 1Password and
+ * Bitwarden surface logins the moment a field is focused rather than making the
+ * user find and click a small icon.
+ */
+const focusActivators = new WeakMap<HTMLInputElement, HTMLInputElement>();
 
 // Categories whose values are sensitive enough to always require an explicit
 // confirmation before being written into a page.
@@ -169,10 +178,12 @@ function scanForLoginFields(): void {
     // Offer autofill on the password field, and on the username field when one
     // was found. This keeps autofill working on pages that don't wrap inputs in
     // a <form> or that split username/password across containers.
-    attachIcon(passInput, () => activate(passInput));
+    attachIcon(passInput, () => activate(passInput, passInput));
+    focusActivators.set(passInput, passInput);
     if (usernameInput && !hasIcon(usernameInput) && activeCredentials.length > 0) {
       fieldPairs.set(usernameInput, usernameInput);
-      attachIcon(usernameInput, () => activate(passInput));
+      attachIcon(usernameInput, () => activate(passInput, usernameInput));
+      focusActivators.set(usernameInput, passInput);
     }
   }
 }
@@ -207,12 +218,13 @@ function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null
 // Fill flow
 // ---------------------------------------------------------------------------
 
-// Opens the credential menu anchored to whichever field the user clicked. On a
-// sign-up field the menu leads with a generated password.
-function activate(passInput: HTMLInputElement): void {
+// Opens the credential menu for `passInput`, positioned at `anchor` — the field
+// the user actually clicked or focused, so the menu appears where they are
+// looking. On a sign-up field the menu leads with a generated password.
+function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
   const isNew = newPasswordFields.get(passInput) === true;
 
-  openDropdown(passInput, {
+  openDropdown(anchor, {
     credentials: activeCredentials,
     warning: lookalikeWarning
       ? `This site resembles "${lookalikeWarning.target}". Verify the address before filling.`
@@ -495,6 +507,31 @@ function watchForSubmission(): void {
   );
 }
 
+// Opens the credential menu when a decorated field is focused, so logins are
+// offered without the user having to spot and click the icon.
+function watchForFocus(): void {
+  document.addEventListener(
+    'focusin',
+    (e) => {
+      const el = e.target;
+      if (!(el instanceof HTMLInputElement)) return;
+
+      const passInput = focusActivators.get(el);
+      if (!passInput) return;
+      if (isDropdownOpen()) return;
+
+      // Only auto-open on an empty field. A field with a value means the user is
+      // editing, not looking for a credential — and because focusin fires once
+      // per focus, a menu they dismiss with Escape or an outside click does not
+      // reopen while focus stays on the same field.
+      if (el.value) return;
+
+      activate(passInput, el);
+    },
+    true
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
@@ -505,6 +542,7 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   loadCredentials();
   watchForUsernameEntry();
   watchForSubmission();
+  watchForFocus();
   // A login that navigated lands here: the capture was stored by the previous
   // page's script, and this one raises the prompt.
   checkPendingSave();
