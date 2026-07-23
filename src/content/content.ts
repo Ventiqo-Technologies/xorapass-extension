@@ -1261,11 +1261,62 @@ function insertTextAtCaret(el: HTMLElement, text: string, caret: CaretSnapshot) 
   }
 }
 
+// Reads the full current text of a guarded editable (used by the typing guard,
+// which must scan what's already in the field rather than an incoming payload).
+function readEditableText(el: HTMLElement): string {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
+  return el.innerText ?? el.textContent ?? '';
+}
+
+// Replaces the entire content of a guarded editable and moves the caret to the
+// end. Used to remove/redact a typed secret in place.
+function setEditableText(el: HTMLElement, text: string) {
+  el.focus();
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    el.value = text;
+    try {
+      el.setSelectionRange(text.length, text.length);
+    } catch {
+      /* some input types disallow selection ranges */
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+  // contenteditable: select the whole field and replace via execCommand, which
+  // rich editors (ProseMirror/Lexical) intercept and apply to their own model —
+  // directly setting textContent would desync or be overwritten by them.
+  const sel = window.getSelection();
+  if (sel) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  const replaced = document.execCommand && document.execCommand('insertText', false, text);
+  if (!replaced) {
+    el.textContent = text; // fallback for editors without execCommand support
+    if (sel) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 type PasteChoice = 'cancel' | 'redact' | 'save' | 'paste';
 
 // The warning dialog. Lists what was detected (masked, never the full value)
-// and offers the policy-appropriate actions.
-function showPasteWarningDialog(scan: ScanResult, policy: PastePolicy): Promise<PasteChoice> {
+// and offers the policy-appropriate actions. `source` tailors the wording and
+// button labels for a paste/drop vs. a secret that was typed in.
+function showPasteWarningDialog(
+  scan: ScanResult,
+  policy: PastePolicy,
+  source: 'paste' | 'typing' = 'paste'
+): Promise<PasteChoice> {
+  const typing = source === 'typing';
   return new Promise((resolve) => {
     const backdrop = document.createElement('div');
     Object.assign(backdrop.style, {
@@ -1293,7 +1344,7 @@ function showPasteWarningDialog(scan: ScanResult, policy: PastePolicy): Promise<
     });
 
     const title = document.createElement('div');
-    title.innerText = '⚠  Secret detected before paste';
+    title.innerText = typing ? '⚠  Secret detected in your input' : '⚠  Secret detected before paste';
     Object.assign(title.style, {
       padding: '14px 16px',
       fontSize: '13px',
@@ -1309,10 +1360,15 @@ function showPasteWarningDialog(scan: ScanResult, policy: PastePolicy): Promise<
 
     const intro = document.createElement('p');
     intro.style.margin = '0 0 10px 0';
-    intro.innerText =
-      policy.mode === 'block'
-        ? 'Your organization blocks pasting secrets into AI tools. This looks like:'
+    if (policy.mode === 'block') {
+      intro.innerText = typing
+        ? 'Your organization blocks entering secrets into AI tools. This looks like:'
+        : 'Your organization blocks pasting secrets into AI tools. This looks like:';
+    } else {
+      intro.innerText = typing
+        ? 'You’ve typed what looks like a secret into an AI tool. This could expose it to the model, its logs, or its provider. Detected:'
         : 'You’re about to paste what looks like a secret into an AI tool. This could expose it to the model, its logs, or its provider. Detected:';
+    }
     body.appendChild(intro);
 
     // Distinct detected types, with one masked example each.
@@ -1380,10 +1436,12 @@ function showPasteWarningDialog(scan: ScanResult, policy: PastePolicy): Promise<
       return b;
     };
 
-    // Cancel (safe default), Redact & paste, Save to vault, and -- only when the
-    // policy allows dismissing -- Paste anyway.
+    // Cancel/remove (safe default), Redact, Save to vault, and -- only when the
+    // policy allows dismissing -- keep it. Labels differ for paste vs. typing:
+    // a paste can be prevented outright, whereas typed text is removed/redacted
+    // from the field after the fact.
     actions.appendChild(
-      mkBtn('Cancel paste', 'cancel', {
+      mkBtn(typing ? 'Remove secret' : 'Cancel paste', 'cancel', {
         color: '#e2e8f0',
         background: 'rgba(255,255,255,0.06)',
         borderColor: 'rgba(255,255,255,0.1)',
@@ -1397,14 +1455,14 @@ function showPasteWarningDialog(scan: ScanResult, policy: PastePolicy): Promise<
       })
     );
     actions.appendChild(
-      mkBtn('Redact & paste', 'redact', {
+      mkBtn(typing ? 'Redact' : 'Redact & paste', 'redact', {
         color: '#020617',
         background: 'linear-gradient(90deg, #2dd4bf, #22d3ee)',
       })
     );
     if (policy.mode !== 'block' && policy.allowDismiss) {
       actions.appendChild(
-        mkBtn('Paste anyway', 'paste', {
+        mkBtn(typing ? 'Keep anyway' : 'Paste anyway', 'paste', {
           color: '#fca5a5',
           background: 'transparent',
           borderColor: 'rgba(244,63,94,0.4)',
@@ -1497,7 +1555,119 @@ async function runPasteGuard(text: string, el: HTMLElement, scan: ScanResult, ca
     }
   } finally {
     guardActive = false;
+    // The user consciously acted on this content; record it so the typing guard
+    // doesn't immediately re-warn about the same text (e.g. after "paste anyway").
+    acknowledgeCurrent(el);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Typing guard: the same secret detection, but for secrets TYPED into an AI
+// input rather than pasted. Because the text is already in the field, we scan
+// the field's current content (debounced) and, on a hit, offer to remove or
+// redact it in place instead of preventing an incoming paste.
+// ---------------------------------------------------------------------------
+
+const TYPING_DEBOUNCE_MS = 650;
+let typingTimer: ReturnType<typeof setTimeout> | undefined;
+// Per-element text the user explicitly chose to keep, so we don't nag on every
+// subsequent keystroke for content they've already decided about.
+const acknowledgedText = new WeakMap<HTMLElement, string>();
+
+function acknowledgeCurrent(el: HTMLElement) {
+  acknowledgedText.set(el, readEditableText(el));
+}
+
+function onInput(e: Event) {
+  if (guardActive) return;
+  if (!shouldGuard(pastePolicy, window.location.hostname)) return;
+  const el = guardedEditable(e.target);
+  if (!el) return;
+  if (typingTimer) clearTimeout(typingTimer);
+  typingTimer = setTimeout(() => scanTypedInput(el), TYPING_DEBOUNCE_MS);
+}
+
+function scanTypedInput(el: HTMLElement) {
+  if (guardActive) return;
+  if (!el.isConnected) return; // element was removed while we waited
+  const text = readEditableText(el);
+  if (!text) return;
+  if (acknowledgedText.get(el) === text) return; // already decided about this exact text
+  const scan = scanForSecrets(text);
+  if (scan.matches.length === 0) return;
+  void runTypingGuard(el, text, scan);
+}
+
+async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult) {
+  guardActive = true;
+  try {
+    const choice = await showPasteWarningDialog(scan, pastePolicy, 'typing');
+    switch (choice) {
+      // For typed input, both "Remove secret" and "Redact" strip the secret from
+      // the field; only the audit label differs.
+      case 'cancel':
+      case 'redact': {
+        setEditableText(el, redact(text, scan.matches));
+        reportPasteEvent(scan.types, choice === 'redact' ? 'typed_redacted' : 'typed_removed');
+        break;
+      }
+      case 'save': {
+        const label = `Secret from ${window.location.hostname}`;
+        const res: any = await browser.runtime
+          .sendMessage({ type: 'AI_SAVE_SECRET', payload: { value: text, label, url: window.location.origin } })
+          .catch(() => ({ error: 'Could not reach XoraPass.' }));
+        if (res && res.success) {
+          setEditableText(el, redact(text, scan.matches));
+          showToast('Saved to your vault — removed from the field.');
+          reportPasteEvent(scan.types, 'typed_saved_to_vault');
+        } else {
+          showToast(res?.error || 'Could not save to vault.', 'err');
+          reportPasteEvent(scan.types, 'typed_save_failed');
+        }
+        break;
+      }
+      case 'paste': {
+        // "Keep anyway" — leave the text, but remember it so we don't re-warn.
+        reportPasteEvent(scan.types, 'typed_kept');
+        break;
+      }
+    }
+  } finally {
+    guardActive = false;
+    acknowledgeCurrent(el);
+  }
+}
+
+// Polling fallback. Rich editors (ChatGPT's ProseMirror, Claude, Slack, etc.)
+// manage their own DOM and don't always surface a bubbling `input` event a
+// document-level listener can see. Rather than depend on each editor's event
+// model, we also poll the currently-focused editable and scan it when its text
+// changes. This is what makes typed-secret detection work on those editors.
+const lastPolledText = new WeakMap<HTMLElement, string>();
+
+// The truly-focused element, descending through open shadow roots (some editors
+// nest their editable inside a shadow tree).
+function deepActiveElement(): Element | null {
+  let el: Element | null = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+    el = el.shadowRoot.activeElement;
+  }
+  return el;
+}
+
+function pollActiveEditable() {
+  if (guardActive) return;
+  if (!shouldGuard(pastePolicy, window.location.hostname)) return;
+  const el = guardedEditable(deepActiveElement());
+  if (!el) return;
+  const text = readEditableText(el);
+  if (!text) return;
+  if (lastPolledText.get(el) === text) return; // unchanged since last poll
+  lastPolledText.set(el, text);
+  if (acknowledgedText.get(el) === text) return; // already decided about this text
+  const scan = scanForSecrets(text);
+  if (scan.matches.length === 0) return;
+  void runTypingGuard(el, text, scan);
 }
 
 function onPaste(e: ClipboardEvent) {
@@ -1544,6 +1714,12 @@ function initPasteGuard() {
   // Capture phase so we intercept before the page's own paste handling.
   document.addEventListener('paste', onPaste, true);
   document.addEventListener('drop', onDrop, true);
+  // Typed secrets: scan the field's content (debounced) after input. Not capture
+  // phase — we react to the value after the keystroke lands, not before.
+  document.addEventListener('input', onInput, true);
+  // Fallback for rich editors whose input events don't reach us: poll the
+  // focused editable and scan it when its text changes.
+  setInterval(pollActiveEditable, 700);
 }
 
 // ---------------------------------------------------------------------------
