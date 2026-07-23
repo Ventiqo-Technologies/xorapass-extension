@@ -13,6 +13,8 @@ import {
   Mail,
   Lock,
   ArrowRight,
+  ArrowLeft,
+  ChevronRight,
   Eye,
   EyeOff,
   ShieldOff,
@@ -24,7 +26,9 @@ import {
   LayoutGrid,
   Wand2,
   Activity,
-  TrendingUp
+  TrendingUp,
+  CheckCircle2,
+  X
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
@@ -56,7 +60,6 @@ import { LogoIcon, LogoHorizontal } from './Logo';
 import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL, WEB_APP_URL } from '../utils/config';
 import browser from 'webextension-polyfill';
 
-
 const CATEGORY_META: Record<string, { label: string; color: string }> = {
   login: { label: 'Logins', color: '#0891b2' },
   other: { label: 'API / Other', color: '#4f46e5' },
@@ -68,11 +71,6 @@ const CATEGORY_META: Record<string, { label: string; color: string }> = {
 const categoryLabel = (c: string) => CATEGORY_META[c]?.label || c;
 const categoryColor = (c: string) => CATEGORY_META[c]?.color || '#475569';
 
-/**
- * Mirrors the web app's category nav (Dashboard.tsx `categoryNav`). Keep the
- * keys in step: an item whose category the popup does not know about is
- * reachable only under "All".
- */
 const VAULT_CATEGORIES = [
   { key: 'login', label: 'Logins' },
   { key: 'card', label: 'Cards' },
@@ -92,8 +90,6 @@ const AUTO_LOCK_OPTIONS = [
   { label: 'Never', value: 0 },
 ];
 
-
-
 interface DecryptedItem {
   id: string;
   label: string;
@@ -105,6 +101,38 @@ interface DecryptedItem {
   url?: string;
 }
 
+const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; size?: string }> = ({
+  label,
+  url,
+  category = 'login',
+  size = 'w-7 h-7 text-xs',
+}) => {
+  const [imgError, setImgError] = useState(false);
+  const hostname = url ? extractHostname(url) : '';
+  const color = categoryColor(category);
+
+  if (hostname && !imgError) {
+    return (
+      <img
+        src={`https://www.google.com/s2/favicons?domain=${hostname}&sz=64`}
+        alt=""
+        onError={() => setImgError(true)}
+        className={`${size} rounded-lg object-contain bg-white border border-slate-900/10 p-0.5 shrink-0 shadow-xs`}
+      />
+    );
+  }
+
+  const initial = (label || 'P').charAt(0).toUpperCase();
+  return (
+    <div
+      className={`${size} rounded-lg flex items-center justify-center font-bold text-white shrink-0 shadow-xs`}
+      style={{ backgroundColor: color }}
+    >
+      {initial}
+    </div>
+  );
+};
+
 export const PopupApp: React.FC = () => {
   const [unlocked, setUnlocked] = useState(false);
   const [email, setEmail] = useState('');
@@ -112,7 +140,6 @@ export const PopupApp: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
 
   const [vaultItems, setVaultItems] = useState<DecryptedItem[]>([]);
   const [currentHostname, setCurrentHostname] = useState('');
@@ -123,6 +150,8 @@ export const PopupApp: React.FC = () => {
     DEFAULT_CLIPBOARD_CLEAR_SECONDS
   );
   const [tab, setTab] = useState<'vault' | 'generate' | 'health' | 'settings'>('vault');
+  const [selectedItem, setSelectedItem] = useState<DecryptedItem | null>(null);
+  const [showDetailPassword, setShowDetailPassword] = useState(false);
   const [genOptions, setGenOptions] = useState<GeneratorOptions>(DEFAULT_OPTIONS);
   const [generated, setGenerated] = useState(() => generatePassword(DEFAULT_OPTIONS));
   const [searchTerm, setSearchTerm] = useState('');
@@ -130,19 +159,24 @@ export const PopupApp: React.FC = () => {
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
-  // Unlocked from the cache with no server session: the vault reads fine but
-  // nothing can be saved or synced until there is a connection again.
   const [offline, setOffline] = useState(false);
-
 
   const [step, setStep] = useState<'login' | 'mfa'>('login');
   const [mfaCode, setMfaCode] = useState('');
   const [mfaToken, setMfaToken] = useState('');
   const [tempEncKey, setTempEncKey] = useState<Uint8Array | null>(null);
   const [tempSalt, setTempSalt] = useState('');
-  
+  const [capsLockOn, setCapsLockOn] = useState(false);
+  const [rememberedEmail, setRememberedEmail] = useState(false);
 
   useEffect(() => {
+    browser.storage.local.get(['vaultCache']).then((data) => {
+      if (data.vaultCache && data.vaultCache.email) {
+        setEmail(data.vaultCache.email);
+        setRememberedEmail(true);
+      }
+    });
+
     const checkStatus = (attempt = 0) => {
       browser.runtime
         .sendMessage({ type: 'GET_STATUS' })
@@ -151,14 +185,7 @@ export const PopupApp: React.FC = () => {
             setUnlocked(true);
             setEmail(res.email || '');
             setOffline(!!res.offline);
-            // Render the cached snapshot immediately, then sync in the
-            // background so entries added elsewhere show up without a re-unlock.
             fetchCachedCredentials();
-            // An offline session has no token; refreshVault would no-op, but
-            // asking is pointless noise.
-            // Always retry. A successful sync is the only thing that clears
-            // the offline flag, so skipping it here left the vault stuck
-            // offline permanently once it was set.
             void refreshVault();
             browser.runtime.sendMessage({ type: 'GET_SETTINGS' }).then((s: any) => {
               if (s && typeof s.autoLockMinutes === 'number') setAutoLockMinutes(s.autoLockMinutes);
@@ -175,7 +202,6 @@ export const PopupApp: React.FC = () => {
         });
     };
     checkStatus();
-
 
     browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
       const activeTab = tabs[0];
@@ -196,8 +222,6 @@ export const PopupApp: React.FC = () => {
     });
   }, []);
 
-  // Options and password stay in step: changing a setting immediately shows a
-  // password that reflects it, rather than leaving a stale one on screen.
   const updateGenOptions = (patch: Partial<GeneratorOptions>) => {
     const next = { ...genOptions, ...patch };
     setGenOptions(next);
@@ -213,7 +237,6 @@ export const PopupApp: React.FC = () => {
       });
   };
 
-
   const openSignup = () => {
     browser.tabs.create({ url: SIGNUP_URL });
     window.close();
@@ -226,6 +249,15 @@ export const PopupApp: React.FC = () => {
   const openRecovery = () => {
     browser.tabs.create({ url: RECOVERY_URL });
     window.close();
+  };
+
+  const openUrl = (url?: string) => {
+    if (!url) return;
+    let target = url;
+    if (!target.startsWith('http://') && !target.startsWith('https://')) {
+      target = `https://${target}`;
+    }
+    browser.tabs.create({ url: target });
   };
 
   const changeAutoLock = (minutes: number) => {
@@ -246,11 +278,6 @@ export const PopupApp: React.FC = () => {
     });
   };
 
-  /**
-   * Whether an entry opens with this key. XChaCha20-Poly1305 is authenticated,
-   * so a wrong key fails the tag check instead of yielding garbage — which
-   * makes this a sound master-password check with no server involved.
-   */
   const canDecrypt = (entry: RawVaultEntry, encKey: Uint8Array): boolean => {
     try {
       decryptPayload({ ...entry.encrypted_payload, nonce: entry.nonce }, encKey);
@@ -308,11 +335,8 @@ export const PopupApp: React.FC = () => {
     });
 
     const decrypted = decryptEntries(vaultRes.data, encKey);
-
     const res: any = await storeSession(decrypted, token, encKey, email);
     if (res && res.success) {
-      // Persist the ciphertext exactly as it arrived, so the next unlock can
-      // skip the network entirely.
       await writeVaultCache(email, masterSalt, vaultRes.data as RawVaultEntry[]);
       setUnlocked(true);
       setOffline(false);
@@ -324,10 +348,6 @@ export const PopupApp: React.FC = () => {
     }
   };
 
-  /**
-   * Opens the cached vault with a key we have already confirmed against it.
-   * There is no access token here, so this session is read-only.
-   */
   const unlockFromCache = async (cache: VaultCache, encKey: Uint8Array) => {
     const decrypted = decryptEntries(cache.entries, encKey);
     const res: any = await storeSession(decrypted, '', encKey, cache.email, true);
@@ -357,16 +377,10 @@ export const PopupApp: React.FC = () => {
       const accountEmail = (session.email as string) || email;
       const decrypted = decryptEntries(vaultRes.data, encKey);
       await storeSession(decrypted, token, encKey, accountEmail);
-      // Keep the on-disk copy in step with what we just rendered. The salt and
-      // owner come from the existing cache — a sync has no business creating
-      // one, or changing whose vault it is.
       await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
       setVaultItems(decrypted);
       setSyncError(null);
     } catch (err: any) {
-      // Access tokens last 30 minutes but auto-lock can be set to Never, so an
-      // unlocked vault routinely outlives its token. Say so plainly rather than
-      // leaving a silently stale list on screen.
       if (isAuthError(err)) {
         setSyncError('Session expired — lock and unlock to sync.');
       } else if (manual) {
@@ -397,8 +411,6 @@ export const PopupApp: React.FC = () => {
     setError(null);
 
     try {
-      // A cache carries the salt, so a returning user derives their key without
-      // touching /auth/discover — which is what lets unlock work offline.
       const cache = await readVaultCache(email);
       let salt = cache ? cache.masterSalt : await discoverSalt();
 
@@ -407,8 +419,6 @@ export const PopupApp: React.FC = () => {
       try {
         loginRes = await login(derived.clientAuthHash);
       } catch (err: any) {
-        // Only an unreachable server justifies the offline path. A rejected
-        // password is a rejected password, online or not.
         if (isOfflineError(err)) {
           if (!cache || !canVerifyOffline(cache)) throw err;
           if (!verifiesAgainstCache(cache, (entry) => canDecrypt(entry, derived.encKey))) {
@@ -418,9 +428,6 @@ export const PopupApp: React.FC = () => {
           return;
         }
 
-        // Changing the master password elsewhere rotates the salt, which makes
-        // the cached one derive a key the server will reject. Confirm against a
-        // fresh salt before telling the user their password is wrong.
         if (!cache || !isAuthError(err)) throw err;
         const freshSalt = await discoverSalt();
         if (freshSalt === salt) throw err;
@@ -471,26 +478,23 @@ export const PopupApp: React.FC = () => {
     }
   };
 
-  /**
-   * Locking drops the keys but keeps the encrypted cache, so the next unlock
-   * needs only the master password — no connection, no re-download.
-   */
   const handleLock = () => {
     browser.runtime.sendMessage({ type: 'LOCK_VAULT' }).then(() => {
       setUnlocked(false);
       setOffline(false);
       setVaultItems([]);
+      setSelectedItem(null);
       setSearchTerm('');
     });
   };
 
-  /** Logging out is the deliberate one: it also takes the vault off the disk. */
   const handleLogout = async () => {
     await clearVaultCache();
     await browser.runtime.sendMessage({ type: 'LOCK_VAULT' });
     setUnlocked(false);
     setOffline(false);
     setVaultItems([]);
+    setSelectedItem(null);
     setSearchTerm('');
     setEmail('');
   };
@@ -499,18 +503,14 @@ export const PopupApp: React.FC = () => {
     navigator.clipboard.writeText(text);
     setCopiedField({ id, field });
     setTimeout(() => setCopiedField(null), 2000);
-    // Hand the countdown to the background worker: this popup is destroyed as
-    // soon as it loses focus, so a timer here would never fire.
     if (field === 'password') {
       void browser.runtime.sendMessage({ type: 'CLIPBOARD_COPIED' }).catch(() => undefined);
     }
   };
 
-
   const matchingItems = siteDisabled
     ? []
     : vaultItems.filter(item => !!item.url && !!currentHostname && isDomainMatch(currentHostname, item.url));
-
 
   const term = searchTerm.trim().toLowerCase();
 
@@ -519,9 +519,6 @@ export const PopupApp: React.FC = () => {
     item.username.toLowerCase().includes(term) ||
     (!!item.url && item.url.toLowerCase().includes(term));
 
-  // While searching, everything is in scope. Otherwise the browse list omits
-  // the entries already shown under "For this site", so the same credential
-  // is not listed twice.
   const matchingIds = new Set(matchingItems.map((i) => i.id));
   const inCategory = (item: DecryptedItem) =>
     categoryFilter === 'all' || (item.category || 'login') === categoryFilter;
@@ -529,12 +526,8 @@ export const PopupApp: React.FC = () => {
     term ? vaultItems.filter(matches) : vaultItems.filter((i) => !matchingIds.has(i.id))
   ).filter(inCategory);
 
-  // Counted over the whole vault, not the browse list: a chip reading "Cards 2"
-  // that filters down to 1 because one is already shown under "For this site"
-  // would look like a bug.
   const categoryCount = (key: CategoryKey) =>
     vaultItems.filter((i) => (i.category || 'login') === key).length;
-
 
   const bits = entropyBits(genOptions);
   const strength = strengthTier(bits);
@@ -544,6 +537,20 @@ export const PopupApp: React.FC = () => {
         : strength.tone === 'good' ? '#0d9488'
           : '#059669';
 
+  const renderStyledPassword = (pwd: string) => {
+    return pwd.split('').map((char, index) => {
+      let colorClass = 'text-slate-800';
+      if (/[0-9]/.test(char)) colorClass = 'text-brand-cyan font-bold';
+      else if (/[^a-zA-Z0-9]/.test(char)) colorClass = 'text-brand-ruby font-bold';
+      else if (/[A-Z]/.test(char)) colorClass = 'text-slate-900 font-bold';
+      return (
+        <span key={index} className={colorClass}>
+          {char}
+        </span>
+      );
+    });
+  };
+
   const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(currentHostname);
   const isInsecure = currentProtocol === 'http:' && !isLocalHost;
   const knownHosts = vaultItems.map((i) => (i.url ? extractHostname(i.url) : '')).filter(Boolean);
@@ -552,541 +559,638 @@ export const PopupApp: React.FC = () => {
       ? findLookalikeTarget(currentHostname, knownHosts)
       : null;
 
-
   const health = computeVaultHealth(vaultItems.map((i) => ({ category: i.category, value: i.value })));
   const tier = scoreTier(health.score);
   const scoreColor = tier.tone === 'good' ? '#0d9488' : tier.tone === 'ok' ? '#b45309' : '#e11d48';
-  const ringCirc = 2 * Math.PI * 34; // r=34
+  const ringCirc = 2 * Math.PI * 34;
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
-    <div className="w-[380px] h-[550px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans border border-slate-900/8">
+    <div className="w-[380px] h-[560px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50/50 border border-slate-900/10 shadow-2xl">
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
+      {unlocked && (
+        <header className="glass-card border-x-0 border-t-0 border-b border-slate-900/10 px-3.5 py-2.5 flex items-center justify-between z-20 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <LogoHorizontal className="h-6 w-auto" />
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-900/5 border border-slate-900/8 text-[9px] font-semibold text-slate-600">
+              <span className={`w-1.5 h-1.5 rounded-full ${offline ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
+              <span>{offline ? 'Offline' : 'Connected'}</span>
+            </div>
+          </div>
 
-      <header className="glass-card border-x-0 border-t-0 border-b border-slate-900/8 px-4 py-3 flex items-center justify-between z-10 flex-shrink-0">
-
-        <LogoHorizontal className="h-6 w-auto" />
-
-        {unlocked && (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
             <button
               onClick={() => refreshVault(true)}
               disabled={refreshing || offline}
-              className="p-1.5 bg-slate-900/5 border border-slate-900/8 hover:bg-slate-900/10 text-slate-500 hover:text-slate-700 rounded-md transition cursor-pointer flex items-center justify-center disabled:opacity-50"
+              className="p-1.5 bg-white/80 border border-slate-900/10 hover:bg-white text-slate-600 hover:text-slate-900 rounded-lg transition cursor-pointer flex items-center justify-center disabled:opacity-40"
               title={offline ? 'Sync needs a connection' : 'Sync vault'}
             >
               <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
             <button
-              onClick={handleLogout}
-              className="p-1.5 bg-slate-900/5 border border-slate-900/8 hover:bg-slate-900/10 text-slate-500 hover:text-slate-700 rounded-md transition cursor-pointer flex items-center justify-center"
-              title="Sign out — removes the offline copy of your vault from this browser"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-            </button>
-            <button
               onClick={handleLock}
-              className="p-1.5 bg-brand-ruby/10 border border-brand-ruby/20 hover:border-brand-ruby/40 text-brand-ruby rounded-md hover:bg-brand-ruby/20 transition cursor-pointer flex items-center justify-center"
-              title="Lock vault — unlocks again with just your master password"
+              className="p-1.5 bg-white/80 border border-slate-900/10 hover:bg-white text-slate-600 hover:text-slate-900 rounded-lg transition cursor-pointer flex items-center justify-center"
+              title="Lock vault"
             >
               <Lock className="w-3.5 h-3.5" />
             </button>
+            <button
+              onClick={handleLogout}
+              className="p-1.5 bg-brand-ruby/10 border border-brand-ruby/20 hover:bg-brand-ruby/20 text-brand-ruby rounded-lg transition cursor-pointer flex items-center justify-center"
+              title="Sign out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
           </div>
-        )}
-      </header>
+        </header>
+      )}
 
-
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-4 flex flex-col z-10">
-        {!unlocked && step === 'login' ? (
-          <form onSubmit={handleLogin} className="flex-1 flex flex-col justify-center max-w-[300px] mx-auto w-full">
-            <div className="auth-card rounded-2xl p-5 space-y-3.5">
-              <div className="text-center space-y-2">
-                <div className="relative w-14 h-14 mx-auto flex items-center justify-center">
-                  <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-brand-cyan/25 to-brand-teal/10 blur-lg" />
-                  <LogoIcon className="w-11 h-11 relative" />
-                </div>
-                <div>
-                  <h2 className="text-[15px] font-extrabold text-slate-900 leading-none">Welcome back</h2>
-                  <p className="text-[10px] text-slate-500 mt-1">Sign in to unlock your vault</p>
-                </div>
-              </div>
-
-              {error && (
-                <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-lg text-xs flex items-start gap-1.5 leading-relaxed">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <span>{error}</span>
-                </div>
-              )}
-
-              <div className="space-y-2.5">
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-                  <input
-                    required
-                    disabled={loading}
-                    type="email"
-                    autoComplete="username"
-                    placeholder="Email address"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="auth-input w-full pl-9 pr-3 py-2.5 rounded-xl text-xs text-slate-900 placeholder-slate-400"
-                  />
-                </div>
-
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-                  <input
-                    required
-                    disabled={loading}
-                    type={showPassword ? "text" : "password"}
-                    autoComplete="current-password"
-                    placeholder="Master password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="auth-input w-full pl-9 pr-9 py-2.5 rounded-xl text-xs text-slate-900 placeholder-slate-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 transition cursor-pointer"
-                  >
-                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="btn-primary group w-full py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loading ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Unlocking…</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Unlock vault</span>
-                    <ArrowRight className="w-3.5 h-3.5 stroke-[2.5] transition-transform group-hover:translate-x-0.5" />
-                  </>
-                )}
-              </button>
-
-              <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500 pt-0.5 border-t border-slate-900/6 mt-1 pt-2.5">
-                <button
-                  type="button"
-                  onClick={openRecovery}
-                  className="hover:text-slate-700 hover:underline cursor-pointer"
-                >
-                  Forgot password?
-                </button>
-                <button
-                  type="button"
-                  onClick={openSignup}
-                  className="text-brand-cyan font-semibold hover:underline cursor-pointer"
-                >
-                  Create account
-                </button>
+      {/* Main Content Area */}
+      {!unlocked && step === 'login' ? (
+        <form onSubmit={handleLogin} className="flex-1 flex flex-col justify-between p-6 z-10 animate-fade-in bg-gradient-to-b from-white via-slate-50/90 to-slate-100/70">
+          <div className="text-center pt-2 space-y-2.5">
+            <div className="relative w-16 h-16 mx-auto flex items-center justify-center">
+              <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-brand-cyan/25 to-brand-teal/20 blur-md" />
+              <div className="w-14 h-14 rounded-2xl bg-white border border-slate-900/10 flex items-center justify-center shadow-md relative">
+                <LogoIcon className="w-10 h-10" />
               </div>
             </div>
-          </form>
-        ) : !unlocked && step === 'mfa' ? (
-          <form onSubmit={handleMfaSubmit} className="flex-1 flex flex-col justify-center space-y-4 max-w-[320px] mx-auto w-full">
-            <div className="text-center space-y-1 pb-2">
-              <Shield className="w-8 h-8 text-brand-emerald mx-auto animate-pulse" />
-              <h2 className="text-sm font-bold tracking-wide text-slate-800">Two-Factor Authentication</h2>
-              <p className="text-[10px] text-slate-500">Enter the 6-digit code from your app</p>
+            <div>
+              <h2 className="text-lg font-black text-slate-900 tracking-tight">Unlock XoraPass</h2>
+              <p className="text-xs text-slate-500 mt-0.5 font-medium">Enter your master password to access vault</p>
             </div>
+          </div>
 
+          <div className="space-y-3.5 my-auto py-2">
             {error && (
-              <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-lg text-xs flex items-start gap-1.5 leading-relaxed font-sans">
+              <div className="p-3 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-xl text-xs flex items-start gap-2 leading-relaxed">
                 <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                 <span>{error}</span>
               </div>
             )}
 
-            <div className="space-y-1.5">
+            {email && rememberedEmail ? (
+              <div className="flex items-center justify-between p-2.5 bg-white border border-slate-900/12 rounded-xl shadow-xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-brand-cyan to-brand-teal text-white font-black flex items-center justify-center text-xs uppercase shrink-0 shadow-xs">
+                    {email[0]}
+                  </div>
+                  <div className="min-w-0 flex-1 text-left">
+                    <div className="text-xs font-bold text-slate-900 font-mono truncate leading-tight">{email}</div>
+                    <div className="text-[10px] text-slate-500 font-medium">Vault locked</div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setEmail(''); setRememberedEmail(false); }}
+                  className="text-[10px] text-brand-cyan font-bold hover:underline shrink-0 px-1 cursor-pointer"
+                >
+                  Switch
+                </button>
+              </div>
+            ) : (
+              <div className="relative">
+                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                <input
+                  required
+                  disabled={loading}
+                  type="email"
+                  autoComplete="username"
+                  placeholder="Email address"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="auth-input w-full pl-10 pr-3 py-3 rounded-xl text-xs text-slate-900 placeholder-slate-400 font-sans shadow-xs"
+                />
+              </div>
+            )}
+
+            <div className="relative">
+              <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
               <input
                 required
                 disabled={loading}
-                type="text"
-                maxLength={6}
-                placeholder="000000"
-                value={mfaCode}
-                onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
-                className="w-full px-3 py-3 text-center bg-white border border-slate-900/10 rounded-lg text-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-emerald transition font-mono tracking-[0.5em]"
+                autoFocus
+                type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
+                placeholder="Master password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => setCapsLockOn(e.getModifierState('CapsLock'))}
+                onKeyUp={(e) => setCapsLockOn(e.getModifierState('CapsLock'))}
+                className="auth-input w-full pl-10 pr-10 py-3 rounded-xl text-xs text-slate-900 placeholder-slate-400 font-sans shadow-xs"
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 transition cursor-pointer"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
 
+            {capsLockOn && (
+              <div className="p-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-xs font-bold flex items-center gap-2 animate-fade-in">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>Caps Lock is ON</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="btn-primary group w-full py-3 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-md hover:shadow-lg transition"
+            >
+              {loading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Unlocking…</span>
+                </>
+              ) : (
+                <>
+                  <span>Unlock Vault</span>
+                  <ArrowRight className="w-4 h-4 stroke-[2.5] transition-transform group-hover:translate-x-0.5" />
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="space-y-2.5 pt-2 text-center border-t border-slate-900/8">
+            <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+              <button
+                type="button"
+                onClick={openRecovery}
+                className="hover:text-slate-800 hover:underline cursor-pointer"
+              >
+                Forgot password?
+              </button>
+              <button
+                type="button"
+                onClick={openSignup}
+                className="text-brand-cyan font-bold hover:underline cursor-pointer"
+              >
+                Create account
+              </button>
+            </div>
+
+            <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-400 font-medium">
+              <Shield className="w-3.5 h-3.5 text-brand-cyan shrink-0" />
+              <span>Zero-Knowledge Encrypted</span>
+            </div>
+          </div>
+        </form>
+      ) : !unlocked && step === 'mfa' ? (
+        <form onSubmit={handleMfaSubmit} className="flex-1 flex flex-col justify-center space-y-4 max-w-[310px] mx-auto w-full p-6 animate-fade-in">
+          <div className="auth-card rounded-2xl p-5 space-y-4 text-center shadow-xl">
+            <div className="w-12 h-12 rounded-full bg-brand-emerald/10 border border-brand-emerald/20 flex items-center justify-center mx-auto text-brand-emerald">
+              <Shield className="w-6 h-6 animate-pulse" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">Two-Factor Authentication</h2>
+              <p className="text-[11px] text-slate-500 mt-0.5">Enter the 6-digit verification code</p>
+            </div>
+
+            {error && (
+              <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-xl text-xs flex items-start gap-1.5 leading-relaxed text-left">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <input
+              required
+              disabled={loading}
+              type="text"
+              maxLength={6}
+              placeholder="000000"
+              value={mfaCode}
+              onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
+              className="w-full px-3 py-2.5 text-center bg-white border border-slate-900/12 rounded-xl text-xl text-slate-900 placeholder-slate-300 focus:outline-none focus:border-brand-emerald font-mono tracking-[0.5em] shadow-xs"
+            />
+
             <div className="flex gap-2">
-              <button type="button" onClick={() => { setStep('login'); setMfaCode(''); }} disabled={loading} className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-xs transition cursor-pointer">Back</button>
+              <button 
+                type="button" 
+                onClick={() => { setStep('login'); setMfaCode(''); }} 
+                disabled={loading} 
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
+              >
+                Back
+              </button>
               <button
                 type="submit"
                 disabled={loading || mfaCode.length !== 6}
-                className="flex-[2] py-2.5 bg-gradient-to-r from-brand-emerald to-brand-teal text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                className="flex-[2] btn-primary py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-xs"
               >
-                {loading ? (
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                )}
+                {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
                 <span>Verify</span>
               </button>
             </div>
-          </form>
-        ) : (
-          <div className="flex-1 flex flex-col space-y-4">
-
+          </div>
+        </form>
+      ) : (
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-3.5 flex flex-col z-10">
             {offline && (
-              <div className="p-2 bg-brand-amber/10 border border-brand-amber/25 text-brand-amber rounded-lg text-[10px] flex items-start gap-1.5 leading-snug flex-shrink-0">
-                <CloudOff className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                <span>Offline — showing your last synced vault. New logins can't be saved yet.</span>
+              <div className="p-2.5 bg-amber-50 border border-amber-200/80 text-amber-800 rounded-xl text-[10px] flex items-start gap-2 leading-snug shrink-0 shadow-xs">
+                <CloudOff className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                <span>Showing cached offline vault. Changes sync when reconnected.</span>
               </div>
             )}
 
             {syncError && (
-              <div className="p-2 bg-brand-amber/10 border border-brand-amber/25 text-brand-amber rounded-lg text-[10px] flex items-start gap-1.5 leading-snug flex-shrink-0">
-                <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+              <div className="p-2.5 bg-amber-50 border border-amber-200/80 text-amber-800 rounded-xl text-[10px] flex items-start gap-2 leading-snug shrink-0 shadow-xs">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
                 <span>{syncError}</span>
               </div>
             )}
 
-            <div className="flex items-center gap-1 p-1 bg-white/70 border border-slate-900/8 rounded-lg flex-shrink-0">
+            {/* Segmented Tab Navigation Bar */}
+            <div className="grid grid-cols-4 gap-1 p-1 bg-white/80 border border-slate-900/10 rounded-xl shrink-0 shadow-xs">
               <button
-                onClick={() => setTab('vault')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'vault' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
+                onClick={() => { setTab('vault'); setSelectedItem(null); }}
+                className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${tab === 'vault' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
               >
                 <LayoutGrid className="w-3.5 h-3.5" /> Vault
               </button>
               <button
-                onClick={() => setTab('generate')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'generate' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
+                onClick={() => { setTab('generate'); setSelectedItem(null); }}
+                className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${tab === 'generate' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
               >
-                <Wand2 className="w-3.5 h-3.5" /> Generate
+                <Wand2 className="w-3.5 h-3.5" /> Generator
               </button>
               <button
-                onClick={() => setTab('health')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'health' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
+                onClick={() => { setTab('health'); setSelectedItem(null); }}
+                className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${tab === 'health' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
               >
                 <Activity className="w-3.5 h-3.5" /> Health
               </button>
               <button
-                onClick={() => setTab('settings')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'settings' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
+                onClick={() => { setTab('settings'); setSelectedItem(null); }}
+                className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${tab === 'settings' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
               >
-                <Settings className="w-3.5 h-3.5" />
-                <span>Settings</span>
+                <Settings className="w-3.5 h-3.5" /> Settings
               </button>
             </div>
 
-            {tab === 'vault' && (
-            <>
-
-            {currentHostname && (
-              <div className="space-y-2">
-
-                <div className="p-3 bg-white/70 border border-slate-900/8 rounded-xl space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 text-slate-700 text-xs font-semibold min-w-0">
-                      <Globe className="w-3.5 h-3.5 text-brand-cyan flex-shrink-0" />
-                      <span className="truncate text-slate-900 font-bold">{currentHostname}</span>
-                    </div>
-                    <button
-                      onClick={toggleSiteDisabled}
-                      className={`flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-bold uppercase tracking-wider border transition cursor-pointer flex-shrink-0 ${
-                        siteDisabled
-                          ? 'bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby hover:bg-brand-ruby/20'
-                          : 'bg-brand-emerald/10 border-brand-emerald/25 text-brand-emerald hover:bg-brand-emerald/20'
-                      }`}
-                      title={siteDisabled ? 'Autofill is disabled on this site' : 'Disable autofill on this site'}
-                    >
-                      {siteDisabled ? <ShieldOff className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
-                      <span>{siteDisabled ? 'Autofill Off' : 'Autofill On'}</span>
-                    </button>
-                  </div>
-
-
-                  {isInsecure && (
-                    <div className="flex items-start gap-1.5 text-[10px] text-brand-amber/90 leading-snug">
-                      <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                      <span>This site isn't secure. Take care with what you fill here.</span>
-                    </div>
-                  )}
-                  {lookalike && (
-                    <div className="flex items-start gap-1.5 text-[10px] text-brand-ruby/90 leading-snug">
-                      <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                      <span>This site looks like "{lookalike.target}" but isn't. Check the address before filling.</span>
-                    </div>
-                  )}
-                </div>
-
-                {siteDisabled ? (
-                  <div className="p-3 bg-brand-ruby/5 border border-brand-ruby/15 rounded-xl text-center">
-                    <p className="text-[11px] text-brand-ruby/90">Autofill is off for this site. Use the "Autofill Off" button above to turn it back on.</p>
-                  </div>
-                ) : matchingItems.length === 0 ? (
-                  <div className="p-3 bg-white/60 border border-slate-900/8 rounded-xl text-center">
-                    <p className="text-[11px] text-slate-500">No saved logins for this site.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {matchingItems.map((item) => (
-                      <div 
-                        key={item.id}
-                        className="p-3 bg-white/90 border border-brand-cyan/20 rounded-xl flex items-center justify-between gap-3 shadow-[0_0_10px_rgba(0,210,255,0.02)]"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs font-bold text-brand-cyan truncate leading-tight">{item.label}</div>
-                          <div className="text-[10px] text-slate-500 font-mono truncate mt-0.5">{item.username || "—"}</div>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {item.username && (
-                            <button
-                              onClick={() => copyToClipboard(item.username, item.id, 'username')}
-                              className="p-1.5 bg-slate-900/5 hover:bg-slate-900/10 text-slate-500 hover:text-slate-900 rounded-md transition cursor-pointer border border-slate-900/8"
-                              title="Copy Username"
-                            >
-                              {copiedField?.id === item.id && copiedField?.field === 'username' ? (
-                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          )}
-                          <button
-                            onClick={() => copyToClipboard(item.value, item.id, 'password')}
-                            className="p-1.5 bg-brand-cyan/10 hover:bg-brand-cyan/20 text-brand-cyan rounded-md transition cursor-pointer border border-brand-cyan/15"
-                            title="Copy Password"
-                          >
-                            {copiedField?.id === item.id && copiedField?.field === 'password' ? (
-                              <Check className="w-3.5 h-3.5 text-brand-emerald" />
-                            ) : (
-                              <Key className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-
-            <div className="flex-1 min-h-0 flex flex-col space-y-2">
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
-                <input
-                  type="text"
-                  placeholder={`Search ${vaultItems.length} items…`}
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-900/10 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition"
-                />
-              </div>
-
-              {vaultItems.length > 0 && (
-                <div className="flex items-center gap-1 overflow-x-auto pb-0.5 -mx-0.5 px-0.5">
+            {/* ITEM DETAIL DRAWER VIEW */}
+            {selectedItem ? (
+              <div className="flex-1 flex flex-col space-y-3 animate-slide-up">
+                <div className="flex items-center justify-between pb-1 border-b border-slate-900/8">
                   <button
-                    onClick={() => setCategoryFilter('all')}
-                    className={`px-2 py-0.5 rounded-md text-[9px] font-bold transition cursor-pointer shrink-0 border ${
-                      categoryFilter === 'all'
-                        ? 'bg-slate-900 text-white border-slate-900'
-                        : 'bg-white/70 text-slate-600 border-slate-900/10 hover:bg-white'
-                    }`}
+                    onClick={() => setSelectedItem(null)}
+                    className="flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-slate-900 transition cursor-pointer"
                   >
-                    All ({vaultItems.length})
+                    <ArrowLeft className="w-4 h-4" /> Back to Vault
                   </button>
-                  {VAULT_CATEGORIES.map(({ key, label }) => {
-                    const count = categoryCount(key);
-                    // Every category is always listed, as the web app's nav
-                    // does. Hiding the empty ones made a logins-only vault show
-                    // "All" beside a single identical chip, which reads as
-                    // categories being broken rather than simply unused.
-                    const empty = count === 0;
-                    return (
-                      <button
-                        key={key}
-                        onClick={() => !empty && setCategoryFilter(key)}
-                        disabled={empty}
-                        title={empty ? `No ${label.toLowerCase()} saved yet` : undefined}
-                        className={`px-2 py-0.5 rounded-md text-[9px] font-bold transition shrink-0 border ${
-                          categoryFilter === key
-                            ? 'bg-slate-900 text-white border-slate-900 cursor-pointer'
-                            : empty
-                              ? 'bg-transparent text-slate-300 border-slate-900/5 cursor-default'
-                              : 'bg-white/70 text-slate-600 border-slate-900/10 hover:bg-white cursor-pointer'
-                        }`}
-                      >
-                        {label} ({count})
-                      </button>
-                    );
-                  })}
+                  <span
+                    className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider text-white"
+                    style={{ backgroundColor: categoryColor(selectedItem.category) }}
+                  >
+                    {categoryLabel(selectedItem.category)}
+                  </span>
                 </div>
-              )}
 
-              <div className="flex-1 overflow-y-auto custom-scrollbar pr-0.5 space-y-1.5 min-h-[80px]">
-                {searchedItems.length === 0 ? (
-                  <div className="text-center py-6">
-                    <p className="text-[11px] text-slate-400">
-                      {term
-                        ? 'No matches.'
-                        : vaultItems.length === 0
-                          ? 'Your vault is empty.'
-                          : categoryFilter !== 'all'
-                            ? 'Nothing else in this category.'
-                            : 'Nothing else saved yet.'}
-                    </p>
+                <div className="p-3 bg-white border border-slate-900/10 rounded-xl space-y-3 shadow-xs">
+                  <div className="flex items-center gap-3">
+                    <ItemAvatar label={selectedItem.label} url={selectedItem.url} category={selectedItem.category} size="w-10 h-10 text-sm" />
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-extrabold text-slate-900 truncate leading-tight">{selectedItem.label}</h3>
+                      {selectedItem.url && (
+                        <div className="text-[10px] text-slate-500 truncate font-mono mt-0.5 flex items-center gap-1">
+                          <Globe className="w-3 h-3 text-brand-cyan shrink-0" />
+                          <span>{extractHostname(selectedItem.url)}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                ) : (
-                  searchedItems.map((item) => (
-                    <div 
-                      key={item.id}
-                      className="p-2.5 bg-white/60 hover:bg-white/90 border border-slate-900/8 hover:border-slate-900/15 rounded-lg flex items-center justify-between gap-3 transition"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-bold text-slate-800 truncate leading-none">{item.label}</div>
-                        <div className="text-[9px] text-slate-500 font-mono truncate mt-1">{item.username || "—"}</div>
-                      </div>
-                      
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        {item.username && (
-                          <button
-                            onClick={() => copyToClipboard(item.username, item.id, 'username')}
-                            className="p-1 hover:bg-slate-900/5 text-slate-500 hover:text-slate-900 rounded transition cursor-pointer"
-                            title="Copy Username"
-                          >
-                            {copiedField?.id === item.id && copiedField?.field === 'username' ? (
-                              <Check className="w-3 h-3 text-brand-emerald" />
-                            ) : (
-                              <Copy className="w-3 h-3" />
-                            )}
-                          </button>
-                        )}
+
+                  {/* Username Field */}
+                  {selectedItem.username && (
+                    <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                      <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Username / Identity</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
                         <button
-                          onClick={() => copyToClipboard(item.value, item.id, 'password')}
-                          className="p-1 hover:bg-slate-900/5 text-slate-500 hover:text-slate-900 rounded transition cursor-pointer"
-                          title="Copy Password"
+                          onClick={() => copyToClipboard(selectedItem.username, selectedItem.id, 'username')}
+                          className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                          title="Copy Username"
                         >
-                          {copiedField?.id === item.id && copiedField?.field === 'password' ? (
-                            <Check className="w-3 h-3 text-brand-emerald" />
+                          {copiedField?.id === selectedItem.id && copiedField?.field === 'username' ? (
+                            <Check className="w-3.5 h-3.5 text-brand-emerald" />
                           ) : (
-                            <Key className="w-3 h-3" />
+                            <Copy className="w-3.5 h-3.5" />
                           )}
                         </button>
                       </div>
                     </div>
-                  ))
-                )}
-              </div>
-            </div>
+                  )}
 
-
-            </>
-            )}
-
-
-            {tab === 'settings' && (
-              <div className="space-y-3">
-                {/* Who is signed in. The popup only knows the address — the
-                    rest of the account lives in the web vault. */}
-                <div className="p-3 bg-white/80 border border-slate-900/8 rounded-xl">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-full bg-brand-cyan/10 border border-brand-cyan/25 flex items-center justify-center shrink-0">
-                      <span className="text-brand-cyan font-black text-sm uppercase">
-                        {email ? email[0] : 'U'}
+                  {/* Password Field */}
+                  <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                    <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400 flex items-center justify-between">
+                      <span>Password</span>
+                      <span className="text-[9px] text-slate-500 font-mono">
+                        {entropyBits({ length: selectedItem.value.length, uppercase: true, lowercase: true, digits: true, symbols: true, avoidAmbiguous: false })} bits
                       </span>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[11px] font-bold text-slate-900 font-mono truncate">{email}</div>
-                      <div className="text-[9px] text-slate-500 mt-0.5">Signed in</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
+                        {showDetailPassword ? selectedItem.value : '••••••••••••••••'}
+                      </span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => setShowDetailPassword(!showDetailPassword)}
+                          className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                          title={showDetailPassword ? 'Hide password' : 'Show password'}
+                        >
+                          {showDetailPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                        <button
+                          onClick={() => copyToClipboard(selectedItem.value, selectedItem.id, 'password')}
+                          className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                          title="Copy Password"
+                        >
+                          {copiedField?.id === selectedItem.id && copiedField?.field === 'password' ? (
+                            <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
-                  <button
-                    onClick={openWebVault}
-                    className="mt-2.5 w-full py-1.5 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/8 text-slate-700 font-semibold rounded-lg text-[10px] flex items-center justify-center gap-1.5 transition cursor-pointer"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    <span>Manage account in web vault</span>
-                  </button>
-                </div>
 
-                <div className="p-3 bg-white/80 border border-slate-900/8 rounded-xl space-y-2.5">
-                  <div className="text-[9px] font-black uppercase tracking-wider text-slate-400">Security</div>
-
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-[11px] font-semibold text-slate-800">Auto-lock</div>
-                      <div className="text-[9px] text-slate-500 mt-0.5">Lock the vault after this idle period.</div>
+                  {/* Website Link Field */}
+                  {selectedItem.url && (
+                    <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                      <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Website Address</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-mono text-slate-700 truncate select-all">{selectedItem.url}</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => openUrl(selectedItem.url)}
+                            className="p-1 hover:bg-slate-200 text-brand-cyan rounded transition cursor-pointer"
+                            title="Open URL in new tab"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                    <select
-                      value={autoLockMinutes}
-                      onChange={(e) => changeAutoLock(Number(e.target.value))}
-                      className="bg-white border border-slate-900/10 rounded-md text-[10px] text-slate-800 px-1.5 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0"
+                  )}
+
+                  {/* Notes Field */}
+                  {selectedItem.notes && (
+                    <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                      <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Secure Notes</div>
+                      <p className="text-[11px] text-slate-700 whitespace-pre-wrap font-sans leading-relaxed select-all max-h-24 overflow-y-auto custom-scrollbar">
+                        {selectedItem.notes}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Action Bar */}
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={() => copyToClipboard(selectedItem.value, selectedItem.id, 'password')}
+                      className="btn-primary flex-1 py-2 rounded-lg text-xs flex items-center justify-center gap-1.5 cursor-pointer"
                     >
-                      {AUTO_LOCK_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
+                      {copiedField?.id === selectedItem.id && copiedField?.field === 'password' ? (
+                        <><Check className="w-3.5 h-3.5" /> Password Copied</>
+                      ) : (
+                        <><Key className="w-3.5 h-3.5" /> Copy Password</>
+                      )}
+                    </button>
+                    {selectedItem.url && (
+                      <button
+                        onClick={() => openUrl(selectedItem.url)}
+                        className="py-2 px-3 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/10 text-slate-800 font-bold rounded-lg text-xs flex items-center justify-center gap-1 transition cursor-pointer shrink-0"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" /> Launch
+                      </button>
+                    )}
                   </div>
-
-                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
-                    <div className="min-w-0">
-                      <div className="text-[11px] font-semibold text-slate-800">Clear copied password</div>
-                      <div className="text-[9px] text-slate-500 mt-0.5">Wipe the clipboard this long after a copy.</div>
-                    </div>
-                    <select
-                      value={clipboardClearSeconds}
-                      onChange={(e) => changeClipboardClear(Number(e.target.value))}
-                      className="bg-white border border-slate-900/10 rounded-md text-[10px] text-slate-800 px-1.5 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0"
-                    >
-                      {CLIPBOARD_CLEAR_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* Lock and sign out differ: only sign out removes the offline
-                    copy of the vault from this browser. */}
-                <div className="p-3 bg-white/80 border border-slate-900/8 rounded-xl space-y-2">
-                  <div className="text-[9px] font-black uppercase tracking-wider text-slate-400">Session</div>
-                  <button
-                    onClick={handleLock}
-                    className="w-full py-2 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/8 text-slate-700 font-semibold rounded-lg text-[10px] flex items-center justify-center gap-1.5 transition cursor-pointer"
-                  >
-                    <Lock className="w-3 h-3" />
-                    <span>Lock vault</span>
-                  </button>
-                  <button
-                    onClick={handleLogout}
-                    className="w-full py-2 bg-brand-ruby/10 hover:bg-brand-ruby/20 border border-brand-ruby/20 text-brand-ruby font-semibold rounded-lg text-[10px] flex items-center justify-center gap-1.5 transition cursor-pointer"
-                  >
-                    <LogOut className="w-3 h-3" />
-                    <span>Sign out</span>
-                  </button>
-                  <p className="text-[9px] text-slate-400 leading-relaxed">
-                    Locking keeps your vault on this device so unlocking needs only your master
-                    password. Signing out removes it.
-                  </p>
                 </div>
               </div>
-            )}
+            ) : tab === 'vault' ? (
+              <div className="flex-1 flex flex-col space-y-3">
+                {/* Active Site Header ("For this site") */}
+                {currentHostname && (
+                  <div className="space-y-2">
+                    <div className="p-3 bg-white/90 border border-slate-900/10 rounded-xl space-y-2 shadow-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <ItemAvatar label={currentHostname} url={`https://${currentHostname}`} size="w-6 h-6 text-[10px]" />
+                          <span className="truncate text-slate-900 font-bold text-xs">{currentHostname}</span>
+                        </div>
+                        <button
+                          onClick={toggleSiteDisabled}
+                          className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider border transition cursor-pointer shrink-0 ${
+                            siteDisabled
+                              ? 'bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby hover:bg-brand-ruby/20'
+                              : 'bg-brand-emerald/10 border-brand-emerald/25 text-brand-emerald hover:bg-brand-emerald/20'
+                          }`}
+                          title={siteDisabled ? 'Autofill is disabled on this site' : 'Disable autofill on this site'}
+                        >
+                          {siteDisabled ? <ShieldOff className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+                          <span>{siteDisabled ? 'Autofill Off' : 'Autofill On'}</span>
+                        </button>
+                      </div>
 
-            {tab === 'generate' && (
-              <div className="space-y-3">
-                <div className="p-3 bg-white/80 border border-slate-900/8 rounded-xl space-y-2.5">
-                  <div className="font-mono text-[13px] leading-relaxed text-slate-900 break-all min-h-[46px] select-text">
-                    {generated}
+                      {isInsecure && (
+                        <div className="flex items-start gap-1.5 text-[10px] text-amber-700 bg-amber-50 p-2 rounded-lg leading-snug">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                          <span>This page is not using HTTPS encryption. Exercise caution.</span>
+                        </div>
+                      )}
+                      {lookalike && (
+                        <div className="flex items-start gap-1.5 text-[10px] text-rose-700 bg-rose-50 p-2 rounded-lg leading-snug">
+                          <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                          <span>Possible lookalike for "{lookalike.target}". Verify domain before filling.</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Site matching items */}
+                    {!siteDisabled && matchingItems.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-0.5">Matching Logins</div>
+                        {matchingItems.map((item) => (
+                          <div 
+                            key={item.id}
+                            className="p-2.5 bg-white border border-brand-cyan/30 rounded-xl flex items-center justify-between gap-2.5 shadow-xs hover:border-brand-cyan/50 transition cursor-pointer"
+                            onClick={() => setSelectedItem(item)}
+                          >
+                            <ItemAvatar label={item.label} url={item.url} category={item.category} size="w-7 h-7 text-xs" />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-bold text-slate-900 truncate leading-tight">{item.label}</div>
+                              <div className="text-[10px] text-slate-500 font-mono truncate">{item.username || "—"}</div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                              {item.username && (
+                                <button
+                                  onClick={() => copyToClipboard(item.username, item.id, 'username')}
+                                  className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition cursor-pointer"
+                                  title="Copy Username"
+                                >
+                                  {copiedField?.id === item.id && copiedField?.field === 'username' ? (
+                                    <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              )}
+                              <button
+                                onClick={() => copyToClipboard(item.value, item.id, 'password')}
+                                className="p-1.5 bg-brand-cyan/10 hover:bg-brand-cyan/20 text-brand-cyan rounded-lg transition cursor-pointer"
+                                title="Copy Password"
+                              >
+                                {copiedField?.id === item.id && copiedField?.field === 'password' ? (
+                                  <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                                ) : (
+                                  <Key className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Vault Items Search Bar */}
+                <div className="space-y-2 flex-1 flex flex-col min-h-0">
+                  <div className="relative shrink-0">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder={`Search ${vaultItems.length} items…`}
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="w-full pl-9 pr-8 py-2 bg-white border border-slate-900/10 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition shadow-xs"
+                    />
+                    {searchTerm && (
+                      <button
+                        onClick={() => setSearchTerm('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
 
-                  <div className="flex items-center gap-1.5">
-                    <div className="flex-1 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                  {/* Category Filter Chips */}
+                  {vaultItems.length > 0 && (
+                    <div className="flex items-center gap-1 overflow-x-auto pb-1 custom-scrollbar shrink-0">
+                      <button
+                        onClick={() => setCategoryFilter('all')}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer shrink-0 border ${
+                          categoryFilter === 'all'
+                            ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                            : 'bg-white/80 text-slate-600 border-slate-900/10 hover:bg-white'
+                        }`}
+                      >
+                        All ({vaultItems.length})
+                      </button>
+                      {VAULT_CATEGORIES.map(({ key, label }) => {
+                        const count = categoryCount(key);
+                        const empty = count === 0;
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => !empty && setCategoryFilter(key)}
+                            disabled={empty}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition shrink-0 border ${
+                              categoryFilter === key
+                                ? 'bg-slate-900 text-white border-slate-900 cursor-pointer shadow-xs'
+                                : empty
+                                  ? 'bg-transparent text-slate-300 border-slate-900/5 cursor-default'
+                                  : 'bg-white/80 text-slate-600 border-slate-900/10 hover:bg-white cursor-pointer'
+                            }`}
+                          >
+                            {label} ({count})
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Vault Item Cards */}
+                  <div className="flex-1 overflow-y-auto custom-scrollbar pr-0.5 space-y-1.5 min-h-[120px]">
+                    {searchedItems.length === 0 ? (
+                      <div className="text-center py-8 bg-white/40 border border-slate-900/5 rounded-xl">
+                        <p className="text-xs text-slate-400 font-medium">
+                          {term
+                            ? 'No matching vault items found.'
+                            : vaultItems.length === 0
+                              ? 'Your vault is currently empty.'
+                              : 'No items in this category.'}
+                        </p>
+                      </div>
+                    ) : (
+                      searchedItems.map((item) => (
+                        <div 
+                          key={item.id}
+                          onClick={() => setSelectedItem(item)}
+                          className="p-2.5 bg-white hover:bg-slate-50/90 border border-slate-900/8 hover:border-slate-900/18 rounded-xl flex items-center justify-between gap-2.5 transition cursor-pointer shadow-xs group"
+                        >
+                          <ItemAvatar label={item.label} url={item.url} category={item.category} size="w-7 h-7 text-xs" />
+
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-bold text-slate-800 truncate leading-tight group-hover:text-brand-cyan transition">{item.label}</div>
+                            <div className="text-[9px] text-slate-500 font-mono truncate mt-0.5">{item.username || "—"}</div>
+                          </div>
+                          
+                          <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                            {item.username && (
+                              <button
+                                onClick={() => copyToClipboard(item.username, item.id, 'username')}
+                                className="p-1 hover:bg-slate-100 text-slate-500 hover:text-slate-800 rounded transition cursor-pointer"
+                                title="Copy Username"
+                              >
+                                {copiedField?.id === item.id && copiedField?.field === 'username' ? (
+                                  <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => copyToClipboard(item.value, item.id, 'password')}
+                              className="p-1 hover:bg-slate-100 text-slate-500 hover:text-slate-800 rounded transition cursor-pointer"
+                              title="Copy Password"
+                            >
+                              {copiedField?.id === item.id && copiedField?.field === 'password' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Key className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            <ChevronRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-600 transition" />
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {/* PASSWORD GENERATOR TAB */}
+            {tab === 'generate' && (
+              <div className="space-y-3 animate-fade-in">
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl space-y-3 shadow-xs">
+                  <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Generated Password</div>
+                  <div className="font-mono text-sm leading-relaxed tracking-wider break-all min-h-[44px] p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg select-all">
+                    {renderStyledPassword(generated)}
+                  </div>
+
+                  {/* Strength Meter Bar */}
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden border border-slate-900/5">
                       <div
-                        className="h-full rounded-full transition-all"
+                        className="h-full rounded-full transition-all duration-300"
                         style={{
                           width: `${Math.min(100, (bits / 128) * 100)}%`,
                           background: strengthColor,
@@ -1099,31 +1203,50 @@ export const PopupApp: React.FC = () => {
                     <span className="text-[9px] text-slate-400 tabular-nums">{bits} bits</span>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 pt-1">
                     <button
                       onClick={() => setGenerated(generatePassword(genOptions))}
-                      className="flex-1 py-2 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/8 text-slate-700 font-semibold rounded-lg text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
                     >
                       <RefreshCw className="w-3.5 h-3.5" /> Regenerate
                     </button>
                     <button
                       onClick={() => copyToClipboard(generated, 'generated', 'password')}
-                      className="btn-primary flex-1 py-2 rounded-lg text-[11px] flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="btn-primary flex-1 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       {copiedField?.id === 'generated' ? (
                         <><Check className="w-3.5 h-3.5" /> Copied</>
                       ) : (
-                        <><Copy className="w-3.5 h-3.5" /> Copy</>
+                        <><Copy className="w-3.5 h-3.5" /> Copy Password</>
                       )}
                     </button>
                   </div>
                 </div>
 
-                <div className="p-3 bg-white/70 border border-slate-900/8 rounded-xl space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-semibold text-slate-700">Length</span>
-                    <span className="text-[11px] font-bold text-brand-cyan tabular-nums">{genOptions.length}</span>
+                {/* Generator Options */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl space-y-3 shadow-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800">Password Length</span>
+                    <span className="text-xs font-extrabold font-mono text-brand-cyan">{genOptions.length}</span>
                   </div>
+
+                  {/* Preset Length Buttons */}
+                  <div className="flex gap-1.5">
+                    {[12, 16, 24, 32, 64].map((len) => (
+                      <button
+                        key={len}
+                        onClick={() => updateGenOptions({ length: len })}
+                        className={`flex-1 py-1 rounded-lg text-[10px] font-mono font-bold border transition cursor-pointer ${
+                          genOptions.length === len
+                            ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                            : 'bg-slate-50 text-slate-600 border-slate-900/10 hover:bg-slate-100'
+                        }`}
+                      >
+                        {len}
+                      </button>
+                    ))}
+                  </div>
+
                   <input
                     type="range"
                     min={MIN_LENGTH}
@@ -1133,44 +1256,44 @@ export const PopupApp: React.FC = () => {
                     className="w-full accent-brand-cyan cursor-pointer"
                   />
 
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 pt-0.5">
+                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-900/8">
                     {([
-                      ['uppercase', 'A–Z'],
-                      ['lowercase', 'a–z'],
-                      ['digits', '0–9'],
-                      ['symbols', '!@#$'],
+                      ['uppercase', 'Uppercase (A-Z)'],
+                      ['lowercase', 'Lowercase (a-z)'],
+                      ['digits', 'Digits (0-9)'],
+                      ['symbols', 'Symbols (!@#$)'],
                     ] as const).map(([key, label]) => (
-                      <label key={key} className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
+                      <label key={key} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer font-medium">
                         <input
                           type="checkbox"
                           checked={genOptions[key]}
                           onChange={(e) => updateGenOptions({ [key]: e.target.checked })}
-                          className="accent-brand-cyan cursor-pointer"
+                          className="accent-brand-cyan cursor-pointer rounded"
                         />
-                        <span className="font-mono">{label}</span>
+                        <span>{label}</span>
                       </label>
                     ))}
                   </div>
 
-                  <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer pt-0.5 border-t border-slate-900/6 mt-1">
+                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer pt-2 border-t border-slate-900/8">
                     <input
                       type="checkbox"
                       checked={genOptions.avoidAmbiguous}
                       onChange={(e) => updateGenOptions({ avoidAmbiguous: e.target.checked })}
-                      className="accent-brand-cyan cursor-pointer mt-2"
+                      className="accent-brand-cyan cursor-pointer rounded"
                     />
-                    <span className="mt-2">Avoid lookalike characters (I l 1 O 0)</span>
+                    <span>Avoid lookalike characters (I, l, 1, O, 0)</span>
                   </label>
                 </div>
               </div>
             )}
 
+            {/* SECURITY HEALTH TAB */}
             {tab === 'health' && (
-              <div className="space-y-4">
-
-                <div className="p-4 bg-white/70 border border-slate-900/8 rounded-xl flex items-center gap-4">
-                  <div className="relative flex-shrink-0">
-                    <svg width="84" height="84" viewBox="0 0 84 84">
+              <div className="space-y-3.5 animate-fade-in">
+                <div className="p-4 bg-white border border-slate-900/10 rounded-xl flex items-center gap-4 shadow-xs">
+                  <div className="relative shrink-0">
+                    <svg width="76" height="76" viewBox="0 0 84 84">
                       <circle cx="42" cy="42" r="34" fill="none" stroke="rgba(15,23,42,0.08)" strokeWidth="8" />
                       <circle
                         cx="42" cy="42" r="34" fill="none" stroke={scoreColor} strokeWidth="8" strokeLinecap="round"
@@ -1180,68 +1303,63 @@ export const PopupApp: React.FC = () => {
                     </svg>
                     <div className="absolute inset-0 flex flex-col items-center justify-center">
                       <span className="text-xl font-extrabold text-slate-900 leading-none">{health.score}</span>
-                      <span className="text-[8px] uppercase tracking-widest text-slate-500 mt-0.5">score</span>
+                      <span className="text-[8px] uppercase tracking-widest font-bold text-slate-400 mt-0.5">SCORE</span>
                     </div>
                   </div>
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <TrendingUp className="w-4 h-4" style={{ color: scoreColor }} />
-                      <span className="text-sm font-bold" style={{ color: scoreColor }}>{tier.label}</span>
+                      <span className="text-sm font-extrabold" style={{ color: scoreColor }}>{tier.label}</span>
                     </div>
-                    <p className="text-[10px] text-slate-500 mt-1 leading-snug">
+                    <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
                       {health.totalLogins === 0
-                        ? 'No login passwords to analyze yet.'
-                        : `${health.strong} of ${health.totalLogins} password${health.totalLogins > 1 ? 's are' : ' is'} strong.`}
+                        ? 'No passwords saved to analyze health.'
+                        : `${health.strong} of ${health.totalLogins} password${health.totalLogins > 1 ? 's are' : ' is'} classified strong.`}
                     </p>
                   </div>
                 </div>
 
-
                 <div className="grid grid-cols-3 gap-2">
-                  <div className="p-2.5 bg-white/70 border border-slate-900/8 rounded-lg text-center">
-                    <div className="text-lg font-extrabold text-brand-emerald leading-none">{health.strong}</div>
-                    <div className="text-[9px] uppercase tracking-wider text-slate-500 mt-1">Strong</div>
+                  <div className="p-2.5 bg-white border border-slate-900/10 rounded-xl text-center shadow-xs">
+                    <div className="text-lg font-extrabold text-emerald-600 leading-none">{health.strong}</div>
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mt-1">Strong</div>
                   </div>
-                  <div className="p-2.5 bg-white/70 border border-slate-900/8 rounded-lg text-center">
-                    <div className="text-lg font-extrabold text-brand-amber leading-none">{health.weak}</div>
-                    <div className="text-[9px] uppercase tracking-wider text-slate-500 mt-1">Weak</div>
+                  <div className="p-2.5 bg-white border border-slate-900/10 rounded-xl text-center shadow-xs">
+                    <div className="text-lg font-extrabold text-amber-600 leading-none">{health.weak}</div>
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mt-1">Weak</div>
                   </div>
-                  <div className="p-2.5 bg-white/70 border border-slate-900/8 rounded-lg text-center">
-                    <div className="text-lg font-extrabold text-brand-ruby leading-none">{health.reused}</div>
-                    <div className="text-[9px] uppercase tracking-wider text-slate-500 mt-1">Reused</div>
+                  <div className="p-2.5 bg-white border border-slate-900/10 rounded-xl text-center shadow-xs">
+                    <div className="text-lg font-extrabold text-rose-600 leading-none">{health.reused}</div>
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mt-1">Reused</div>
                   </div>
                 </div>
 
-
                 {health.totalLogins > 0 && (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                      <span className="flex items-center gap-1.5"><Activity className="w-3 h-3" /> Strength</span>
-                      <span className="text-slate-500">{Math.round(health.strong / health.totalLogins * 100)}% strong</span>
+                  <div className="p-3 bg-white border border-slate-900/10 rounded-xl space-y-2 shadow-xs">
+                    <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                      <span className="flex items-center gap-1.5"><Activity className="w-3.5 h-3.5 text-brand-cyan" /> Overall Strength</span>
+                      <span className="text-slate-700">{Math.round(health.strong / health.totalLogins * 100)}% Strong</span>
                     </div>
-                    <div className="flex h-2.5 rounded-full overflow-hidden bg-slate-200">
-                      {health.strong > 0 && <div style={{ width: `${health.strong / health.totalLogins * 100}%`, background: '#0d9488' }} />}
+                    <div className="flex h-2.5 rounded-full overflow-hidden bg-slate-100 border border-slate-900/5">
+                      {health.strong > 0 && <div style={{ width: `${health.strong / health.totalLogins * 100}%`, background: '#059669' }} />}
                       {(health.totalLogins - health.strong) > 0 && <div style={{ width: `${(health.totalLogins - health.strong) / health.totalLogins * 100}%`, background: '#e11d48' }} />}
                     </div>
                   </div>
                 )}
 
-
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                    <LayoutGrid className="w-3 h-3" /> By category
-                  </div>
+                <div className="p-3 bg-white border border-slate-900/10 rounded-xl space-y-2 shadow-xs">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Category Breakdown</div>
                   {health.byCategory.length === 0 ? (
                     <p className="text-[10px] text-slate-400">No items yet.</p>
                   ) : (
                     <div className="space-y-1.5">
                       {health.byCategory.map((c) => (
                         <div key={c.category} className="flex items-center gap-2">
-                          <span className="w-16 text-[10px] text-slate-500 truncate flex-shrink-0">{categoryLabel(c.category)}</span>
-                          <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                          <span className="w-16 text-[10px] text-slate-600 truncate font-semibold">{categoryLabel(c.category)}</span>
+                          <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
                             <div className="h-full rounded-full" style={{ width: `${c.count / maxCat * 100}%`, background: categoryColor(c.category) }} />
                           </div>
-                          <span className="w-5 text-right text-[10px] font-bold text-slate-700 flex-shrink-0">{c.count}</span>
+                          <span className="w-5 text-right text-[10px] font-bold text-slate-700">{c.count}</span>
                         </div>
                       ))}
                     </div>
@@ -1250,9 +1368,93 @@ export const PopupApp: React.FC = () => {
               </div>
             )}
 
+            {/* SETTINGS TAB */}
+            {tab === 'settings' && (
+              <div className="space-y-3 animate-fade-in">
+                {/* Account Card */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-brand-cyan/10 border border-brand-cyan/25 flex items-center justify-center shrink-0">
+                      <span className="text-brand-cyan font-black text-sm uppercase">
+                        {email ? email[0] : 'U'}
+                      </span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-slate-900 font-mono truncate">{email || 'Not signed in'}</div>
+                      <div className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1 mt-0.5">
+                        <CheckCircle2 className="w-3 h-3" /> Signed in & active
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={openWebVault}
+                    className="w-full py-2 bg-slate-50 hover:bg-slate-100 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Manage Account in Web Vault
+                  </button>
+                </div>
+
+                {/* Security Preferences Card */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
+                  <div className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Security Preferences</div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-bold text-slate-800">Auto-lock Vault</div>
+                      <div className="text-[10px] text-slate-500">Lock vault after idle duration</div>
+                    </div>
+                    <select
+                      value={autoLockMinutes}
+                      onChange={(e) => changeAutoLock(Number(e.target.value))}
+                      className="bg-slate-50 border border-slate-900/12 rounded-lg text-xs font-semibold text-slate-800 px-2 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0"
+                    >
+                      {AUTO_LOCK_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
+                    <div>
+                      <div className="text-xs font-bold text-slate-800">Clear Clipboard</div>
+                      <div className="text-[10px] text-slate-500">Wipe copied password after</div>
+                    </div>
+                    <select
+                      value={clipboardClearSeconds}
+                      onChange={(e) => changeClipboardClear(Number(e.target.value))}
+                      className="bg-slate-50 border border-slate-900/12 rounded-lg text-xs font-semibold text-slate-800 px-2 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0"
+                    >
+                      {CLIPBOARD_CLEAR_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Session Actions Card */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2">
+                  <div className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Session Controls</div>
+                  <button
+                    onClick={handleLock}
+                    className="w-full py-2 bg-slate-100 hover:bg-slate-200 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-slate-700" /> Lock Vault
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="w-full py-2 bg-brand-ruby/10 hover:bg-brand-ruby/20 border border-brand-ruby/20 text-brand-ruby font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" /> Sign Out
+                  </button>
+                  <p className="text-[9px] text-slate-400 leading-relaxed pt-1">
+                    Locking keeps local cached keys for offline access. Signing out removes your vault cache from this browser.
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         )}
-      </div>
     </div>
   );
 };
+

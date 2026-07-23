@@ -16,37 +16,31 @@
 }
 
 :root {
-  /* Light theme, ported from apps/web src/index.css `.light`. Declaring the
-     scheme keeps native UI — <select> menus, scrollbars, Chrome's autofill
-     shading — consistent with the page instead of rendering dark over it. */
   color-scheme: light;
 
-  --bg-page: #f6f9f8;
+  --bg-page: #f8fafc;
   --color-text-main: #0f172a;
   --color-text-muted: #475569;
-  --bg-glass: rgba(255, 255, 255, 0.45);
-  --border-glass: rgba(255, 255, 255, 0.6);
-  --shadow-glass: 0 20px 40px -15px rgba(15, 23, 42, 0.05), 0 0 1px 0 rgba(15, 23, 42, 0.05);
-  --bg-field: rgba(255, 255, 255, 0.85);
-  --border-field: rgba(15, 23, 42, 0.06);
-  --security-grid-color: rgba(15, 23, 42, 0.02);
+  --bg-glass: rgba(255, 255, 255, 0.75);
+  --border-glass: rgba(226, 232, 240, 0.8);
+  --shadow-glass: 0 10px 30px -10px rgba(15, 23, 42, 0.08), 0 2px 6px -2px rgba(15, 23, 42, 0.04);
+  --bg-field: #ffffff;
+  --border-field: rgba(15, 23, 42, 0.1);
+  --security-grid-color: rgba(15, 23, 42, 0.025);
 
   --bg-vault-image:
-    radial-gradient(ellipse 65% 65% at 15% 20%, rgba(13, 148, 136, 0.07) 0%, transparent 60%),
-    radial-gradient(ellipse 70% 70% at 85% 75%, rgba(16, 185, 129, 0.06) 0%, transparent 60%),
-    radial-gradient(ellipse 55% 55% at 50% 15%, rgba(56, 189, 248, 0.06) 0%, transparent 50%),
-    #f6f9f8;
+    radial-gradient(ellipse 70% 60% at 10% 15%, rgba(13, 148, 136, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 60% at 90% 85%, rgba(16, 185, 129, 0.07) 0%, transparent 60%),
+    #f8fafc;
 }
 
 @layer utilities {
   .glass-card {
     background: var(--bg-glass);
-    backdrop-filter: blur(32px);
-    -webkit-backdrop-filter: blur(32px);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
     border: 1px solid var(--border-glass);
-    box-shadow:
-      var(--shadow-glass),
-      inset 0 1.5px 0 rgba(255, 255, 255, 0.6);
+    box-shadow: var(--shadow-glass);
   }
 
   .field-surface {
@@ -55,27 +49,27 @@
   }
 
   .auth-card {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.72));
-    border: 1px solid rgba(255, 255, 255, 0.9);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.85));
+    border: 1px solid rgba(255, 255, 255, 0.95);
     box-shadow:
-      0 24px 48px -20px rgba(13, 148, 136, 0.18),
-      0 2px 8px rgba(15, 23, 42, 0.04);
+      0 20px 40px -15px rgba(13, 148, 136, 0.16),
+      0 4px 12px rgba(15, 23, 42, 0.04);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
   }
 
   .auth-input {
     background: #ffffff;
-    border: 1px solid rgba(15, 23, 42, 0.09);
+    border: 1px solid rgba(15, 23, 42, 0.12);
     transition: border-color 0.18s ease, box-shadow 0.18s ease;
   }
   .auth-input:hover:not(:focus) {
-    border-color: rgba(15, 23, 42, 0.16);
+    border-color: rgba(15, 23, 42, 0.22);
   }
   .auth-input:focus {
     outline: none;
     border-color: var(--color-brand-cyan);
-    box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
+    box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.14);
   }
 
   .glow-cyan {
@@ -91,18 +85,46 @@
   }
 
   .custom-scrollbar::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
   }
   .custom-scrollbar::-webkit-scrollbar-track {
-    background: rgba(15, 23, 42, 0.04);
+    background: transparent;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb {
     background: rgba(15, 23, 42, 0.15);
     border-radius: 9999px;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(13, 148, 136, 0.45);
+    background: rgba(13, 148, 136, 0.5);
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.18s ease-out forwards;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 
@@ -111,14 +133,18 @@
     background: linear-gradient(135deg, var(--color-brand-cyan), var(--color-brand-teal));
     color: #ffffff;
     border: 1px solid rgba(15, 23, 42, 0.08);
-    box-shadow: 0 10px 24px rgba(13, 148, 136, 0.22);
+    box-shadow: 0 6px 18px rgba(13, 148, 136, 0.22);
     font-weight: 700;
-    transition: filter 0.2s ease, box-shadow 0.2s ease;
+    transition: filter 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
   }
 
   .btn-primary:hover:not(:disabled) {
-    box-shadow: 0 14px 30px rgba(13, 148, 136, 0.3);
-    filter: brightness(1.05);
+    box-shadow: 0 10px 24px rgba(13, 148, 136, 0.32);
+    filter: brightness(1.04);
+  }
+
+  .btn-primary:active:not(:disabled) {
+    transform: scale(0.98);
   }
 }
 
@@ -131,11 +157,6 @@ body {
   overflow: hidden;
 }
 
-/* Chrome overrides the background of autofilled inputs with its own pale
-   yellow regardless of color-scheme. There is no property to disable it, so
-   the standard workaround is an inset shadow large enough to cover the field,
-   plus -webkit-text-fill-color for the text. The absurd transition delay stops
-   the yellow flashing in before the shadow paints. */
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
 input:-webkit-autofill:focus {
@@ -145,16 +166,15 @@ input:-webkit-autofill:focus {
   transition: background-color 600000s 0s;
 }
 
-/* Linux/Windows render <option> from the system palette rather than inheriting
-   the control's colours, so set them explicitly. */
 select option {
   background-color: #ffffff;
   color: var(--color-text-main);
 }
 
 .security-grid {
-  background-size: 40px 40px;
+  background-size: 32px 32px;
   background-image:
     linear-gradient(to right, var(--security-grid-color) 1px, transparent 1px),
     linear-gradient(to bottom, var(--security-grid-color) 1px, transparent 1px);
 }
+
