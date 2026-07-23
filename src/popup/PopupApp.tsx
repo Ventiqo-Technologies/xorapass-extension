@@ -17,9 +17,9 @@ import {
   EyeOff,
   ShieldOff,
   ShieldCheck,
-  Clock,
   CloudOff,
-  ClipboardCheck,
+  Settings,
+  ExternalLink,
   AlertTriangle,
   LayoutGrid,
   Wand2,
@@ -53,7 +53,7 @@ import {
 } from '../utils/vaultCache';
 import { isAuthError, isOfflineError } from '../utils/netErrors';
 import { LogoIcon, LogoHorizontal } from './Logo';
-import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL } from '../utils/config';
+import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL, WEB_APP_URL } from '../utils/config';
 import browser from 'webextension-polyfill';
 
 
@@ -67,6 +67,21 @@ const CATEGORY_META: Record<string, { label: string; color: string }> = {
 };
 const categoryLabel = (c: string) => CATEGORY_META[c]?.label || c;
 const categoryColor = (c: string) => CATEGORY_META[c]?.color || '#475569';
+
+/**
+ * Mirrors the web app's category nav (Dashboard.tsx `categoryNav`). Keep the
+ * keys in step: an item whose category the popup does not know about is
+ * reachable only under "All".
+ */
+const VAULT_CATEGORIES = [
+  { key: 'login', label: 'Logins' },
+  { key: 'card', label: 'Cards' },
+  { key: 'note', label: 'Notes' },
+  { key: 'sshkey', label: 'SSH' },
+  { key: 'other', label: 'Other' },
+] as const;
+
+type CategoryKey = (typeof VAULT_CATEGORIES)[number]['key'];
 
 const AUTO_LOCK_OPTIONS = [
   { label: '1 min', value: 1 },
@@ -107,10 +122,11 @@ export const PopupApp: React.FC = () => {
   const [clipboardClearSeconds, setClipboardClearSeconds] = useState(
     DEFAULT_CLIPBOARD_CLEAR_SECONDS
   );
-  const [tab, setTab] = useState<'vault' | 'generate' | 'health'>('vault');
+  const [tab, setTab] = useState<'vault' | 'generate' | 'health' | 'settings'>('vault');
   const [genOptions, setGenOptions] = useState<GeneratorOptions>(DEFAULT_OPTIONS);
   const [generated, setGenerated] = useState(() => generatePassword(DEFAULT_OPTIONS));
   const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState<'all' | CategoryKey>('all');
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -140,7 +156,10 @@ export const PopupApp: React.FC = () => {
             fetchCachedCredentials();
             // An offline session has no token; refreshVault would no-op, but
             // asking is pointless noise.
-            if (!res.offline) void refreshVault();
+            // Always retry. A successful sync is the only thing that clears
+            // the offline flag, so skipping it here left the vault stuck
+            // offline permanently once it was set.
+            void refreshVault();
             browser.runtime.sendMessage({ type: 'GET_SETTINGS' }).then((s: any) => {
               if (s && typeof s.autoLockMinutes === 'number') setAutoLockMinutes(s.autoLockMinutes);
               if (s && typeof s.clipboardClearSeconds === 'number') {
@@ -198,6 +217,10 @@ export const PopupApp: React.FC = () => {
   const openSignup = () => {
     browser.tabs.create({ url: SIGNUP_URL });
     window.close();
+  };
+
+  const openWebVault = () => {
+    browser.tabs.create({ url: WEB_APP_URL });
   };
 
   const openRecovery = () => {
@@ -500,9 +523,17 @@ export const PopupApp: React.FC = () => {
   // the entries already shown under "For this site", so the same credential
   // is not listed twice.
   const matchingIds = new Set(matchingItems.map((i) => i.id));
-  const searchedItems = term
-    ? vaultItems.filter(matches)
-    : vaultItems.filter((i) => !matchingIds.has(i.id));
+  const inCategory = (item: DecryptedItem) =>
+    categoryFilter === 'all' || (item.category || 'login') === categoryFilter;
+  const searchedItems = (
+    term ? vaultItems.filter(matches) : vaultItems.filter((i) => !matchingIds.has(i.id))
+  ).filter(inCategory);
+
+  // Counted over the whole vault, not the browse list: a chip reading "Cards 2"
+  // that filters down to 1 because one is already shown under "For this site"
+  // would look like a bug.
+  const categoryCount = (key: CategoryKey) =>
+    vaultItems.filter((i) => (i.category || 'login') === key).length;
 
 
   const bits = entropyBits(genOptions);
@@ -741,6 +772,13 @@ export const PopupApp: React.FC = () => {
               >
                 <Activity className="w-3.5 h-3.5" /> Health
               </button>
+              <button
+                onClick={() => setTab('settings')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'settings' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
+              >
+                <Settings className="w-3.5 h-3.5" />
+                <span>Settings</span>
+              </button>
             </div>
 
             {tab === 'vault' && (
@@ -850,11 +888,57 @@ export const PopupApp: React.FC = () => {
                 />
               </div>
 
+              {vaultItems.length > 0 && (
+                <div className="flex items-center gap-1 overflow-x-auto pb-0.5 -mx-0.5 px-0.5">
+                  <button
+                    onClick={() => setCategoryFilter('all')}
+                    className={`px-2 py-0.5 rounded-md text-[9px] font-bold transition cursor-pointer shrink-0 border ${
+                      categoryFilter === 'all'
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white/70 text-slate-600 border-slate-900/10 hover:bg-white'
+                    }`}
+                  >
+                    All ({vaultItems.length})
+                  </button>
+                  {VAULT_CATEGORIES.map(({ key, label }) => {
+                    const count = categoryCount(key);
+                    // Every category is always listed, as the web app's nav
+                    // does. Hiding the empty ones made a logins-only vault show
+                    // "All" beside a single identical chip, which reads as
+                    // categories being broken rather than simply unused.
+                    const empty = count === 0;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => !empty && setCategoryFilter(key)}
+                        disabled={empty}
+                        title={empty ? `No ${label.toLowerCase()} saved yet` : undefined}
+                        className={`px-2 py-0.5 rounded-md text-[9px] font-bold transition shrink-0 border ${
+                          categoryFilter === key
+                            ? 'bg-slate-900 text-white border-slate-900 cursor-pointer'
+                            : empty
+                              ? 'bg-transparent text-slate-300 border-slate-900/5 cursor-default'
+                              : 'bg-white/70 text-slate-600 border-slate-900/10 hover:bg-white cursor-pointer'
+                        }`}
+                      >
+                        {label} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="flex-1 overflow-y-auto custom-scrollbar pr-0.5 space-y-1.5 min-h-[80px]">
                 {searchedItems.length === 0 ? (
                   <div className="text-center py-6">
                     <p className="text-[11px] text-slate-400">
-                      {term ? 'No matches.' : vaultItems.length === 0 ? 'Your vault is empty.' : 'Nothing else saved yet.'}
+                      {term
+                        ? 'No matches.'
+                        : vaultItems.length === 0
+                          ? 'Your vault is empty.'
+                          : categoryFilter !== 'all'
+                            ? 'Nothing else in this category.'
+                            : 'Nothing else saved yet.'}
                     </p>
                   </div>
                 ) : (
@@ -901,37 +985,96 @@ export const PopupApp: React.FC = () => {
             </div>
 
 
-            <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-900/8">
-              <div className="flex items-center gap-1.5" title="Wipe a copied password from the clipboard after this delay">
-                <ClipboardCheck className="w-3 h-3 text-slate-500" />
-                <span className="text-[10px] text-slate-500">Clear copy</span>
-                <select
-                  value={clipboardClearSeconds}
-                  onChange={(e) => changeClipboardClear(Number(e.target.value))}
-                  className="bg-white border border-slate-900/10 rounded-md text-[10px] text-slate-800 px-1.5 py-0.5 focus:outline-none focus:border-brand-cyan cursor-pointer"
-                >
-                  {CLIPBOARD_CLEAR_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center gap-1.5" title="Automatically lock the vault after this idle period">
-                <Clock className="w-3 h-3 text-slate-500" />
-                <span className="text-[10px] text-slate-500">Auto-lock</span>
-                <select
-                  value={autoLockMinutes}
-                  onChange={(e) => changeAutoLock(Number(e.target.value))}
-                  className="bg-white border border-slate-900/10 rounded-md text-[10px] text-slate-800 px-1.5 py-0.5 focus:outline-none focus:border-brand-cyan cursor-pointer"
-                >
-                  {AUTO_LOCK_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
             </>
             )}
 
+
+            {tab === 'settings' && (
+              <div className="space-y-3">
+                {/* Who is signed in. The popup only knows the address — the
+                    rest of the account lives in the web vault. */}
+                <div className="p-3 bg-white/80 border border-slate-900/8 rounded-xl">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 rounded-full bg-brand-cyan/10 border border-brand-cyan/25 flex items-center justify-center shrink-0">
+                      <span className="text-brand-cyan font-black text-sm uppercase">
+                        {email ? email[0] : 'U'}
+                      </span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11px] font-bold text-slate-900 font-mono truncate">{email}</div>
+                      <div className="text-[9px] text-slate-500 mt-0.5">Signed in</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={openWebVault}
+                    className="mt-2.5 w-full py-1.5 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/8 text-slate-700 font-semibold rounded-lg text-[10px] flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    <span>Manage account in web vault</span>
+                  </button>
+                </div>
+
+                <div className="p-3 bg-white/80 border border-slate-900/8 rounded-xl space-y-2.5">
+                  <div className="text-[9px] font-black uppercase tracking-wider text-slate-400">Security</div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold text-slate-800">Auto-lock</div>
+                      <div className="text-[9px] text-slate-500 mt-0.5">Lock the vault after this idle period.</div>
+                    </div>
+                    <select
+                      value={autoLockMinutes}
+                      onChange={(e) => changeAutoLock(Number(e.target.value))}
+                      className="bg-white border border-slate-900/10 rounded-md text-[10px] text-slate-800 px-1.5 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0"
+                    >
+                      {AUTO_LOCK_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold text-slate-800">Clear copied password</div>
+                      <div className="text-[9px] text-slate-500 mt-0.5">Wipe the clipboard this long after a copy.</div>
+                    </div>
+                    <select
+                      value={clipboardClearSeconds}
+                      onChange={(e) => changeClipboardClear(Number(e.target.value))}
+                      className="bg-white border border-slate-900/10 rounded-md text-[10px] text-slate-800 px-1.5 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0"
+                    >
+                      {CLIPBOARD_CLEAR_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Lock and sign out differ: only sign out removes the offline
+                    copy of the vault from this browser. */}
+                <div className="p-3 bg-white/80 border border-slate-900/8 rounded-xl space-y-2">
+                  <div className="text-[9px] font-black uppercase tracking-wider text-slate-400">Session</div>
+                  <button
+                    onClick={handleLock}
+                    className="w-full py-2 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/8 text-slate-700 font-semibold rounded-lg text-[10px] flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Lock className="w-3 h-3" />
+                    <span>Lock vault</span>
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="w-full py-2 bg-brand-ruby/10 hover:bg-brand-ruby/20 border border-brand-ruby/20 text-brand-ruby font-semibold rounded-lg text-[10px] flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    <span>Sign out</span>
+                  </button>
+                  <p className="text-[9px] text-slate-400 leading-relaxed">
+                    Locking keeps your vault on this device so unlocking needs only your master
+                    password. Signing out removes it.
+                  </p>
+                </div>
+              </div>
+            )}
 
             {tab === 'generate' && (
               <div className="space-y-3">
