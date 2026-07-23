@@ -17,10 +17,18 @@ export const KNOWN_MESSAGE_TYPES = [
   'UNLOCK_VAULT',
   'LOCK_VAULT',
   'GET_MATCHING_CREDENTIALS',
+  'GET_CREDENTIAL_SECRET',
+  'REMEMBER_USERNAME',
+  'CAPTURE_CREDENTIAL',
+  'GET_PENDING_SAVE',
+  'SAVE_CREDENTIAL',
+  'DISMISS_PENDING_SAVE',
   'GET_SITE_SETTINGS',
   'SET_SITE_DISABLED',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  'SET_CLIPBOARD_CLEAR',
+  'CLIPBOARD_COPIED',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -36,6 +44,10 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'GET_STATUS',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  'SET_CLIPBOARD_CLEAR',
+  // A page has no business arming (or re-arming, and so postponing) the
+  // clipboard clear; only the popup copies passwords.
+  'CLIPBOARD_COPIED',
 ]);
 
 export interface GuardResult {
@@ -100,9 +112,38 @@ export function validateMessage(
       if (!payload || !Array.isArray(payload.decryptedItems) || typeof payload.email !== 'string') {
         return { ok: false, reason: 'bad-payload' };
       }
+      // token and encKey back the refresh path: re-fetching the vault needs a
+      // bearer token, and decrypting anything new needs the key.
+      if (typeof payload.token !== 'string' || typeof payload.encKey !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
       break;
     case 'GET_MATCHING_CREDENTIALS':
       if (!payload || typeof payload.hostname !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'REMEMBER_USERNAME':
+      if (!payload || typeof payload.username !== 'string' || !payload.username) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'CAPTURE_CREDENTIAL':
+      // The submitted credential. The hostname is not taken from here — the
+      // background derives it from the sender tab.
+      if (
+        !payload ||
+        typeof payload.username !== 'string' ||
+        typeof payload.password !== 'string' ||
+        !payload.password
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'GET_CREDENTIAL_SECRET':
+      // Only the item id is trusted from the caller; the background re-derives
+      // the requesting hostname from the sender tab rather than the payload.
+      if (!payload || typeof payload.id !== 'string' || !payload.id) {
         return { ok: false, reason: 'bad-payload' };
       }
       break;
@@ -121,7 +162,14 @@ export function validateMessage(
         return { ok: false, reason: 'bad-payload' };
       }
       break;
-    // GET_STATUS, LOCK_VAULT and GET_SETTINGS need no payload.
+    case 'SET_CLIPBOARD_CLEAR':
+      if (!payload || typeof payload.seconds !== 'number' || !Number.isFinite(payload.seconds)) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    // GET_STATUS, LOCK_VAULT, GET_SETTINGS and CLIPBOARD_COPIED need no
+    // payload — CLIPBOARD_COPIED deliberately carries no secret, it is only a
+    // signal that the popup put a password on the clipboard.
   }
 
   return { ok: true, type: type as MessageType };

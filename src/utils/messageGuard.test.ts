@@ -42,20 +42,38 @@ describe('validateMessage — shape', () => {
   });
 });
 
+const unlockPayload = () => ({
+  decryptedItems: [],
+  email: 'a@b.c',
+  token: 'jwt-token',
+  encKey: 'a1b2c3',
+});
+
 describe('validateMessage — privileged operations', () => {
   it('allows UNLOCK_VAULT from the extension page', () => {
     const res = validateMessage(
-      { type: 'UNLOCK_VAULT', payload: { decryptedItems: [], email: 'a@b.c' } },
+      { type: 'UNLOCK_VAULT', payload: unlockPayload() },
       popupSender()
     );
     expect(res.ok).toBe(true);
   });
   it('rejects UNLOCK_VAULT from a content script', () => {
     const res = validateMessage(
-      { type: 'UNLOCK_VAULT', payload: { decryptedItems: [], email: 'a@b.c' } },
+      { type: 'UNLOCK_VAULT', payload: unlockPayload() },
       contentSender()
     );
     expect(res.reason).toBe('privileged-from-content');
+  });
+  it('rejects UNLOCK_VAULT missing the refresh credentials', () => {
+    const { token, ...noToken } = unlockPayload();
+    expect(
+      validateMessage({ type: 'UNLOCK_VAULT', payload: noToken }, popupSender()).reason
+    ).toBe('bad-payload');
+
+    const { encKey, ...noKey } = unlockPayload();
+    expect(
+      validateMessage({ type: 'UNLOCK_VAULT', payload: noKey }, popupSender()).reason
+    ).toBe('bad-payload');
   });
   it('rejects GET_STATUS originating from a web page', () => {
     expect(validateMessage({ type: 'GET_STATUS' }, contentSender()).reason).toBe('privileged-from-content');
@@ -100,6 +118,36 @@ describe('validateMessage — payload validation', () => {
     expect(validateMessage({ type: 'GET_SETTINGS' }, contentSender()).reason).toBe('privileged-from-content');
     expect(
       validateMessage({ type: 'SET_AUTO_LOCK', payload: { minutes: 5 } }, contentSender()).reason
+    ).toBe('privileged-from-content');
+  });
+  it('accepts a valid SET_CLIPBOARD_CLEAR from the popup', () => {
+    const res = validateMessage(
+      { type: 'SET_CLIPBOARD_CLEAR', payload: { seconds: 30 } },
+      popupSender()
+    );
+    expect(res.ok).toBe(true);
+  });
+  it('rejects SET_CLIPBOARD_CLEAR with a non-numeric payload', () => {
+    const res = validateMessage(
+      { type: 'SET_CLIPBOARD_CLEAR', payload: { seconds: 'later' } },
+      popupSender()
+    );
+    expect(res.reason).toBe('bad-payload');
+  });
+  it('accepts a payload-free CLIPBOARD_COPIED from the popup', () => {
+    expect(validateMessage({ type: 'CLIPBOARD_COPIED' }, popupSender()).ok).toBe(true);
+  });
+  it('rejects clipboard messages from a content script (privileged)', () => {
+    // A page could otherwise re-arm the timer repeatedly and postpone the
+    // clear indefinitely.
+    expect(validateMessage({ type: 'CLIPBOARD_COPIED' }, contentSender()).reason).toBe(
+      'privileged-from-content'
+    );
+    expect(
+      validateMessage(
+        { type: 'SET_CLIPBOARD_CLEAR', payload: { seconds: 0 } },
+        contentSender()
+      ).reason
     ).toBe('privileged-from-content');
   });
 });

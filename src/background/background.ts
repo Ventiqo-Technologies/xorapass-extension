@@ -1,7 +1,14 @@
 // XoraPass Background Service Worker (Manifest V3)
 import browser from 'webextension-polyfill';
-import { isDomainMatch, extractHostname, findLookalikeTarget } from '../utils/siteTrust';
+import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
 import { validateMessage } from '../utils/messageGuard';
+import { encryptPayload, hexToBytes } from '../utils/crypto';
+import { API_BASE_URL } from '../utils/config';
+import {
+  CLIPBOARD_PLACEHOLDER,
+  clearDelayInMinutes,
+  normalizeClearSeconds,
+} from '../utils/clipboardPolicy';
 
 // Logged on every service-worker (cold) start. If the session were cleared by a
 // mere page refresh you would NOT see this line on refresh — it only prints when
@@ -12,6 +19,11 @@ const DISABLED_SITES_KEY = 'disabledSites';
 const AUTO_LOCK_KEY = 'autoLockMinutes';
 const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
 const DEFAULT_AUTO_LOCK_MINUTES = 15;
+const CLIPBOARD_KEY = 'clipboardClearSeconds';
+const CLIPBOARD_ALARM = 'xorapass-clipboard-clear';
+const CLIPBOARD_PENDING_KEY = 'clipboardPending';
+const OFFSCREEN_TARGET = 'xorapass-offscreen';
+const OFFSCREEN_URL = 'offscreen.html';
 
 /** Idle-timeout (minutes) after which the vault auto-locks. 0 = never. */
 async function getAutoLockMinutes(): Promise<number> {
@@ -30,11 +42,104 @@ async function scheduleAutoLock() {
   }
 }
 
-// When the idle timer fires, purge the decrypted vault from session storage.
+// ── Clipboard auto-clear ────────────────────────────────────────────────────
+//
+// The popup writes the password to the clipboard itself (it has a DOM and a
+// user gesture), then tells us a copy happened. The secret never reaches the
+// worker for this; we only own the timer, because the popup is torn down the
+// moment it loses focus and any timer living inside it dies with it.
+
+/** Delay (seconds) before a copied password is overwritten. 0 = never. */
+async function getClipboardClearSeconds(): Promise<number> {
+  const res = await browser.storage.local.get([CLIPBOARD_KEY]);
+  return normalizeClearSeconds((res as Record<string, unknown>)[CLIPBOARD_KEY]);
+}
+
+/**
+ * Creates the offscreen document if it is not already up. Returns false when
+ * the browser has no offscreen API (Firefox, Safari), which leaves the
+ * clipboard untouched rather than throwing.
+ */
+async function ensureOffscreenDocument(): Promise<boolean> {
+  const api = (globalThis as any).chrome;
+  if (!api?.offscreen?.createDocument) return false;
+
+  try {
+    if (api.runtime?.getContexts) {
+      const contexts = await api.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+        documentUrls: [browser.runtime.getURL(OFFSCREEN_URL)],
+      });
+      if (contexts.length > 0) return true;
+    }
+    await api.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: ['CLIPBOARD'],
+      justification: 'Clear a copied password from the clipboard on a timer.',
+    });
+    return true;
+  } catch (err) {
+    // Two concurrent clears can race to create the document; losing that race
+    // is fine, the document we wanted exists either way.
+    if (String(err).includes('Only a single offscreen')) return true;
+    console.warn('[XoraPass] offscreen document unavailable:', err);
+    return false;
+  }
+}
+
+/** Overwrites the clipboard and drops the pending marker. */
+async function clearClipboard(): Promise<void> {
+  await browser.alarms.clear(CLIPBOARD_ALARM);
+  const pending = await browser.storage.session.get([CLIPBOARD_PENDING_KEY]);
+  if (!pending[CLIPBOARD_PENDING_KEY]) return;
+  await browser.storage.session.remove(CLIPBOARD_PENDING_KEY);
+
+  if (!(await ensureOffscreenDocument())) return;
+  try {
+    await browser.runtime.sendMessage({
+      target: OFFSCREEN_TARGET,
+      type: 'CLIPBOARD_WRITE',
+      text: CLIPBOARD_PLACEHOLDER,
+    });
+    console.debug('[XoraPass] clipboard cleared');
+  } catch (err) {
+    console.warn('[XoraPass] clipboard clear failed:', err);
+  } finally {
+    const api = (globalThis as any).chrome;
+    try {
+      await api?.offscreen?.closeDocument?.();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/** Arms the clear timer after the popup reports a password copy. */
+async function scheduleClipboardClear(): Promise<number> {
+  const seconds = await getClipboardClearSeconds();
+  await browser.alarms.clear(CLIPBOARD_ALARM);
+  const delayInMinutes = clearDelayInMinutes(seconds);
+  if (delayInMinutes === null) {
+    await browser.storage.session.remove(CLIPBOARD_PENDING_KEY);
+    return 0;
+  }
+  await browser.storage.session.set({ [CLIPBOARD_PENDING_KEY]: true });
+  browser.alarms.create(CLIPBOARD_ALARM, { delayInMinutes });
+  return seconds;
+}
+
 browser.alarms.onAlarm.addListener((alarm) => {
+  // When the idle timer fires, purge the decrypted vault from session storage.
   if (alarm.name === AUTO_LOCK_ALARM) {
     console.debug('[XoraPass] auto-lock fired -> clearing session');
-    browser.storage.session.clear();
+    // Locking must not leave a password sitting in the clipboard, so clear it
+    // first — storage.session.clear() would otherwise drop the pending marker
+    // and make the clear a no-op.
+    void clearClipboard().finally(() => browser.storage.session.clear());
+    return;
+  }
+  if (alarm.name === CLIPBOARD_ALARM) {
+    void clearClipboard();
   }
 });
 
@@ -45,7 +150,68 @@ interface VaultItem {
   value: string;
   url?: string;
   category?: string;
+  notes?: string;
+  organization?: string;
 }
+
+// A credential submitted on a page, awaiting the user's decision. Keyed by tab
+// so a submit in one tab cannot surface a prompt in another. Held in
+// storage.session, so it is memory-only and cleared by lock along with the
+// vault itself.
+interface PendingSave {
+  hostname: string;
+  username: string;
+  password: string;
+  mode: 'new' | 'update';
+  entryId?: string;
+}
+
+const PENDING_KEY = 'pendingSaves';
+
+// Two-step logins (LastPass, Google, Microsoft) collect the email on one screen
+// and the password on the next, so by submit time the username field is gone
+// from the DOM. The username seen earlier in the tab is kept here and used as
+// the fallback, otherwise those sites all save as "(no username)".
+const LAST_USERNAME_KEY = 'lastUsernames';
+
+async function getLastUsernames(): Promise<Record<string, string>> {
+  const res = await browser.storage.session.get([LAST_USERNAME_KEY]);
+  const v = (res as Record<string, unknown>)[LAST_USERNAME_KEY];
+  return (v && typeof v === 'object' ? v : {}) as Record<string, string>;
+}
+
+async function setLastUsername(tabId: number, username: string | null) {
+  const all = await getLastUsernames();
+  if (username) {
+    all[String(tabId)] = username;
+  } else {
+    delete all[String(tabId)];
+  }
+  await browser.storage.session.set({ [LAST_USERNAME_KEY]: all });
+}
+
+async function getPendingSaves(): Promise<Record<string, PendingSave>> {
+  const res = await browser.storage.session.get([PENDING_KEY]);
+  const v = (res as Record<string, unknown>)[PENDING_KEY];
+  return (v && typeof v === 'object' ? v : {}) as Record<string, PendingSave>;
+}
+
+async function setPendingSave(tabId: number, pending: PendingSave | null) {
+  const all = await getPendingSaves();
+  if (pending) {
+    all[String(tabId)] = pending;
+  } else {
+    delete all[String(tabId)];
+  }
+  await browser.storage.session.set({ [PENDING_KEY]: all });
+}
+
+// Drop a tab's pending capture when the tab goes away, so prompts cannot
+// resurface against a later page that happens to reuse the id.
+browser.tabs.onRemoved.addListener((tabId) => {
+  void setPendingSave(tabId, null);
+  void setLastUsername(tabId, null);
+});
 
 /** Normalized set of hostnames on which the user has disabled autofill. */
 async function getDisabledSites(): Promise<string[]> {
@@ -90,18 +256,31 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const msg = message as { type: string; payload?: any };
 
   if (type === 'GET_STATUS') {
-    return browser.storage.session.get(['unlocked', 'email']).then((res) => {
+    return browser.storage.session.get(['unlocked', 'email', 'offline']).then((res) => {
       // The popup opening counts as activity: restart the idle auto-lock timer.
       if (res.unlocked) void scheduleAutoLock();
       console.debug('[XoraPass] GET_STATUS -> unlocked =', !!res.unlocked);
-      return { unlocked: !!res.unlocked, email: res.email || null };
+      return { unlocked: !!res.unlocked, email: res.email || null, offline: !!res.offline };
     });
   }
 
   if (type === 'UNLOCK_VAULT') {
-    const { decryptedItems, email } = msg.payload;
+    const { decryptedItems, email, token, encKey, offline } = msg.payload;
+    // token and encKey are held so the popup can re-fetch and decrypt the vault
+    // without a full re-authentication. They live in storage.session, which is
+    // memory-only, cleared on browser restart, and already restricted to
+    // TRUSTED_CONTEXTS — the same place the decrypted vault itself sits.
     return browser.storage.session
-      .set({ unlocked: true, email, vaultItems: decryptedItems })
+      .set({
+        unlocked: true,
+        email,
+        vaultItems: decryptedItems,
+        token,
+        encKey,
+        // An offline unlock came from the cache and has no access token, so
+        // writes have to wait for a connection.
+        offline: !!offline,
+      })
       .then(() => {
         void scheduleAutoLock();
         console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', decryptedItems.length, 'items )');
@@ -112,11 +291,33 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (type === 'LOCK_VAULT') {
     console.debug('[XoraPass] LOCK_VAULT -> clearing session');
     void browser.alarms.clear(AUTO_LOCK_ALARM);
-    return browser.storage.session.clear().then(() => ({ success: true }));
+    // Same ordering as auto-lock: drain the clipboard before the pending
+    // marker is wiped along with the rest of the session.
+    return clearClipboard()
+      .catch(() => undefined)
+      .then(() => browser.storage.session.clear())
+      .then(() => ({ success: true }));
   }
 
   if (type === 'GET_SETTINGS') {
-    return getAutoLockMinutes().then((autoLockMinutes) => ({ autoLockMinutes }));
+    return Promise.all([getAutoLockMinutes(), getClipboardClearSeconds()]).then(
+      ([autoLockMinutes, clipboardClearSeconds]) => ({ autoLockMinutes, clipboardClearSeconds })
+    );
+  }
+
+  if (type === 'SET_CLIPBOARD_CLEAR') {
+    const seconds = normalizeClearSeconds(msg.payload.seconds);
+    return browser.storage.local
+      .set({ [CLIPBOARD_KEY]: seconds })
+      .then(() => ({ success: true, clipboardClearSeconds: seconds }));
+  }
+
+  if (type === 'CLIPBOARD_COPIED') {
+    // No secret in the payload — this is only the signal to start the timer.
+    return scheduleClipboardClear().then((clipboardClearSeconds) => ({
+      success: true,
+      clipboardClearSeconds,
+    }));
   }
 
   if (type === 'SET_AUTO_LOCK') {
@@ -171,11 +372,14 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const lookalike = matching.length === 0 ? findLookalikeTarget(hostname, knownHosts) : null;
 
       return {
+        // NOTE: `value` (the secret) is deliberately NOT included here. The
+        // content script only ever learns which items exist for this site; the
+        // password is released one at a time by GET_CREDENTIAL_SECRET, after a
+        // fresh domain re-check, when the user actually picks an entry.
         credentials: matching.map((item) => ({
           id: item.id,
           label: item.label,
           username: item.username,
-          value: item.value,
           category: item.category || 'login',
         })),
         disabled: false,
@@ -184,9 +388,198 @@ browser.runtime.onMessage.addListener((message, sender) => {
     });
   }
 
+  if (type === 'GET_CREDENTIAL_SECRET') {
+    const id: string = msg.payload.id;
+
+    // The hostname is taken from the sender tab, never from the message
+    // payload: a compromised content script must not be able to name a
+    // different site and pull that site's password.
+    const senderUrl = sender.tab?.url || sender.url || '';
+    const hostname = extractHostname(senderUrl);
+    if (!hostname) {
+      return Promise.resolve({ error: 'unknown_origin' });
+    }
+
+    return Promise.all([
+      browser.storage.session.get(['unlocked', 'vaultItems']),
+      isSiteDisabled(hostname),
+    ]).then(([res, disabled]) => {
+      if (!res.unlocked || !res.vaultItems) return { error: 'locked' };
+      if (disabled) return { error: 'site_disabled' };
+
+      const item = (res.vaultItems as VaultItem[]).find((i) => i.id === id);
+      if (!item || !item.url) return { error: 'not_found' };
+
+      // Re-authorize: the item must still match the tab's real hostname.
+      if (!isDomainMatch(hostname, item.url)) {
+        console.warn('[XoraPass] Refused secret for non-matching domain:', hostname);
+        return { error: 'domain_mismatch' };
+      }
+
+      void scheduleAutoLock(); // filling counts as activity
+      return { username: item.username, value: item.value };
+    });
+  }
+
+  if (type === 'REMEMBER_USERNAME') {
+    const tabId = sender.tab?.id;
+    if (!tabId) return Promise.resolve({ success: false });
+    return setLastUsername(tabId, msg.payload.username).then(() => ({ success: true }));
+  }
+
+  if (type === 'CAPTURE_CREDENTIAL') {
+    const tabId = sender.tab?.id;
+    const hostname = extractHostname(sender.tab?.url || sender.url || '');
+    if (!tabId || !hostname) return Promise.resolve({ prompt: false });
+
+    const captured = msg.payload as { username: string; password: string };
+    const password = captured.password;
+
+    return Promise.all([
+      browser.storage.session.get(['unlocked', 'vaultItems']),
+      isSiteDisabled(hostname),
+      captured.username ? Promise.resolve(captured.username) : getLastUsernames().then((m) => m[String(tabId)] || ''),
+    ]).then(async ([res, disabled, username]) => {
+      // Nothing to offer while locked — encryption needs the session key — and
+      // a site the user muted should stay silent here too.
+      if (!res.unlocked || disabled) return { prompt: false };
+
+      const items = (res.vaultItems as VaultItem[]) || [];
+      const sameSite = items.filter((i) => !!i.url && isDomainMatch(hostname, i.url!));
+      const existing = sameSite.find((i) => i.username === username);
+
+      // Already stored with this exact password: nothing worth asking about.
+      if (existing && existing.value === password) return { prompt: false };
+
+      const pending: PendingSave = existing
+        ? { hostname, username, password, mode: 'update', entryId: existing.id }
+        : { hostname, username, password, mode: 'new' };
+
+      await setPendingSave(tabId, pending);
+      return { prompt: true, mode: pending.mode };
+    });
+  }
+
+  if (type === 'GET_PENDING_SAVE') {
+    const tabId = sender.tab?.id;
+    const hostname = extractHostname(sender.tab?.url || sender.url || '');
+    if (!tabId || !hostname) return Promise.resolve({ pending: null });
+
+    return getPendingSaves().then((all) => {
+      const pending = all[String(tabId)];
+      // The capture must belong to the page currently asking. After a login
+      // redirect the host is usually the same; if it is not, the prompt would
+      // be about a different site.
+      if (!pending || !isDomainMatch(hostname, pending.hostname)) return { pending: null };
+      return {
+        pending: { username: pending.username, mode: pending.mode, hostname: pending.hostname },
+      };
+    });
+  }
+
+  if (type === 'DISMISS_PENDING_SAVE') {
+    const tabId = sender.tab?.id;
+    if (!tabId) return Promise.resolve({ success: true });
+    return setPendingSave(tabId, null).then(() => ({ success: true }));
+  }
+
+  if (type === 'SAVE_CREDENTIAL') {
+    const tabId = sender.tab?.id;
+    if (!tabId) return Promise.resolve({ error: 'no_tab' });
+    return savePendingCredential(tabId);
+  }
+
   // Should be unreachable because validateMessage allowlists types.
   return undefined;
 });
+
+// Encrypts the pending credential with the session key and writes it to the
+// API. Runs in the worker because the encryption key lives in
+// TRUSTED_CONTEXTS session storage, which content scripts cannot read.
+async function savePendingCredential(
+  tabId: number
+): Promise<{ success?: boolean; error?: string; detail?: string | null }> {
+  const all = await getPendingSaves();
+  const pending = all[String(tabId)];
+  if (!pending) return { error: 'nothing_pending' };
+
+  const session = await browser.storage.session.get([
+    'unlocked',
+    'token',
+    'encKey',
+    'vaultItems',
+    'offline',
+  ]);
+  if (!session.unlocked || !session.encKey) return { error: 'locked' };
+  // Unlocked from the cache: readable and fillable, but there is no session to
+  // write through. Saying "locked" here would send the user to re-unlock a
+  // vault that is already open.
+  if (!session.token || session.offline) return { error: 'offline' };
+
+  const encKey = hexToBytes(session.encKey as string);
+  const items = (session.vaultItems as VaultItem[]) || [];
+  const existing = pending.entryId ? items.find((i) => i.id === pending.entryId) : undefined;
+
+  const entry = {
+    label: existing?.label || registrableDomain(pending.hostname) || pending.hostname,
+    username: pending.username,
+    value: pending.password,
+    notes: existing?.notes || '',
+    category: existing?.category || 'login',
+    organization: existing?.organization || '',
+    url: existing?.url || `https://${pending.hostname}`,
+  };
+
+  // encryptPayload bundles the nonce, but the API stores it in its own column.
+  const { nonce, ...encrypted_payload } = encryptPayload(JSON.stringify(entry), encKey);
+
+  const isUpdate = pending.mode === 'update' && !!pending.entryId;
+  const url = isUpdate ? `${API_BASE_URL}/api/vault/${pending.entryId}` : `${API_BASE_URL}/api/vault`;
+
+  try {
+    const res = await fetch(url, {
+      method: isUpdate ? 'PUT' : 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({ encrypted_payload, nonce }),
+    });
+
+    if (res.status === 401 || res.status === 403) {
+      await setPendingSave(tabId, null);
+      return { error: 'session_expired' };
+    }
+    if (!res.ok) {
+      // The API rejects creates that exceed the plan's vault limit with a
+      // useful message; pass it through rather than saying "couldn't save".
+      const detail = await res
+        .json()
+        .then((b: any) => (typeof b?.detail === 'string' ? b.detail : null))
+        .catch(() => null);
+      return { error: `http_${res.status}`, detail };
+    }
+
+    const saved = await res.json().catch(() => null);
+
+    // Fold the entry into the cached vault so it autofills straight away,
+    // instead of waiting for the next sync.
+    const id = isUpdate ? pending.entryId! : saved?.id;
+    const next = isUpdate
+      ? items.map((i) => (i.id === id ? { ...i, ...entry } : i))
+      : id
+        ? [...items, { id, ...entry }]
+        : items;
+
+    await browser.storage.session.set({ vaultItems: next });
+    await setPendingSave(tabId, null);
+    void scheduleAutoLock();
+    return { success: true };
+  } catch (err) {
+    console.warn('[XoraPass] Save failed:', err);
+    return { error: 'network' };
+  }
+}
 
 // Configure session storage access level (trusted context restriction) so
 // content scripts cannot read decrypted secrets directly; only the

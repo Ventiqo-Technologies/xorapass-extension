@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { 
-  Shield, 
-  Lock, 
-  Search, 
+  Shield,
+  Search,
   Key, 
   Copy, 
   Check, 
@@ -11,34 +10,63 @@ import {
   RefreshCw, 
   LogOut, 
   AlertCircle,
+  Mail,
+  Lock,
+  ArrowRight,
   Eye,
   EyeOff,
   ShieldOff,
   ShieldCheck,
   Clock,
+  CloudOff,
+  ClipboardCheck,
   AlertTriangle,
-  LockKeyhole,
-  ShieldAlert,
   LayoutGrid,
+  Wand2,
   Activity,
   TrendingUp
 } from 'lucide-react';
-import { deriveMasterKey, splitMasterKey, decryptPayload } from '../utils/crypto';
+import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
 import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
+import {
+  generatePassword,
+  entropyBits,
+  strengthTier,
+  DEFAULT_OPTIONS,
+  MIN_LENGTH,
+  type GeneratorOptions,
+} from '../utils/passwordGenerator';
+import {
+  CLIPBOARD_CLEAR_OPTIONS,
+  DEFAULT_CLIPBOARD_CLEAR_SECONDS,
+} from '../utils/clipboardPolicy';
+import {
+  canVerifyOffline,
+  clearVaultCache,
+  readVaultCache,
+  updateCachedEntries,
+  verifiesAgainstCache,
+  writeVaultCache,
+  type RawVaultEntry,
+  type VaultCache,
+} from '../utils/vaultCache';
+import { isAuthError, isOfflineError } from '../utils/netErrors';
+import { LogoIcon, LogoHorizontal } from './Logo';
+import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL } from '../utils/config';
 import browser from 'webextension-polyfill';
 
-// Category display metadata for the health chart.
+
 const CATEGORY_META: Record<string, { label: string; color: string }> = {
-  login: { label: 'Logins', color: '#38c7e8' },
-  other: { label: 'API / Other', color: '#4f7cff' },
-  card: { label: 'Cards', color: '#a855f7' },
-  note: { label: 'Notes', color: '#2dd4bf' },
-  sshkey: { label: 'SSH Keys', color: '#f59e0b' },
-  identity: { label: 'Identities', color: '#f43f5e' },
+  login: { label: 'Logins', color: '#0891b2' },
+  other: { label: 'API / Other', color: '#4f46e5' },
+  card: { label: 'Cards', color: '#7c3aed' },
+  note: { label: 'Notes', color: '#0d9488' },
+  sshkey: { label: 'SSH Keys', color: '#b45309' },
+  identity: { label: 'Identities', color: '#e11d48' },
 };
 const categoryLabel = (c: string) => CATEGORY_META[c]?.label || c;
-const categoryColor = (c: string) => CATEGORY_META[c]?.color || '#64748b';
+const categoryColor = (c: string) => CATEGORY_META[c]?.color || '#475569';
 
 const AUTO_LOCK_OPTIONS = [
   { label: '1 min', value: 1 },
@@ -49,8 +77,7 @@ const AUTO_LOCK_OPTIONS = [
   { label: 'Never', value: 0 },
 ];
 
-// Setup API URL
-const API_BASE_URL = 'https://app.xorapass.com';
+
 
 interface DecryptedItem {
   id: string;
@@ -71,29 +98,34 @@ export const PopupApp: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Unlocked Session States
+
   const [vaultItems, setVaultItems] = useState<DecryptedItem[]>([]);
   const [currentHostname, setCurrentHostname] = useState('');
   const [currentProtocol, setCurrentProtocol] = useState('');
   const [siteDisabled, setSiteDisabled] = useState(false);
   const [autoLockMinutes, setAutoLockMinutes] = useState(15);
-  const [tab, setTab] = useState<'vault' | 'health'>('vault');
+  const [clipboardClearSeconds, setClipboardClearSeconds] = useState(
+    DEFAULT_CLIPBOARD_CLEAR_SECONDS
+  );
+  const [tab, setTab] = useState<'vault' | 'generate' | 'health'>('vault');
+  const [genOptions, setGenOptions] = useState<GeneratorOptions>(DEFAULT_OPTIONS);
+  const [generated, setGenerated] = useState(() => generatePassword(DEFAULT_OPTIONS));
   const [searchTerm, setSearchTerm] = useState('');
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  // Unlocked from the cache with no server session: the vault reads fine but
+  // nothing can be saved or synced until there is a connection again.
+  const [offline, setOffline] = useState(false);
 
-  // MFA States
+
   const [step, setStep] = useState<'login' | 'mfa'>('login');
   const [mfaCode, setMfaCode] = useState('');
   const [mfaToken, setMfaToken] = useState('');
   const [tempEncKey, setTempEncKey] = useState<Uint8Array | null>(null);
+  const [tempSalt, setTempSalt] = useState('');
   
-  // Check unlock status on open.
-  //
-  // MV3 service workers are ephemeral: if the worker is mid-cold-start when the
-  // popup opens, the first message can resolve with no response. Treat a missing
-  // response as "unknown" and retry a couple of times rather than falling back
-  // to the locked screen — otherwise the popup wrongly appears logged out even
-  // though the vault is still unlocked in storage.session.
+
   useEffect(() => {
     const checkStatus = (attempt = 0) => {
       browser.runtime
@@ -102,9 +134,18 @@ export const PopupApp: React.FC = () => {
           if (res && res.unlocked) {
             setUnlocked(true);
             setEmail(res.email || '');
+            setOffline(!!res.offline);
+            // Render the cached snapshot immediately, then sync in the
+            // background so entries added elsewhere show up without a re-unlock.
             fetchCachedCredentials();
+            // An offline session has no token; refreshVault would no-op, but
+            // asking is pointless noise.
+            if (!res.offline) void refreshVault();
             browser.runtime.sendMessage({ type: 'GET_SETTINGS' }).then((s: any) => {
               if (s && typeof s.autoLockMinutes === 'number') setAutoLockMinutes(s.autoLockMinutes);
+              if (s && typeof s.clipboardClearSeconds === 'number') {
+                setClipboardClearSeconds(s.clipboardClearSeconds);
+              }
             });
           } else if (!res && attempt < 3) {
             setTimeout(() => checkStatus(attempt + 1), 150);
@@ -116,7 +157,7 @@ export const PopupApp: React.FC = () => {
     };
     checkStatus();
 
-    // Detect active tab domain
+
     browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
       const activeTab = tabs[0];
       if (activeTab && activeTab.url) {
@@ -124,7 +165,6 @@ export const PopupApp: React.FC = () => {
           const url = new URL(activeTab.url);
           setCurrentHostname(url.hostname);
           setCurrentProtocol(url.protocol);
-          // Load the per-site autofill enable/disable state.
           browser.runtime
             .sendMessage({ type: 'GET_SITE_SETTINGS', payload: { hostname: url.hostname } })
             .then((res: any) => {
@@ -137,6 +177,14 @@ export const PopupApp: React.FC = () => {
     });
   }, []);
 
+  // Options and password stay in step: changing a setting immediately shows a
+  // password that reflects it, rather than leaving a stale one on screen.
+  const updateGenOptions = (patch: Partial<GeneratorOptions>) => {
+    const next = { ...genOptions, ...patch };
+    setGenOptions(next);
+    setGenerated(generatePassword(next));
+  };
+
   const toggleSiteDisabled = () => {
     const next = !siteDisabled;
     browser.runtime
@@ -146,32 +194,56 @@ export const PopupApp: React.FC = () => {
       });
   };
 
+
+  const openSignup = () => {
+    browser.tabs.create({ url: SIGNUP_URL });
+    window.close();
+  };
+
+  const openRecovery = () => {
+    browser.tabs.create({ url: RECOVERY_URL });
+    window.close();
+  };
+
   const changeAutoLock = (minutes: number) => {
     setAutoLockMinutes(minutes);
     browser.runtime.sendMessage({ type: 'SET_AUTO_LOCK', payload: { minutes } });
   };
 
+  const changeClipboardClear = (seconds: number) => {
+    setClipboardClearSeconds(seconds);
+    browser.runtime.sendMessage({ type: 'SET_CLIPBOARD_CLEAR', payload: { seconds } });
+  };
+
   const fetchCachedCredentials = () => {
-    browser.runtime.sendMessage({ type: 'GET_MATCHING_CREDENTIALS', payload: { hostname: 'all' } }).then(() => {
-      // Background returns matched elements. Let's just fetch all from volatile storage directly
-      browser.storage.session.get(['vaultItems']).then((data) => {
-        if (data.vaultItems) {
-          setVaultItems(data.vaultItems);
-        }
-      });
+    browser.storage.session.get(['vaultItems']).then((data) => {
+      if (data.vaultItems) {
+        setVaultItems(data.vaultItems as DecryptedItem[]);
+      }
     });
   };
 
-  const processVault = async (token: string, encKey: Uint8Array) => {
-    // 4. Fetch encrypted vault entries
-    const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
+  /**
+   * Whether an entry opens with this key. XChaCha20-Poly1305 is authenticated,
+   * so a wrong key fails the tag check instead of yielding garbage — which
+   * makes this a sound master-password check with no server involved.
+   */
+  const canDecrypt = (entry: RawVaultEntry, encKey: Uint8Array): boolean => {
+    try {
+      decryptPayload({ ...entry.encrypted_payload, nonce: entry.nonce }, encKey);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
-    // 5. Decrypt vault entries client-side
-    const decrypted: DecryptedItem[] = vaultRes.data.map((entry: any) => {
+  const decryptEntries = (entries: any[], encKey: Uint8Array): DecryptedItem[] =>
+    entries.map((entry: any) => {
       try {
-        const plaintext = decryptPayload(entry.encrypted_payload, entry.nonce, encKey);
+        const plaintext = decryptPayload(
+          { ...entry.encrypted_payload, nonce: entry.nonce },
+          encKey
+        );
         const parsed = JSON.parse(plaintext);
         return {
           id: entry.id,
@@ -185,25 +257,114 @@ export const PopupApp: React.FC = () => {
         };
       } catch (e) {
         console.error("Failed to decrypt entry:", entry.id, e);
-        return { id: entry.id, label: "Decryption Failed ⚠️", username: "", value: "", notes: "Error", category: "login", url: "" };
+        return { id: entry.id, label: "Couldn't open this item", username: "", value: "", notes: "", category: "login", url: "" };
       }
     });
 
-    // 6. Share decrypted cache with Background worker in-memory session storage
+  const storeSession = (
+    items: DecryptedItem[],
+    token: string,
+    encKey: Uint8Array,
+    accountEmail: string,
+    isOffline = false
+  ) =>
     browser.runtime.sendMessage({
       type: 'UNLOCK_VAULT',
-      payload: { decryptedItems: decrypted, email }
-    }).then((res) => {
-      if (res && res.success) {
-        setUnlocked(true);
-        setVaultItems(decrypted);
-        setPassword('');
-        setStep('login');
-      } else {
-        setError("Failed to initialize secure extension session cache.");
+      payload: {
+        decryptedItems: items,
+        email: accountEmail,
+        token,
+        encKey: bytesToHex(encKey),
+        offline: isOffline,
       }
     });
+
+  const processVault = async (token: string, encKey: Uint8Array, masterSalt: string) => {
+    const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    const decrypted = decryptEntries(vaultRes.data, encKey);
+
+    const res: any = await storeSession(decrypted, token, encKey, email);
+    if (res && res.success) {
+      // Persist the ciphertext exactly as it arrived, so the next unlock can
+      // skip the network entirely.
+      await writeVaultCache(email, masterSalt, vaultRes.data as RawVaultEntry[]);
+      setUnlocked(true);
+      setOffline(false);
+      setVaultItems(decrypted);
+      setPassword('');
+      setStep('login');
+    } else {
+      setError("Couldn't start the extension session. Try unlocking again.");
+    }
   };
+
+  /**
+   * Opens the cached vault with a key we have already confirmed against it.
+   * There is no access token here, so this session is read-only.
+   */
+  const unlockFromCache = async (cache: VaultCache, encKey: Uint8Array) => {
+    const decrypted = decryptEntries(cache.entries, encKey);
+    const res: any = await storeSession(decrypted, '', encKey, cache.email, true);
+    if (!res || !res.success) {
+      setError("Couldn't start the extension session. Try unlocking again.");
+      return;
+    }
+    setUnlocked(true);
+    setOffline(true);
+    setVaultItems(decrypted);
+    setPassword('');
+    setStep('login');
+  };
+
+  const refreshVault = async (manual = false) => {
+    const session = await browser.storage.session.get(['token', 'encKey', 'email']);
+    const token = session.token as string | undefined;
+    const encKeyHex = session.encKey as string | undefined;
+    if (!token || !encKeyHex) return;
+
+    setRefreshing(true);
+    try {
+      const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const encKey = hexToBytes(encKeyHex);
+      const accountEmail = (session.email as string) || email;
+      const decrypted = decryptEntries(vaultRes.data, encKey);
+      await storeSession(decrypted, token, encKey, accountEmail);
+      // Keep the on-disk copy in step with what we just rendered. The salt and
+      // owner come from the existing cache — a sync has no business creating
+      // one, or changing whose vault it is.
+      await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
+      setVaultItems(decrypted);
+      setSyncError(null);
+    } catch (err: any) {
+      // Access tokens last 30 minutes but auto-lock can be set to Never, so an
+      // unlocked vault routinely outlives its token. Say so plainly rather than
+      // leaving a silently stale list on screen.
+      if (isAuthError(err)) {
+        setSyncError('Session expired — lock and unlock to sync.');
+      } else if (manual) {
+        setSyncError("Couldn't reach the server.");
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const discoverSalt = async (): Promise<string> => {
+    const res = await axios.post(`${API_BASE_URL}/api/auth/discover`, { email });
+    if (!res.data.exists) throw new Error('Invalid credentials or account does not exist.');
+    return res.data.master_salt;
+  };
+
+  const deriveKeys = async (salt: string) =>
+    splitMasterKey(await deriveMasterKey(password, salt));
+
+  const login = (clientAuthHash: string) =>
+    axios.post(`${API_BASE_URL}/api/auth/login`, { email, client_auth_hash: clientAuthHash });
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -213,32 +374,48 @@ export const PopupApp: React.FC = () => {
     setError(null);
 
     try {
-      // 1. Discover user (get salt)
-      const discoverRes = await axios.post(`${API_BASE_URL}/api/auth/discover`, { email });
-      if (!discoverRes.data.exists) {
-        throw new Error("Invalid credentials or account does not exist.");
+      // A cache carries the salt, so a returning user derives their key without
+      // touching /auth/discover — which is what lets unlock work offline.
+      const cache = await readVaultCache(email);
+      let salt = cache ? cache.masterSalt : await discoverSalt();
+
+      let derived = await deriveKeys(salt);
+      let loginRes;
+      try {
+        loginRes = await login(derived.clientAuthHash);
+      } catch (err: any) {
+        // Only an unreachable server justifies the offline path. A rejected
+        // password is a rejected password, online or not.
+        if (isOfflineError(err)) {
+          if (!cache || !canVerifyOffline(cache)) throw err;
+          if (!verifiesAgainstCache(cache, (entry) => canDecrypt(entry, derived.encKey))) {
+            throw new Error('Incorrect master password.');
+          }
+          await unlockFromCache(cache, derived.encKey);
+          return;
+        }
+
+        // Changing the master password elsewhere rotates the salt, which makes
+        // the cached one derive a key the server will reject. Confirm against a
+        // fresh salt before telling the user their password is wrong.
+        if (!cache || !isAuthError(err)) throw err;
+        const freshSalt = await discoverSalt();
+        if (freshSalt === salt) throw err;
+        salt = freshSalt;
+        derived = await deriveKeys(salt);
+        loginRes = await login(derived.clientAuthHash);
       }
-      const salt = discoverRes.data.master_salt;
-
-      // 2. Client-side Key Derivation (Argon2id WASM)
-      const masterKey = await deriveMasterKey(password, salt);
-      const { encKey, clientAuthHash } = await splitMasterKey(masterKey);
-
-      // 3. Login to server to get JWT
-      const loginRes = await axios.post(`${API_BASE_URL}/api/auth/login`, {
-        email,
-        client_auth_hash: clientAuthHash
-      });
 
       if (loginRes.data.mfa_required) {
         setMfaToken(loginRes.data.mfa_token);
-        setTempEncKey(encKey);
+        setTempEncKey(derived.encKey);
+        setTempSalt(salt);
         setStep('mfa');
         setLoading(false);
         return;
       }
 
-      await processVault(loginRes.data.access_token, encKey);
+      await processVault(loginRes.data.access_token, derived.encKey, salt);
 
     } catch (err: any) {
       console.error(err);
@@ -262,7 +439,7 @@ export const PopupApp: React.FC = () => {
         code: mfaCode
       });
       
-      await processVault(verifyRes.data.access_token, tempEncKey);
+      await processVault(verifyRes.data.access_token, tempEncKey, tempSalt);
     } catch (err: any) {
       console.error(err);
       setError(err.response?.data?.detail || "Invalid MFA code.");
@@ -271,35 +448,71 @@ export const PopupApp: React.FC = () => {
     }
   };
 
+  /**
+   * Locking drops the keys but keeps the encrypted cache, so the next unlock
+   * needs only the master password — no connection, no re-download.
+   */
   const handleLock = () => {
     browser.runtime.sendMessage({ type: 'LOCK_VAULT' }).then(() => {
       setUnlocked(false);
+      setOffline(false);
       setVaultItems([]);
       setSearchTerm('');
     });
+  };
+
+  /** Logging out is the deliberate one: it also takes the vault off the disk. */
+  const handleLogout = async () => {
+    await clearVaultCache();
+    await browser.runtime.sendMessage({ type: 'LOCK_VAULT' });
+    setUnlocked(false);
+    setOffline(false);
+    setVaultItems([]);
+    setSearchTerm('');
+    setEmail('');
   };
 
   const copyToClipboard = (text: string, id: string, field: 'username' | 'password' | 'url') => {
     navigator.clipboard.writeText(text);
     setCopiedField({ id, field });
     setTimeout(() => setCopiedField(null), 2000);
+    // Hand the countdown to the background worker: this popup is destroyed as
+    // soon as it loses focus, so a timer here would never fire.
+    if (field === 'password') {
+      void browser.runtime.sendMessage({ type: 'CLIPBOARD_COPIED' }).catch(() => undefined);
+    }
   };
 
-  // Filter vault items to match current tab's hostname using the shared,
-  // safe matcher (exact / subdomain / same registrable domain).
+
   const matchingItems = siteDisabled
     ? []
     : vaultItems.filter(item => !!item.url && !!currentHostname && isDomainMatch(currentHostname, item.url));
 
-  // Filter all items by search query
-  const searchedItems = vaultItems.filter(item => {
-    const term = searchTerm.toLowerCase();
-    return item.label.toLowerCase().includes(term) ||
-      item.username.toLowerCase().includes(term) ||
-      (item.url && item.url.toLowerCase().includes(term));
-  });
 
-  // ── Current-site trust assessment (mirrors the autofill engine's checks) ──
+  const term = searchTerm.trim().toLowerCase();
+
+  const matches = (item: DecryptedItem) =>
+    item.label.toLowerCase().includes(term) ||
+    item.username.toLowerCase().includes(term) ||
+    (!!item.url && item.url.toLowerCase().includes(term));
+
+  // While searching, everything is in scope. Otherwise the browse list omits
+  // the entries already shown under "For this site", so the same credential
+  // is not listed twice.
+  const matchingIds = new Set(matchingItems.map((i) => i.id));
+  const searchedItems = term
+    ? vaultItems.filter(matches)
+    : vaultItems.filter((i) => !matchingIds.has(i.id));
+
+
+  const bits = entropyBits(genOptions);
+  const strength = strengthTier(bits);
+  const strengthColor =
+    strength.tone === 'weak' ? '#e11d48'
+      : strength.tone === 'fair' ? '#b45309'
+        : strength.tone === 'good' ? '#0d9488'
+          : '#059669';
+
   const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(currentHostname);
   const isInsecure = currentProtocol === 'http:' && !isLocalHost;
   const knownHosts = vaultItems.map((i) => (i.url ? extractHostname(i.url) : '')).filter(Boolean);
@@ -308,119 +521,151 @@ export const PopupApp: React.FC = () => {
       ? findLookalikeTarget(currentHostname, knownHosts)
       : null;
 
-  // ── Vault health (for the Health dashboard tab) ──
+
   const health = computeVaultHealth(vaultItems.map((i) => ({ category: i.category, value: i.value })));
   const tier = scoreTier(health.score);
-  const scoreColor = tier.tone === 'good' ? '#2dd4bf' : tier.tone === 'ok' ? '#f59e0b' : '#f43f5e';
+  const scoreColor = tier.tone === 'good' ? '#0d9488' : tier.tone === 'ok' ? '#b45309' : '#e11d48';
   const ringCirc = 2 * Math.PI * 34; // r=34
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
-    <div className="w-[380px] h-[550px] bg-slate-950 text-white flex flex-col relative overflow-hidden select-none font-sans border border-white/5">
+    <div className="w-[380px] h-[550px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans border border-slate-900/8">
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
-      {/* Header */}
-      <header className="glass-card border-x-0 border-t-0 border-b border-white/5 px-4 py-3 flex items-center justify-between z-10 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded bg-gradient-to-tr from-brand-cyan to-brand-teal flex items-center justify-center glow-cyan">
-            <Shield className="w-3.5 h-3.5 text-slate-950 stroke-[2.5]" />
-          </div>
-          <div>
-            <h1 className="font-extrabold text-[11px] tracking-wider leading-none text-white">
-              XORAPASS
-            </h1>
-            <p className="text-[7px] text-brand-teal font-mono tracking-widest leading-none mt-0.5">ENCLAVE SECURE</p>
-          </div>
-        </div>
+
+      <header className="glass-card border-x-0 border-t-0 border-b border-slate-900/8 px-4 py-3 flex items-center justify-between z-10 flex-shrink-0">
+
+        <LogoHorizontal className="h-6 w-auto" />
 
         {unlocked && (
-          <button 
-            onClick={handleLock}
-            className="p-1.5 bg-brand-ruby/10 border border-brand-ruby/20 hover:border-brand-ruby/40 text-brand-ruby rounded-md hover:bg-brand-ruby/20 transition cursor-pointer flex items-center justify-center"
-            title="Lock Vault"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => refreshVault(true)}
+              disabled={refreshing || offline}
+              className="p-1.5 bg-slate-900/5 border border-slate-900/8 hover:bg-slate-900/10 text-slate-500 hover:text-slate-700 rounded-md transition cursor-pointer flex items-center justify-center disabled:opacity-50"
+              title={offline ? 'Sync needs a connection' : 'Sync vault'}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            </button>
+            <button
+              onClick={handleLogout}
+              className="p-1.5 bg-slate-900/5 border border-slate-900/8 hover:bg-slate-900/10 text-slate-500 hover:text-slate-700 rounded-md transition cursor-pointer flex items-center justify-center"
+              title="Sign out — removes the offline copy of your vault from this browser"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={handleLock}
+              className="p-1.5 bg-brand-ruby/10 border border-brand-ruby/20 hover:border-brand-ruby/40 text-brand-ruby rounded-md hover:bg-brand-ruby/20 transition cursor-pointer flex items-center justify-center"
+              title="Lock vault — unlocks again with just your master password"
+            >
+              <Lock className="w-3.5 h-3.5" />
+            </button>
+          </div>
         )}
       </header>
 
-      {/* Main Panel Content */}
+
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 flex flex-col z-10">
         {!unlocked && step === 'login' ? (
-          /* LOCKED VIEW */
-          <form onSubmit={handleLogin} className="flex-1 flex flex-col justify-center space-y-4 max-w-[320px] mx-auto w-full">
-            <div className="text-center space-y-1 pb-2">
-              <Lock className="w-8 h-8 text-brand-cyan mx-auto animate-pulse" />
-              <h2 className="text-sm font-bold tracking-wide text-slate-200">Unlock Enclave Vault</h2>
-              <p className="text-[10px] text-slate-500">Decryption happens client-side in RAM</p>
-            </div>
-
-            {error && (
-              <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-lg text-xs flex items-start gap-1.5 leading-relaxed font-sans">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <span>{error}</span>
+          <form onSubmit={handleLogin} className="flex-1 flex flex-col justify-center max-w-[300px] mx-auto w-full">
+            <div className="auth-card rounded-2xl p-5 space-y-3.5">
+              <div className="text-center space-y-2">
+                <div className="relative w-14 h-14 mx-auto flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-brand-cyan/25 to-brand-teal/10 blur-lg" />
+                  <LogoIcon className="w-11 h-11 relative" />
+                </div>
+                <div>
+                  <h2 className="text-[15px] font-extrabold text-slate-900 leading-none">Welcome back</h2>
+                  <p className="text-[10px] text-slate-500 mt-1">Sign in to unlock your vault</p>
+                </div>
               </div>
-            )}
 
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Email Address</label>
-              <input
-                required
+              {error && (
+                <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-lg text-xs flex items-start gap-1.5 leading-relaxed">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <div className="space-y-2.5">
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                  <input
+                    required
+                    disabled={loading}
+                    type="email"
+                    autoComplete="username"
+                    placeholder="Email address"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="auth-input w-full pl-9 pr-3 py-2.5 rounded-xl text-xs text-slate-900 placeholder-slate-400"
+                  />
+                </div>
+
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                  <input
+                    required
+                    disabled={loading}
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="current-password"
+                    placeholder="Master password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="auth-input w-full pl-9 pr-9 py-2.5 rounded-xl text-xs text-slate-900 placeholder-slate-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                  >
+                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
                 disabled={loading}
-                type="email"
-                placeholder="name@domain.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-900 border border-white/10 rounded-lg text-xs text-white placeholder-slate-600 focus:outline-none focus:border-brand-cyan transition font-mono"
-              />
-            </div>
+                className="btn-primary group w-full py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Unlocking…</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Unlock vault</span>
+                    <ArrowRight className="w-3.5 h-3.5 stroke-[2.5] transition-transform group-hover:translate-x-0.5" />
+                  </>
+                )}
+              </button>
 
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Master Password</label>
-              <div className="relative">
-                <input
-                  required
-                  disabled={loading}
-                  type={showPassword ? "text" : "password"}
-                  placeholder="••••••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-3 pr-9 py-2 bg-slate-900 border border-white/10 rounded-lg text-xs text-white placeholder-slate-600 focus:outline-none focus:border-brand-cyan transition font-mono"
-                />
+              <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500 pt-0.5 border-t border-slate-900/6 mt-1 pt-2.5">
                 <button
                   type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition cursor-pointer"
+                  onClick={openRecovery}
+                  className="hover:text-slate-700 hover:underline cursor-pointer"
                 >
-                  {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  Forgot password?
+                </button>
+                <button
+                  type="button"
+                  onClick={openSignup}
+                  className="text-brand-cyan font-semibold hover:underline cursor-pointer"
+                >
+                  Create account
                 </button>
               </div>
             </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-2.5 bg-gradient-to-r from-brand-cyan to-brand-teal text-slate-950 font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 hover:shadow-[0_0_15px_rgba(0,210,255,0.2)] transition cursor-pointer disabled:opacity-50"
-            >
-              {loading ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Deriving Keys & Decrypting...</span>
-                </>
-              ) : (
-                <>
-                  <Key className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span>Decrypt Vault</span>
-                </>
-              )}
-            </button>
           </form>
         ) : !unlocked && step === 'mfa' ? (
-          /* MFA VIEW */
           <form onSubmit={handleMfaSubmit} className="flex-1 flex flex-col justify-center space-y-4 max-w-[320px] mx-auto w-full">
             <div className="text-center space-y-1 pb-2">
               <Shield className="w-8 h-8 text-brand-emerald mx-auto animate-pulse" />
-              <h2 className="text-sm font-bold tracking-wide text-slate-200">Two-Factor Authentication</h2>
+              <h2 className="text-sm font-bold tracking-wide text-slate-800">Two-Factor Authentication</h2>
               <p className="text-[10px] text-slate-500">Enter the 6-digit code from your app</p>
             </div>
 
@@ -440,16 +685,16 @@ export const PopupApp: React.FC = () => {
                 placeholder="000000"
                 value={mfaCode}
                 onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
-                className="w-full px-3 py-3 text-center bg-slate-900 border border-white/10 rounded-lg text-xl text-white placeholder-slate-600 focus:outline-none focus:border-brand-emerald transition font-mono tracking-[0.5em]"
+                className="w-full px-3 py-3 text-center bg-white border border-slate-900/10 rounded-lg text-xl text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-emerald transition font-mono tracking-[0.5em]"
               />
             </div>
 
             <div className="flex gap-2">
-              <button type="button" onClick={() => { setStep('login'); setMfaCode(''); }} disabled={loading} className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-lg text-xs transition cursor-pointer">Back</button>
+              <button type="button" onClick={() => { setStep('login'); setMfaCode(''); }} disabled={loading} className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-xs transition cursor-pointer">Back</button>
               <button
                 type="submit"
                 disabled={loading || mfaCode.length !== 6}
-                className="flex-[2] py-2.5 bg-gradient-to-r from-brand-emerald to-brand-teal text-slate-950 font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                className="flex-[2] py-2.5 bg-gradient-to-r from-brand-emerald to-brand-teal text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-50"
               >
                 {loading ? (
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -461,20 +706,38 @@ export const PopupApp: React.FC = () => {
             </div>
           </form>
         ) : (
-          /* UNLOCKED VIEW */
           <div className="flex-1 flex flex-col space-y-4">
-            
-            {/* TAB SWITCHER */}
-            <div className="flex items-center gap-1 p-1 bg-slate-900/60 border border-white/5 rounded-lg flex-shrink-0">
+
+            {offline && (
+              <div className="p-2 bg-brand-amber/10 border border-brand-amber/25 text-brand-amber rounded-lg text-[10px] flex items-start gap-1.5 leading-snug flex-shrink-0">
+                <CloudOff className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                <span>Offline — showing your last synced vault. New logins can't be saved yet.</span>
+              </div>
+            )}
+
+            {syncError && (
+              <div className="p-2 bg-brand-amber/10 border border-brand-amber/25 text-brand-amber rounded-lg text-[10px] flex items-start gap-1.5 leading-snug flex-shrink-0">
+                <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                <span>{syncError}</span>
+              </div>
+            )}
+
+            <div className="flex items-center gap-1 p-1 bg-white/70 border border-slate-900/8 rounded-lg flex-shrink-0">
               <button
                 onClick={() => setTab('vault')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'vault' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-400 hover:text-white'}`}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'vault' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
               >
                 <LayoutGrid className="w-3.5 h-3.5" /> Vault
               </button>
               <button
+                onClick={() => setTab('generate')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'generate' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
+              >
+                <Wand2 className="w-3.5 h-3.5" /> Generate
+              </button>
+              <button
                 onClick={() => setTab('health')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'health' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-400 hover:text-white'}`}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer ${tab === 'health' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-500 hover:text-slate-900'}`}
               >
                 <Activity className="w-3.5 h-3.5" /> Health
               </button>
@@ -482,15 +745,15 @@ export const PopupApp: React.FC = () => {
 
             {tab === 'vault' && (
             <>
-            {/* 1. MATCHING CREDENTIALS FOR ACTIVE TAB */}
+
             {currentHostname && (
               <div className="space-y-2">
-                {/* SITE SECURITY PANEL */}
-                <div className="p-3 bg-slate-900/50 border border-white/8 rounded-xl space-y-2.5">
+
+                <div className="p-3 bg-white/70 border border-slate-900/8 rounded-xl space-y-2.5">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 text-slate-300 text-xs font-semibold min-w-0">
+                    <div className="flex items-center gap-1.5 text-slate-700 text-xs font-semibold min-w-0">
                       <Globe className="w-3.5 h-3.5 text-brand-cyan flex-shrink-0" />
-                      <span className="truncate text-white font-bold">{currentHostname}</span>
+                      <span className="truncate text-slate-900 font-bold">{currentHostname}</span>
                     </div>
                     <button
                       onClick={toggleSiteDisabled}
@@ -506,76 +769,46 @@ export const PopupApp: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* Trust chips */}
-                  <div className="flex flex-wrap gap-1.5">
-                    {/* Connection */}
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-semibold border ${
-                      isInsecure
-                        ? 'bg-brand-amber/10 border-brand-amber/25 text-brand-amber'
-                        : 'bg-brand-emerald/10 border-brand-emerald/25 text-brand-emerald'
-                    }`}>
-                      <LockKeyhole className="w-2.5 h-2.5" />
-                      {isInsecure ? 'Insecure HTTP' : 'Secure HTTPS'}
-                    </span>
-
-                    {/* Domain match */}
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-semibold border ${
-                      matchingItems.length > 0
-                        ? 'bg-brand-cyan/10 border-brand-cyan/25 text-brand-cyan'
-                        : 'bg-white/5 border-white/10 text-slate-400'
-                    }`}>
-                      <ShieldCheck className="w-2.5 h-2.5" />
-                      {matchingItems.length > 0 ? `${matchingItems.length} match${matchingItems.length > 1 ? 'es' : ''}` : 'No match'}
-                    </span>
-
-                    {/* Lookalike warning */}
-                    {lookalike && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-semibold border bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby">
-                        <ShieldAlert className="w-2.5 h-2.5" />
-                        Resembles {lookalike.target}
-                      </span>
-                    )}
-                  </div>
 
                   {isInsecure && (
                     <div className="flex items-start gap-1.5 text-[10px] text-brand-amber/90 leading-snug">
                       <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                      <span>This page uses insecure HTTP. Autofill will warn you before filling.</span>
+                      <span>This site isn't secure. Take care with what you fill here.</span>
                     </div>
                   )}
                   {lookalike && (
                     <div className="flex items-start gap-1.5 text-[10px] text-brand-ruby/90 leading-snug">
                       <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                      <span>This domain resembles "{lookalike.target}" but doesn't match it — verify the address.</span>
+                      <span>This site looks like "{lookalike.target}" but isn't. Check the address before filling.</span>
                     </div>
                   )}
                 </div>
 
                 {siteDisabled ? (
                   <div className="p-3 bg-brand-ruby/5 border border-brand-ruby/15 rounded-xl text-center">
-                    <p className="text-[11px] text-brand-ruby/90">Autofill is turned off for this site. Click "Disabled" to re-enable.</p>
+                    <p className="text-[11px] text-brand-ruby/90">Autofill is off for this site. Use the "Autofill Off" button above to turn it back on.</p>
                   </div>
                 ) : matchingItems.length === 0 ? (
-                  <div className="p-3 bg-slate-900/30 border border-white/5 rounded-xl text-center">
-                    <p className="text-[11px] text-slate-500">No matching credentials for this website.</p>
+                  <div className="p-3 bg-white/60 border border-slate-900/8 rounded-xl text-center">
+                    <p className="text-[11px] text-slate-500">No saved logins for this site.</p>
                   </div>
                 ) : (
                   <div className="space-y-2">
                     {matchingItems.map((item) => (
                       <div 
                         key={item.id}
-                        className="p-3 bg-slate-900/80 border border-brand-cyan/20 rounded-xl flex items-center justify-between gap-3 shadow-[0_0_10px_rgba(0,210,255,0.02)]"
+                        className="p-3 bg-white/90 border border-brand-cyan/20 rounded-xl flex items-center justify-between gap-3 shadow-[0_0_10px_rgba(0,210,255,0.02)]"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="text-xs font-bold text-brand-cyan truncate leading-tight">{item.label}</div>
-                          <div className="text-[10px] text-slate-400 font-mono truncate mt-0.5">{item.username || "no-username"}</div>
+                          <div className="text-[10px] text-slate-500 font-mono truncate mt-0.5">{item.username || "—"}</div>
                         </div>
 
                         <div className="flex items-center gap-1.5 flex-shrink-0">
                           {item.username && (
                             <button
                               onClick={() => copyToClipboard(item.username, item.id, 'username')}
-                              className="p-1.5 bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white rounded-md transition cursor-pointer border border-white/5"
+                              className="p-1.5 bg-slate-900/5 hover:bg-slate-900/10 text-slate-500 hover:text-slate-900 rounded-md transition cursor-pointer border border-slate-900/8"
                               title="Copy Username"
                             >
                               {copiedField?.id === item.id && copiedField?.field === 'username' ? (
@@ -604,42 +837,42 @@ export const PopupApp: React.FC = () => {
               </div>
             )}
 
-            <hr className="border-white/5" />
 
-            {/* 2. SEARCH ALL VAULT ENTRIES */}
-            <div className="flex-1 flex flex-col space-y-2">
+            <div className="flex-1 min-h-0 flex flex-col space-y-2">
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
                 <input
                   type="text"
-                  placeholder="Search all items..."
+                  placeholder={`Search ${vaultItems.length} items…`}
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 bg-slate-900 border border-white/10 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-brand-cyan transition"
+                  className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-900/10 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition"
                 />
               </div>
 
-              <div className="flex-1 overflow-y-auto custom-scrollbar pr-0.5 space-y-1.5 max-h-[200px]">
+              <div className="flex-1 overflow-y-auto custom-scrollbar pr-0.5 space-y-1.5 min-h-[80px]">
                 {searchedItems.length === 0 ? (
                   <div className="text-center py-6">
-                    <p className="text-[11px] text-slate-600">No items match your query.</p>
+                    <p className="text-[11px] text-slate-400">
+                      {term ? 'No matches.' : vaultItems.length === 0 ? 'Your vault is empty.' : 'Nothing else saved yet.'}
+                    </p>
                   </div>
                 ) : (
                   searchedItems.map((item) => (
                     <div 
                       key={item.id}
-                      className="p-2.5 bg-slate-900/30 hover:bg-slate-900/60 border border-white/5 hover:border-white/10 rounded-lg flex items-center justify-between gap-3 transition"
+                      className="p-2.5 bg-white/60 hover:bg-white/90 border border-slate-900/8 hover:border-slate-900/15 rounded-lg flex items-center justify-between gap-3 transition"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="text-xs font-bold text-slate-200 truncate leading-none">{item.label}</div>
-                        <div className="text-[9px] text-slate-500 font-mono truncate mt-1">{item.username || "no-username"}</div>
+                        <div className="text-xs font-bold text-slate-800 truncate leading-none">{item.label}</div>
+                        <div className="text-[9px] text-slate-500 font-mono truncate mt-1">{item.username || "—"}</div>
                       </div>
                       
                       <div className="flex items-center gap-1 flex-shrink-0">
                         {item.username && (
                           <button
                             onClick={() => copyToClipboard(item.username, item.id, 'username')}
-                            className="p-1 hover:bg-white/5 text-slate-400 hover:text-white rounded transition cursor-pointer"
+                            className="p-1 hover:bg-slate-900/5 text-slate-500 hover:text-slate-900 rounded transition cursor-pointer"
                             title="Copy Username"
                           >
                             {copiedField?.id === item.id && copiedField?.field === 'username' ? (
@@ -651,7 +884,7 @@ export const PopupApp: React.FC = () => {
                         )}
                         <button
                           onClick={() => copyToClipboard(item.value, item.id, 'password')}
-                          className="p-1 hover:bg-white/5 text-slate-400 hover:text-white rounded transition cursor-pointer"
+                          className="p-1 hover:bg-slate-900/5 text-slate-500 hover:text-slate-900 rounded transition cursor-pointer"
                           title="Copy Password"
                         >
                           {copiedField?.id === item.id && copiedField?.field === 'password' ? (
@@ -667,11 +900,20 @@ export const PopupApp: React.FC = () => {
               </div>
             </div>
 
-            {/* SECURITY BAR: vault overview + idle auto-lock */}
-            <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/5">
-              <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
-                <Key className="w-3 h-3" />
-                <span><span className="text-slate-300 font-bold">{vaultItems.length}</span> items</span>
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-900/8">
+              <div className="flex items-center gap-1.5" title="Wipe a copied password from the clipboard after this delay">
+                <ClipboardCheck className="w-3 h-3 text-slate-500" />
+                <span className="text-[10px] text-slate-500">Clear copy</span>
+                <select
+                  value={clipboardClearSeconds}
+                  onChange={(e) => changeClipboardClear(Number(e.target.value))}
+                  className="bg-white border border-slate-900/10 rounded-md text-[10px] text-slate-800 px-1.5 py-0.5 focus:outline-none focus:border-brand-cyan cursor-pointer"
+                >
+                  {CLIPBOARD_CLEAR_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
               </div>
               <div className="flex items-center gap-1.5" title="Automatically lock the vault after this idle period">
                 <Clock className="w-3 h-3 text-slate-500" />
@@ -679,7 +921,7 @@ export const PopupApp: React.FC = () => {
                 <select
                   value={autoLockMinutes}
                   onChange={(e) => changeAutoLock(Number(e.target.value))}
-                  className="bg-slate-900 border border-white/10 rounded-md text-[10px] text-slate-200 px-1.5 py-0.5 focus:outline-none focus:border-brand-cyan cursor-pointer"
+                  className="bg-white border border-slate-900/10 rounded-md text-[10px] text-slate-800 px-1.5 py-0.5 focus:outline-none focus:border-brand-cyan cursor-pointer"
                 >
                   {AUTO_LOCK_OPTIONS.map((o) => (
                     <option key={o.value} value={o.value}>{o.label}</option>
@@ -690,14 +932,103 @@ export const PopupApp: React.FC = () => {
             </>
             )}
 
-            {/* HEALTH DASHBOARD TAB */}
+
+            {tab === 'generate' && (
+              <div className="space-y-3">
+                <div className="p-3 bg-white/80 border border-slate-900/8 rounded-xl space-y-2.5">
+                  <div className="font-mono text-[13px] leading-relaxed text-slate-900 break-all min-h-[46px] select-text">
+                    {generated}
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <div className="flex-1 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${Math.min(100, (bits / 128) * 100)}%`,
+                          background: strengthColor,
+                        }}
+                      />
+                    </div>
+                    <span className="text-[10px] font-bold" style={{ color: strengthColor }}>
+                      {strength.label}
+                    </span>
+                    <span className="text-[9px] text-slate-400 tabular-nums">{bits} bits</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setGenerated(generatePassword(genOptions))}
+                      className="flex-1 py-2 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/8 text-slate-700 font-semibold rounded-lg text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+                    </button>
+                    <button
+                      onClick={() => copyToClipboard(generated, 'generated', 'password')}
+                      className="btn-primary flex-1 py-2 rounded-lg text-[11px] flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      {copiedField?.id === 'generated' ? (
+                        <><Check className="w-3.5 h-3.5" /> Copied</>
+                      ) : (
+                        <><Copy className="w-3.5 h-3.5" /> Copy</>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-white/70 border border-slate-900/8 rounded-xl space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-slate-700">Length</span>
+                    <span className="text-[11px] font-bold text-brand-cyan tabular-nums">{genOptions.length}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={MIN_LENGTH}
+                    max={64}
+                    value={genOptions.length}
+                    onChange={(e) => updateGenOptions({ length: Number(e.target.value) })}
+                    className="w-full accent-brand-cyan cursor-pointer"
+                  />
+
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 pt-0.5">
+                    {([
+                      ['uppercase', 'A–Z'],
+                      ['lowercase', 'a–z'],
+                      ['digits', '0–9'],
+                      ['symbols', '!@#$'],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={genOptions[key]}
+                          onChange={(e) => updateGenOptions({ [key]: e.target.checked })}
+                          className="accent-brand-cyan cursor-pointer"
+                        />
+                        <span className="font-mono">{label}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer pt-0.5 border-t border-slate-900/6 mt-1">
+                    <input
+                      type="checkbox"
+                      checked={genOptions.avoidAmbiguous}
+                      onChange={(e) => updateGenOptions({ avoidAmbiguous: e.target.checked })}
+                      className="accent-brand-cyan cursor-pointer mt-2"
+                    />
+                    <span className="mt-2">Avoid lookalike characters (I l 1 O 0)</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
             {tab === 'health' && (
               <div className="space-y-4">
-                {/* Security score ring */}
-                <div className="p-4 bg-slate-900/50 border border-white/8 rounded-xl flex items-center gap-4">
+
+                <div className="p-4 bg-white/70 border border-slate-900/8 rounded-xl flex items-center gap-4">
                   <div className="relative flex-shrink-0">
                     <svg width="84" height="84" viewBox="0 0 84 84">
-                      <circle cx="42" cy="42" r="34" fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="8" />
+                      <circle cx="42" cy="42" r="34" fill="none" stroke="rgba(15,23,42,0.08)" strokeWidth="8" />
                       <circle
                         cx="42" cy="42" r="34" fill="none" stroke={scoreColor} strokeWidth="8" strokeLinecap="round"
                         strokeDasharray={ringCirc} strokeDashoffset={ringCirc * (1 - health.score / 100)}
@@ -705,7 +1036,7 @@ export const PopupApp: React.FC = () => {
                       />
                     </svg>
                     <div className="absolute inset-0 flex flex-col items-center justify-center">
-                      <span className="text-xl font-extrabold text-white leading-none">{health.score}</span>
+                      <span className="text-xl font-extrabold text-slate-900 leading-none">{health.score}</span>
                       <span className="text-[8px] uppercase tracking-widest text-slate-500 mt-0.5">score</span>
                     </div>
                   </div>
@@ -722,52 +1053,52 @@ export const PopupApp: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Stat chips */}
+
                 <div className="grid grid-cols-3 gap-2">
-                  <div className="p-2.5 bg-slate-900/40 border border-white/5 rounded-lg text-center">
+                  <div className="p-2.5 bg-white/70 border border-slate-900/8 rounded-lg text-center">
                     <div className="text-lg font-extrabold text-brand-emerald leading-none">{health.strong}</div>
                     <div className="text-[9px] uppercase tracking-wider text-slate-500 mt-1">Strong</div>
                   </div>
-                  <div className="p-2.5 bg-slate-900/40 border border-white/5 rounded-lg text-center">
+                  <div className="p-2.5 bg-white/70 border border-slate-900/8 rounded-lg text-center">
                     <div className="text-lg font-extrabold text-brand-amber leading-none">{health.weak}</div>
                     <div className="text-[9px] uppercase tracking-wider text-slate-500 mt-1">Weak</div>
                   </div>
-                  <div className="p-2.5 bg-slate-900/40 border border-white/5 rounded-lg text-center">
+                  <div className="p-2.5 bg-white/70 border border-slate-900/8 rounded-lg text-center">
                     <div className="text-lg font-extrabold text-brand-ruby leading-none">{health.reused}</div>
                     <div className="text-[9px] uppercase tracking-wider text-slate-500 mt-1">Reused</div>
                   </div>
                 </div>
 
-                {/* Strength distribution */}
+
                 {health.totalLogins > 0 && (
                   <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                    <div className="flex items-center justify-between text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
                       <span className="flex items-center gap-1.5"><Activity className="w-3 h-3" /> Strength</span>
                       <span className="text-slate-500">{Math.round(health.strong / health.totalLogins * 100)}% strong</span>
                     </div>
-                    <div className="flex h-2.5 rounded-full overflow-hidden bg-slate-900">
-                      {health.strong > 0 && <div style={{ width: `${health.strong / health.totalLogins * 100}%`, background: '#2dd4bf' }} />}
-                      {(health.totalLogins - health.strong) > 0 && <div style={{ width: `${(health.totalLogins - health.strong) / health.totalLogins * 100}%`, background: '#f43f5e' }} />}
+                    <div className="flex h-2.5 rounded-full overflow-hidden bg-slate-200">
+                      {health.strong > 0 && <div style={{ width: `${health.strong / health.totalLogins * 100}%`, background: '#0d9488' }} />}
+                      {(health.totalLogins - health.strong) > 0 && <div style={{ width: `${(health.totalLogins - health.strong) / health.totalLogins * 100}%`, background: '#e11d48' }} />}
                     </div>
                   </div>
                 )}
 
-                {/* Category breakdown */}
+
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
                     <LayoutGrid className="w-3 h-3" /> By category
                   </div>
                   {health.byCategory.length === 0 ? (
-                    <p className="text-[10px] text-slate-600">No items yet.</p>
+                    <p className="text-[10px] text-slate-400">No items yet.</p>
                   ) : (
                     <div className="space-y-1.5">
                       {health.byCategory.map((c) => (
                         <div key={c.category} className="flex items-center gap-2">
-                          <span className="w-16 text-[10px] text-slate-400 truncate flex-shrink-0">{categoryLabel(c.category)}</span>
-                          <div className="flex-1 h-2 bg-slate-900 rounded-full overflow-hidden">
+                          <span className="w-16 text-[10px] text-slate-500 truncate flex-shrink-0">{categoryLabel(c.category)}</span>
+                          <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
                             <div className="h-full rounded-full" style={{ width: `${c.count / maxCat * 100}%`, background: categoryColor(c.category) }} />
                           </div>
-                          <span className="w-5 text-right text-[10px] font-bold text-slate-300 flex-shrink-0">{c.count}</span>
+                          <span className="w-5 text-right text-[10px] font-bold text-slate-700 flex-shrink-0">{c.count}</span>
                         </div>
                       ))}
                     </div>
@@ -779,11 +1110,6 @@ export const PopupApp: React.FC = () => {
           </div>
         )}
       </div>
-
-      {/* Footer Info */}
-      <footer className="px-4 py-2 border-t border-white/5 text-center text-[8px] text-slate-600 flex-shrink-0 z-10">
-        Locked entries are encrypted with XChaCha20-Poly1305.
-      </footer>
     </div>
   );
 };

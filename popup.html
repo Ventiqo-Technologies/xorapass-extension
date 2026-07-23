@@ -3,8 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CloudPass Vault</title>
+    <title>XoraPass</title>
     <style>
+      /* Declared here as well as in index.css so the very first paint matches —
+         the stylesheet loads a moment later and a flash of the wrong background
+         shows without it. */
+      html {
+        color-scheme: light;
+        background-color: #f6f9f8;
+      }
       /* Fix size of extension popup */
       body {
         width: 380px;
@@ -12,7 +19,7 @@
         margin: 0;
         padding: 0;
         overflow: hidden;
-        background-color: #020617; /* Slate 950 */
+        background-color: #f6f9f8; /* Cool teal-tinted canvas, matches web */
       }
     </style>
   </head>
