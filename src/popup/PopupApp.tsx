@@ -15,6 +15,7 @@ import {
   ArrowRight,
   ArrowLeft,
   ChevronRight,
+  ChevronDown,
   Eye,
   EyeOff,
   ShieldOff,
@@ -1403,15 +1404,18 @@ export const PopupApp: React.FC = () => {
                       <div className="text-xs font-bold text-slate-800">Auto-lock Vault</div>
                       <div className="text-[10px] text-slate-500">Lock vault after idle duration</div>
                     </div>
-                    <select
-                      value={autoLockMinutes}
-                      onChange={(e) => changeAutoLock(Number(e.target.value))}
-                      className="bg-slate-50 border border-slate-900/12 rounded-lg text-xs font-semibold text-slate-800 px-2 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0"
-                    >
-                      {AUTO_LOCK_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
+                    <div className="relative inline-flex items-center">
+                      <select
+                        value={autoLockMinutes}
+                        onChange={(e) => changeAutoLock(Number(e.target.value))}
+                        className="w-28 appearance-none bg-slate-50 border border-slate-900/12 rounded-lg text-xs font-semibold text-slate-800 pl-2.5 pr-7 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0 truncate"
+                      >
+                        {AUTO_LOCK_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="w-3.5 h-3.5 absolute right-2 pointer-events-none text-slate-400 shrink-0" />
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
@@ -1419,15 +1423,18 @@ export const PopupApp: React.FC = () => {
                       <div className="text-xs font-bold text-slate-800">Clear Clipboard</div>
                       <div className="text-[10px] text-slate-500">Wipe copied password after</div>
                     </div>
-                    <select
-                      value={clipboardClearSeconds}
-                      onChange={(e) => changeClipboardClear(Number(e.target.value))}
-                      className="bg-slate-50 border border-slate-900/12 rounded-lg text-xs font-semibold text-slate-800 px-2 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0"
-                    >
-                      {CLIPBOARD_CLEAR_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
+                    <div className="relative inline-flex items-center">
+                      <select
+                        value={clipboardClearSeconds}
+                        onChange={(e) => changeClipboardClear(Number(e.target.value))}
+                        className="w-28 appearance-none bg-slate-50 border border-slate-900/12 rounded-lg text-xs font-semibold text-slate-800 pl-2.5 pr-7 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0 truncate"
+                      >
+                        {CLIPBOARD_CLEAR_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="w-3.5 h-3.5 absolute right-2 pointer-events-none text-slate-400 shrink-0" />
+                    </div>
                   </div>
                 </div>
 
