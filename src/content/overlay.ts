@@ -881,11 +881,14 @@ export function showConfirmDialog(opts: {
       resolve(result);
     };
 
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'btn btn-cancel';
-    cancelBtn.textContent = opts.cancelLabel;
-    cancelBtn.addEventListener('click', () => cleanup(false));
+    if (opts.cancelLabel) {
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'btn btn-cancel';
+      cancelBtn.textContent = opts.cancelLabel;
+      cancelBtn.addEventListener('click', () => cleanup(false));
+      actions.appendChild(cancelBtn);
+    }
 
     const confirmBtn = document.createElement('button');
     confirmBtn.type = 'button';
@@ -893,7 +896,6 @@ export function showConfirmDialog(opts: {
     confirmBtn.textContent = opts.confirmLabel;
     confirmBtn.addEventListener('click', () => cleanup(true));
 
-    actions.appendChild(cancelBtn);
     actions.appendChild(confirmBtn);
     modal.appendChild(actions);
 
