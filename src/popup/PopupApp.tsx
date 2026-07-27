@@ -813,7 +813,7 @@ export const PopupApp: React.FC = () => {
               {loading ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Unlockingâ€¦</span>
+                  <span>Unlocking...</span>
                 </>
               ) : (
                 <>
