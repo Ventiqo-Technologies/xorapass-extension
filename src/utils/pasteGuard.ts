@@ -93,5 +93,6 @@ export function coercePolicy(input: unknown): PastePolicy {
 export function shouldGuard(policy: PastePolicy, hostname: string): boolean {
   if (policy.mode === 'off') return false;
   if (policy.scope === 'all_sites') return true;
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return true;
   return isAiSite(hostname);
 }

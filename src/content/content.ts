@@ -2,8 +2,8 @@
 //
 // Responsibilities are deliberately narrow: detect login fields, ask the
 // background worker what may be offered here, and render the overlay. All
-// authoritative decisions — domain matching, lookalike detection, and the
-// release of any actual secret — happen in the background worker.
+// authoritative decisions â€” domain matching, lookalike detection, and the
+// release of any actual secret â€” happen in the background worker.
 //
 // This script never holds the full set of passwords. It receives labels and
 // usernames only; the password for a single entry is fetched on demand when
@@ -15,10 +15,10 @@
 // and a warning is shown. All detection is on-device -- the pasted text is
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
-import { scanForSecrets, redact, ScanResult } from '../utils/secretScan';
-import { coercePolicy, DEFAULT_POLICY, shouldGuard, isAiSite, PastePolicy } from '../utils/pasteGuard';
 import { looksLikeUsername, looksLikeNewPassword } from './fieldHeuristics';
 import { generatePassword } from '../utils/passwordGenerator';
+import { scanForSecrets, redact, type ScanResult } from '../utils/secretScan';
+import { coercePolicy, DEFAULT_POLICY, isAiSite, shouldGuard, type PastePolicy } from '../utils/pasteGuard';
 import {
   attachIcon,
   hasIcon,
@@ -51,7 +51,17 @@ const newPasswordFields = new WeakMap<HTMLInputElement, boolean>();
  */
 const focusActivators = new WeakMap<HTMLInputElement, HTMLInputElement>();
 
-// ── AI Access ────────────────────────────────────────────────────────────────
+let pastePolicy: PastePolicy = DEFAULT_POLICY;
+let pasteGuardInitialized = false;
+
+interface CaretSnapshot {
+  kind: 'text' | 'contenteditable';
+  start?: number;
+  end?: number;
+  range?: Range;
+}
+
+// â”€â”€ AI Access â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // This page's part of the AI-credential-firewall story: once a human has
 // approved an AI's request elsewhere (the web app, the desktop console),
 // XoraPass mints a scoped, time-bound session. This banner is how that
@@ -85,6 +95,24 @@ interface FrameAssessment {
   isCrossOriginFrame: boolean;
 }
 
+function escapeHtml(s: string): string {
+  return (s || '').replace(/[&<>"]|'/g, (c) => {
+    switch (c) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      default:
+        return '&#39;';
+    }
+  });
+}
+
+
 // Determines whether we are running inside a third-party (cross-origin) iframe.
 // Autofill overlays are never injected into such frames, because a malicious
 // top page could otherwise frame a look-alike login form to harvest secrets.
@@ -113,7 +141,7 @@ function assessFrame(): FrameAssessment {
       }
     }
   } catch {
-    /* ancestorOrigins unsupported – keep prior assessment */
+    /* ancestorOrigins unsupported â€“ keep prior assessment */
   }
 
   return { isTop: false, isCrossOriginFrame: isCrossOrigin };
@@ -154,7 +182,7 @@ function loadCredentials(): void {
       scanForLoginFields();
     })
     .catch(() => {
-      /* background unavailable – nothing to fill */
+      /* background unavailable â€“ nothing to fill */
     });
 }
 
@@ -197,7 +225,7 @@ function isFillable(el: HTMLInputElement): boolean {
 
 /**
  * Finds password fields and attaches an overlay icon to each, plus to its
- * paired username field. Safe to call repeatedly — `hasIcon` makes it
+ * paired username field. Safe to call repeatedly â€” `hasIcon` makes it
  * idempotent, so the MutationObserver can call it freely.
  */
 function scanForLoginFields(): void {
@@ -220,7 +248,7 @@ function scanForLoginFields(): void {
       hasSibling
     );
 
-    // Sign-up fields are worth decorating even with an empty vault — that is
+    // Sign-up fields are worth decorating even with an empty vault â€” that is
     // exactly when there is nothing to fill but a password to generate.
     if (!isNew && activeCredentials.length === 0) continue;
     if (hasIcon(passInput)) continue;
@@ -245,7 +273,7 @@ function scanForLoginFields(): void {
 
 // Attempts to locate the username/email field preceding a password input.
 // Searches the enclosing <form> when present, otherwise the whole document, in
-// DOM order — so it works even when fields live in separate containers.
+// DOM order â€” so it works even when fields live in separate containers.
 function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null {
   const scope: ParentNode = passInput.form || document;
   const inputs = Array.from(scope.querySelectorAll('input')) as HTMLInputElement[];
@@ -273,7 +301,7 @@ function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null
 // Fill flow
 // ---------------------------------------------------------------------------
 
-// Opens the credential menu for `passInput`, positioned at `anchor` — the field
+// Opens the credential menu for `passInput`, positioned at `anchor` â€” the field
 // the user actually clicked or focused, so the menu appears where they are
 // looking. On a sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
@@ -346,103 +374,6 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
   autofillField(passInput, res.value);
 }
 
-// ---------------------------------------------------------------------------
-// AI Access banner
-// ---------------------------------------------------------------------------
-
-function removeAiBanner() {
-  aiBanner?.remove();
-  aiBanner = null;
-}
-
-function renderAiBanner(offer: AiFillOffer) {
-  // Don't stack duplicate banners for the same session, and don't downgrade
-  // an already-shown banner for a different offer without replacing it.
-  if (aiBanner && aiBanner.dataset.sessionId === offer.sessionId) return;
-  removeAiBanner();
-
-  const bar = document.createElement('div');
-  bar.dataset.sessionId = offer.sessionId;
-  Object.assign(bar.style, {
-    position: 'fixed',
-    top: '0',
-    left: '0',
-    right: '0',
-    zIndex: '2147483647',
-    display: 'flex',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: '10px',
-    padding: '10px 16px',
-    background: 'linear-gradient(90deg, #312e81, #3730a3)',
-    borderBottom: '1px solid rgba(129, 140, 248, 0.4)',
-    boxShadow: '0 4px 20px rgba(49, 46, 129, 0.4)',
-    fontFamily: 'Inter, system-ui, sans-serif',
-    fontSize: '13px',
-    color: '#e0e7ff',
-  });
-
-  const label = document.createElement('span');
-  label.innerHTML = `🤖 <b>${escapeHtml(offer.aiToolName)}</b> was approved to ${escapeHtml(
-    offer.action
-  )} on this page — fill now?`;
-  label.style.flex = '1';
-  label.style.minWidth = '200px';
-  bar.appendChild(label);
-
-  const mkBtn = (text: string, bg: string, color: string) => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.innerText = text;
-    Object.assign(b.style, {
-      padding: '6px 14px',
-      fontSize: '12px',
-      fontWeight: '700',
-      color,
-      background: bg,
-      border: 'none',
-      borderRadius: '8px',
-      cursor: 'pointer',
-      fontSize: '12px',
-      color: '#e2e8f0',
-      borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
-      transition: 'background-color 0.15s, color 0.15s',
-      display: 'block',
-    });
-
-    item.addEventListener('mouseover', () => {
-      item.style.backgroundColor = 'rgba(0, 210, 255, 0.08)';
-      item.style.color = '#00D2FF';
-    });
-    item.addEventListener('mouseout', () => {
-      item.style.backgroundColor = 'transparent';
-      item.style.color = '#e2e8f0';
-    });
-
-    item.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      closeAllDropdowns();
-
-  const confirmed = await confirmFillIfNeeded(cred);
-  if (!confirmed) return;
-
-  // Fetch the secret only now, for this one entry.
-  const res = (await browser.runtime
-    .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id } })
-    .catch(() => null)) as { username?: string; value?: string; error?: string } | null;
-
-  if (!res || res.error || typeof res.value !== 'string') {
-    console.warn('[XoraPass] Fill refused:', res?.error || 'no_response');
-    return;
-  }
-
-  const usernameEl = fieldPairs.get(passInput) ?? null;
-  if (usernameEl && usernameEl !== passInput && res.username) {
-    autofillField(usernameEl, res.username);
-  }
-  autofillField(passInput, res.value);
-}
 
 // ---------------------------------------------------------------------------
 // AI Access banner
@@ -481,9 +412,9 @@ function renderAiBanner(offer: AiFillOffer) {
   });
 
   const label = document.createElement('span');
-  label.innerHTML = `🤖 <b>${escapeHtml(offer.aiToolName)}</b> was approved to ${escapeHtml(
+  label.innerHTML = `ðŸ¤– <b>${escapeHtml(offer.aiToolName)}</b> was approved to ${escapeHtml(
     offer.action
-  )} on this page — fill now?`;
+  )} on this page â€” fill now?`;
   label.style.flex = '1';
   label.style.minWidth = '200px';
   bar.appendChild(label);
@@ -632,7 +563,7 @@ async function confirmFillIfNeeded(cred: OverlayCredential): Promise<boolean> {
 
 /**
  * Writes a value into a page input. Uses the native value setter so that
- * frameworks which track the property (React, Vue) observe the change — a
+ * frameworks which track the property (React, Vue) observe the change â€” a
  * plain `el.value = x` is silently reverted by React's controlled inputs.
  */
 function autofillField(el: HTMLInputElement, value: string): void {
@@ -669,7 +600,7 @@ function readCredential(scope: ParentNode): { username: string; password: string
   const filled = passwords.find((p) => p.value && isFillable(p));
   if (!filled) return null;
 
-  // Several filled password boxes are fine when they all hold the same value —
+  // Several filled password boxes are fine when they all hold the same value â€”
   // that is a sign-up form's "password + confirm", and it is a credential worth
   // offering to save. Differing values mean a change-password form, where which
   // one to store is ambiguous, so leave those alone.
@@ -829,7 +760,7 @@ function watchForFocus(): void {
       if (isDropdownOpen()) return;
 
       // Only auto-open on an empty field. A field with a value means the user is
-      // editing, not looking for a credential — and because focusin fires once
+      // editing, not looking for a credential â€” and because focusin fires once
       // per focus, a menu they dismiss with Escape or an outside click does not
       // reopen while focus stays on the same field.
       if (el.value) return;
@@ -840,813 +771,183 @@ function watchForFocus(): void {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Secret paste guard
-// ---------------------------------------------------------------------------
-
-// Cached policy, refreshed from the background on load/focus. Until the real
-// policy arrives we use the safe default (warn on AI sites), so a paste in the
-// first moments after load is never missed.
-let pastePolicy: PastePolicy = DEFAULT_POLICY;
-let guardActive = false; // prevents overlapping warning dialogs
-
-function refreshPastePolicy() {
-  browser.runtime
-    .sendMessage({ type: 'AI_PASTE_POLICY' })
-    .then((res: any) => {
-      if (res && res.policy) pastePolicy = coercePolicy(res.policy);
-    })
-    .catch(() => {
-      /* keep the current/default policy */
-    });
-}
-
-// The editable element a paste/drop targets, or null if it's not a text input
-// we guard. Password fields are deliberately excluded -- pasting into a login
-// password box is a normal action, not a prompt leak.
-function guardedEditable(target: EventTarget | null): HTMLElement | null {
-  const t = target as HTMLElement | null;
-  if (!t) return null;
-  if (t instanceof HTMLTextAreaElement) return t;
-  if (t instanceof HTMLInputElement) {
-    const type = (t.type || 'text').toLowerCase();
-    return ['text', 'search', 'url', 'email', 'tel'].includes(type) ? t : null;
-  }
-  if (t.isContentEditable) return t;
-  const ce = t.closest?.('[contenteditable=""],[contenteditable="true"]');
-  return (ce as HTMLElement) || null;
-}
-
-// The caret position captured at paste time, so text can be inserted at the
-// right spot even after the async warning dialog stole focus.
-interface CaretSnapshot {
-  inputRange?: { start: number; end: number };
-  domRange?: Range;
-}
-
-function captureCaret(el: HTMLElement): CaretSnapshot {
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    return { inputRange: { start: el.selectionStart ?? el.value.length, end: el.selectionEnd ?? el.value.length } };
-  }
-  const sel = window.getSelection();
-  return sel && sel.rangeCount ? { domRange: sel.getRangeAt(0).cloneRange() } : {};
-}
-
-// Insert text at the captured caret of an input/textarea/contenteditable,
-// undo-friendly where the platform supports it.
-function insertTextAtCaret(el: HTMLElement, text: string, caret: CaretSnapshot) {
-  el.focus();
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    const start = caret.inputRange?.start ?? el.selectionStart ?? el.value.length;
-    const end = caret.inputRange?.end ?? el.selectionEnd ?? el.value.length;
-    el.setRangeText(text, start, end, 'end');
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    return;
-  }
-  // contenteditable: restore the saved range before inserting.
-  const sel = window.getSelection();
-  if (caret.domRange && sel) {
-    sel.removeAllRanges();
-    sel.addRange(caret.domRange);
-  }
-  const inserted = document.execCommand && document.execCommand('insertText', false, text);
-  if (!inserted && sel && sel.rangeCount) {
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
-    range.insertNode(document.createTextNode(text));
-    range.collapse(false);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-}
-
-type PasteChoice = 'cancel' | 'redact' | 'save' | 'paste';
-
-// The warning dialog. Lists what was detected (masked, never the full value)
-// and offers the policy-appropriate actions.
-function showPasteWarningDialog(scan: ScanResult, policy: PastePolicy): Promise<PasteChoice> {
-  return new Promise((resolve) => {
-    const backdrop = document.createElement('div');
-    Object.assign(backdrop.style, {
-      position: 'fixed',
-      inset: '0',
-      backgroundColor: 'rgba(2, 6, 23, 0.65)',
-      backdropFilter: 'blur(2px)',
-      zIndex: '2147483647',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontFamily: 'Inter, system-ui, sans-serif',
-    });
-
-    const modal = document.createElement('div');
-    Object.assign(modal.style, {
-      width: '380px',
-      maxWidth: '92vw',
-      backgroundColor: '#0f172a',
-      border: '1px solid rgba(244, 63, 94, 0.35)',
-      borderRadius: '12px',
-      boxShadow: '0 24px 48px -12px rgba(0, 0, 0, 0.75)',
-      overflow: 'hidden',
-      color: '#e2e8f0',
-    });
-
-    const title = document.createElement('div');
-    title.innerText = '⚠  Secret detected before paste';
-    Object.assign(title.style, {
-      padding: '14px 16px',
-      fontSize: '13px',
-      fontWeight: '700',
-      color: '#fca5a5',
-      borderBottom: '1px solid rgba(255,255,255,0.06)',
-      backgroundColor: '#020617',
-    });
-    modal.appendChild(title);
-
-    const body = document.createElement('div');
-    Object.assign(body.style, { padding: '14px 16px', fontSize: '12px', lineHeight: '1.5' });
-
-    const intro = document.createElement('p');
-    intro.style.margin = '0 0 10px 0';
-    intro.innerText =
-      policy.mode === 'block'
-        ? 'Your organization blocks pasting secrets into AI tools. This looks like:'
-        : 'You’re about to paste what looks like a secret into an AI tool. This could expose it to the model, its logs, or its provider. Detected:';
-    body.appendChild(intro);
-
-    // Distinct detected types, with one masked example each.
-    const seen = new Set<string>();
-    const list = document.createElement('div');
-    Object.assign(list.style, { display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '4px' });
-    for (const m of scan.matches) {
-      if (seen.has(m.type)) continue;
-      seen.add(m.type);
-      const row = document.createElement('div');
-      Object.assign(row.style, {
-        display: 'flex',
-        justifyContent: 'space-between',
-        gap: '10px',
-        padding: '5px 8px',
-        background: 'rgba(244,63,94,0.08)',
-        border: '1px solid rgba(244,63,94,0.18)',
-        borderRadius: '6px',
-      });
-      const name = document.createElement('span');
-      name.style.fontWeight = '600';
-      name.innerText = m.label;
-      const prev = document.createElement('span');
-      Object.assign(prev.style, { fontFamily: 'monospace', color: '#94a3b8' });
-      prev.innerText = m.preview;
-      row.appendChild(name);
-      row.appendChild(prev);
-      list.appendChild(row);
-    }
-    body.appendChild(list);
-    modal.appendChild(body);
-
-    const actions = document.createElement('div');
-    Object.assign(actions.style, {
-      display: 'flex',
-      flexWrap: 'wrap',
-      gap: '8px',
-      padding: '0 16px 16px 16px',
-      justifyContent: 'flex-end',
-    });
-
-    const cleanup = (choice: PasteChoice) => {
-      backdrop.remove();
-      document.removeEventListener('keydown', onKey);
-      resolve(choice);
-    };
-
-    const mkBtn = (text: string, choice: PasteChoice, style: Partial<CSSStyleDeclaration>) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.innerText = text;
-      Object.assign(
-        b.style,
-        {
-          padding: '8px 12px',
-          fontSize: '12px',
-          fontWeight: '700',
-          borderRadius: '8px',
-          cursor: 'pointer',
-          border: '1px solid transparent',
-        },
-        style
-      );
-      b.addEventListener('click', () => cleanup(choice));
-      return b;
-    };
-
-    // Cancel (safe default), Redact & paste, Save to vault, and -- only when the
-    // policy allows dismissing -- Paste anyway.
-    actions.appendChild(
-      mkBtn('Cancel paste', 'cancel', {
-        color: '#e2e8f0',
-        background: 'rgba(255,255,255,0.06)',
-        borderColor: 'rgba(255,255,255,0.1)',
-      })
-    );
-    actions.appendChild(
-      mkBtn('Save to vault', 'save', {
-        color: '#22d3ee',
-        background: 'rgba(34,211,238,0.1)',
-        borderColor: 'rgba(34,211,238,0.25)',
-      })
-    );
-    actions.appendChild(
-      mkBtn('Redact & paste', 'redact', {
-        color: '#020617',
-        background: 'linear-gradient(90deg, #2dd4bf, #22d3ee)',
-      })
-    );
-    if (policy.mode !== 'block' && policy.allowDismiss) {
-      actions.appendChild(
-        mkBtn('Paste anyway', 'paste', {
-          color: '#fca5a5',
-          background: 'transparent',
-          borderColor: 'rgba(244,63,94,0.4)',
-        })
-      );
-    }
-    modal.appendChild(actions);
-
-    backdrop.appendChild(modal);
-    backdrop.addEventListener('click', (e) => {
-      if (e.target === backdrop) cleanup('cancel');
-    });
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') cleanup('cancel');
-    };
-    document.addEventListener('keydown', onKey);
-    document.body.appendChild(backdrop);
-    confirmBtn.focus();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function autofillField(el: HTMLInputElement, value: string) {
-  el.value = value;
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-  el.dispatchEvent(new Event('change', { bubbles: true }));
-  el.dispatchEvent(new Event('blur', { bubbles: true }));
-}
-
-// ---------------------------------------------------------------------------
-// Credential capture
-// ---------------------------------------------------------------------------
-
-// Guards against re-capturing the same values when a page fires both a click
-// and a submit for one login attempt.
-let lastCaptured = '';
-
-// Reads the credential out of a scope that contains a filled password field.
-function readCredential(scope: ParentNode): { username: string; password: string } | null {
-  const passwords = Array.from(
-    scope.querySelectorAll('input[type="password"]')
-  ) as HTMLInputElement[];
-
-  const filled = passwords.find((p) => p.value && isFillable(p));
-  if (!filled) return null;
-
-  // Several filled password boxes are fine when they all hold the same value —
-  // that is a sign-up form's "password + confirm", and it is a credential worth
-  // offering to save. Differing values mean a change-password form, where which
-  // one to store is ambiguous, so leave those alone.
-  const filledValues = new Set(passwords.filter((p) => p.value).map((p) => p.value));
-  if (filledValues.size > 1) return null;
-
-  const usernameEl = findUsernameField(filled);
-  return { username: usernameEl?.value || '', password: filled.value };
-}
-
-function captureFrom(scope: ParentNode): void {
-  const cred = readCredential(scope);
-  if (!cred) return;
-
-  const fingerprint = `${cred.username} ${cred.password}`;
-  if (fingerprint === lastCaptured) return;
-  lastCaptured = fingerprint;
-
-  browser.runtime
-    .sendMessage({ type: 'CAPTURE_CREDENTIAL', payload: cred })
-    .then((res: any) => {
-      // The worker decides whether this is new, changed, or already stored.
-      // A full page navigation usually kills this script before the timer
-      // fires; the prompt is then raised by checkPendingSave on the next load.
-      if (res && res.prompt) {
-        setTimeout(checkPendingSave, 1200);
-      }
-    })
-    .catch(() => {
-      /* worker unavailable */
-    });
-}
-
-function removeAllOverlays() {
-  overlayElements = [];
-  scannedForms.clear();
-}
-
-function closeAllDropdowns() {
-  document.querySelectorAll('.xorapass-dropdown').forEach((d) => d.remove());
-  document.removeEventListener('click', closeDropdownsOnOutsideClick);
-}
-
-function onDrop(e: DragEvent) {
-  if (guardActive) {
-    e.preventDefault();
-    return;
-  }
-  if (!shouldGuard(pastePolicy, window.location.hostname)) return;
-  const el = guardedEditable(e.target);
-  if (!el) return;
-  const text = e.dataTransfer?.getData('text/plain') ?? '';
-  if (!text) return;
-  const scan = scanForSecrets(text);
-  if (scan.matches.length === 0) return;
-  const caret = captureCaret(el);
-  e.preventDefault();
-  e.stopPropagation();
-  void runPasteGuard(text, el, scan, caret);
-}
-
-function initPasteGuard() {
-  refreshPastePolicy();
-  window.addEventListener('focus', refreshPastePolicy);
-  // Capture phase so we intercept before the page's own paste handling.
-  document.addEventListener('paste', onPaste, true);
-  document.addEventListener('drop', onDrop, true);
-}
-
-// ---------------------------------------------------------------------------
-// Secret paste guard
-// ---------------------------------------------------------------------------
-
-// Cached policy, refreshed from the background on load/focus. Until the real
-// policy arrives we use the safe default (warn on AI sites), so a paste in the
-// first moments after load is never missed.
-let pastePolicy: PastePolicy = DEFAULT_POLICY;
-let guardActive = false; // prevents overlapping warning dialogs
-
-function refreshPastePolicy() {
-  browser.runtime
-    .sendMessage({ type: 'AI_PASTE_POLICY' })
-    .then((res: any) => {
-      if (res && res.policy) pastePolicy = coercePolicy(res.policy);
-    })
-    .catch(() => {
-      /* keep the current/default policy */
-    });
-}
-
-// The editable element a paste/drop targets, or null if it's not a text input
-// we guard. Password fields are deliberately excluded -- pasting into a login
-// password box is a normal action, not a prompt leak.
-function guardedEditable(target: EventTarget | null): HTMLElement | null {
-  const t = target as HTMLElement | null;
-  if (!t) return null;
-  if (t instanceof HTMLTextAreaElement) return t;
-  if (t instanceof HTMLInputElement) {
-    const type = (t.type || 'text').toLowerCase();
-    return ['text', 'search', 'url', 'email', 'tel'].includes(type) ? t : null;
-  }
-  if (t.isContentEditable) return t;
-  const ce = t.closest?.('[contenteditable=""],[contenteditable="true"]');
-  return (ce as HTMLElement) || null;
-}
-
-// The caret position captured at paste time, so text can be inserted at the
-// right spot even after the async warning dialog stole focus.
-interface CaretSnapshot {
-  inputRange?: { start: number; end: number };
-  domRange?: Range;
-}
-
-function captureCaret(el: HTMLElement): CaretSnapshot {
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    return { inputRange: { start: el.selectionStart ?? el.value.length, end: el.selectionEnd ?? el.value.length } };
-  }
-  const sel = window.getSelection();
-  return sel && sel.rangeCount ? { domRange: sel.getRangeAt(0).cloneRange() } : {};
-}
-
-// Insert text at the captured caret of an input/textarea/contenteditable,
-// undo-friendly where the platform supports it.
-function insertTextAtCaret(el: HTMLElement, text: string, caret: CaretSnapshot) {
-  el.focus();
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    const start = caret.inputRange?.start ?? el.selectionStart ?? el.value.length;
-    const end = caret.inputRange?.end ?? el.selectionEnd ?? el.value.length;
-    el.setRangeText(text, start, end, 'end');
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    return;
-  }
-  // contenteditable: restore the saved range before inserting.
-  const sel = window.getSelection();
-  if (caret.domRange && sel) {
-    sel.removeAllRanges();
-    sel.addRange(caret.domRange);
-  }
-  const inserted = document.execCommand && document.execCommand('insertText', false, text);
-  if (!inserted && sel && sel.rangeCount) {
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
-    range.insertNode(document.createTextNode(text));
-    range.collapse(false);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-}
-
-// Reads the full current text of a guarded editable (used by the typing guard,
-// which must scan what's already in the field rather than an incoming payload).
-function readEditableText(el: HTMLElement): string {
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
-  return el.innerText ?? el.textContent ?? '';
-}
-
-// Replaces the entire content of a guarded editable and moves the caret to the
-// end. Used to remove/redact a typed secret in place.
-function setEditableText(el: HTMLElement, text: string) {
-  el.focus();
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    el.value = text;
-    try {
-      el.setSelectionRange(text.length, text.length);
-    } catch {
-      /* some input types disallow selection ranges */
-    }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    return;
-  }
-  // contenteditable: select the whole field and replace via execCommand, which
-  // rich editors (ProseMirror/Lexical) intercept and apply to their own model —
-  // directly setting textContent would desync or be overwritten by them.
-  const sel = window.getSelection();
-  if (sel) {
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }
-  const replaced = document.execCommand && document.execCommand('insertText', false, text);
-  if (!replaced) {
-    el.textContent = text; // fallback for editors without execCommand support
-    if (sel) {
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      range.collapse(false);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  }
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-}
-
-type PasteChoice = 'cancel' | 'redact' | 'save' | 'paste';
-
-// The warning dialog. Lists what was detected (masked, never the full value)
-// and offers the policy-appropriate actions. `source` tailors the wording and
-// button labels for a paste/drop vs. a secret that was typed in.
-function showPasteWarningDialog(
-  scan: ScanResult,
-  policy: PastePolicy,
-  source: 'paste' | 'typing' = 'paste'
-): Promise<PasteChoice> {
-  const typing = source === 'typing';
-  return new Promise((resolve) => {
-    const backdrop = document.createElement('div');
-    Object.assign(backdrop.style, {
-      position: 'fixed',
-      inset: '0',
-      backgroundColor: 'rgba(2, 6, 23, 0.65)',
-      backdropFilter: 'blur(2px)',
-      zIndex: '2147483647',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontFamily: 'Inter, system-ui, sans-serif',
-    });
-
-    const modal = document.createElement('div');
-    Object.assign(modal.style, {
-      width: '380px',
-      maxWidth: '92vw',
-      backgroundColor: '#0f172a',
-      border: '1px solid rgba(244, 63, 94, 0.35)',
-      borderRadius: '12px',
-      boxShadow: '0 24px 48px -12px rgba(0, 0, 0, 0.75)',
-      overflow: 'hidden',
-      color: '#e2e8f0',
-    });
-
-    const title = document.createElement('div');
-    title.innerText = typing ? '⚠  Secret detected in your input' : '⚠  Secret detected before paste';
-    Object.assign(title.style, {
-      padding: '14px 16px',
-      fontSize: '13px',
-      fontWeight: '700',
-      color: '#fca5a5',
-      borderBottom: '1px solid rgba(255,255,255,0.06)',
-      backgroundColor: '#020617',
-    });
-    modal.appendChild(title);
-
-    const body = document.createElement('div');
-    Object.assign(body.style, { padding: '14px 16px', fontSize: '12px', lineHeight: '1.5' });
-
-    const intro = document.createElement('p');
-    intro.style.margin = '0 0 10px 0';
-    if (policy.mode === 'block') {
-      intro.innerText = typing
-        ? 'Your organization blocks entering secrets into AI tools. This looks like:'
-        : 'Your organization blocks pasting secrets into AI tools. This looks like:';
-    } else {
-      intro.innerText = typing
-        ? 'You’ve typed what looks like a secret into an AI tool. This could expose it to the model, its logs, or its provider. Detected:'
-        : 'You’re about to paste what looks like a secret into an AI tool. This could expose it to the model, its logs, or its provider. Detected:';
-    }
-    body.appendChild(intro);
-
-    // Distinct detected types, with one masked example each.
-    const seen = new Set<string>();
-    const list = document.createElement('div');
-    Object.assign(list.style, { display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '4px' });
-    for (const m of scan.matches) {
-      if (seen.has(m.type)) continue;
-      seen.add(m.type);
-      const row = document.createElement('div');
-      Object.assign(row.style, {
-        display: 'flex',
-        justifyContent: 'space-between',
-        gap: '10px',
-        padding: '5px 8px',
-        background: 'rgba(244,63,94,0.08)',
-        border: '1px solid rgba(244,63,94,0.18)',
-        borderRadius: '6px',
-      });
-      const name = document.createElement('span');
-      name.style.fontWeight = '600';
-      name.innerText = m.label;
-      const prev = document.createElement('span');
-      Object.assign(prev.style, { fontFamily: 'monospace', color: '#94a3b8' });
-      prev.innerText = m.preview;
-      row.appendChild(name);
-      row.appendChild(prev);
-      list.appendChild(row);
-    }
-    body.appendChild(list);
-    modal.appendChild(body);
-
-    const actions = document.createElement('div');
-    Object.assign(actions.style, {
-      display: 'flex',
-      flexWrap: 'wrap',
-      gap: '8px',
-      padding: '0 16px 16px 16px',
-      justifyContent: 'flex-end',
-    });
-
-    const cleanup = (choice: PasteChoice) => {
-      backdrop.remove();
-      document.removeEventListener('keydown', onKey);
-      resolve(choice);
-    };
-
-    const mkBtn = (text: string, choice: PasteChoice, style: Partial<CSSStyleDeclaration>) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.innerText = text;
-      Object.assign(
-        b.style,
-        {
-          padding: '8px 12px',
-          fontSize: '12px',
-          fontWeight: '700',
-          borderRadius: '8px',
-          cursor: 'pointer',
-          border: '1px solid transparent',
-        },
-        style
-      );
-      b.addEventListener('click', () => cleanup(choice));
-      return b;
-    };
-
-    // Cancel/remove (safe default), Redact, Save to vault, and -- only when the
-    // policy allows dismissing -- keep it. Labels differ for paste vs. typing:
-    // a paste can be prevented outright, whereas typed text is removed/redacted
-    // from the field after the fact.
-    actions.appendChild(
-      mkBtn(typing ? 'Remove secret' : 'Cancel paste', 'cancel', {
-        color: '#e2e8f0',
-        background: 'rgba(255,255,255,0.06)',
-        borderColor: 'rgba(255,255,255,0.1)',
-      })
-    );
-    actions.appendChild(
-      mkBtn('Save to vault', 'save', {
-        color: '#22d3ee',
-        background: 'rgba(34,211,238,0.1)',
-        borderColor: 'rgba(34,211,238,0.25)',
-      })
-    );
-    actions.appendChild(
-      mkBtn(typing ? 'Redact' : 'Redact & paste', 'redact', {
-        color: '#020617',
-        background: 'linear-gradient(90deg, #2dd4bf, #22d3ee)',
-      })
-    );
-    if (policy.mode !== 'block' && policy.allowDismiss) {
-      actions.appendChild(
-        mkBtn(typing ? 'Keep anyway' : 'Paste anyway', 'paste', {
-          color: '#fca5a5',
-          background: 'transparent',
-          borderColor: 'rgba(244,63,94,0.4)',
-        })
-      );
-    }
-    modal.appendChild(actions);
-
-    backdrop.appendChild(modal);
-    backdrop.addEventListener('click', (e) => {
-      if (e.target === backdrop) cleanup('cancel');
-    });
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') cleanup('cancel');
-    };
-    document.addEventListener('keydown', onKey);
-    document.body.appendChild(backdrop);
-  });
-}
-
-// A tiny transient toast, e.g. after saving to vault.
-function showToast(message: string, tone: 'ok' | 'err' = 'ok') {
-  const t = document.createElement('div');
-  Object.assign(t.style, {
-    position: 'fixed',
-    bottom: '20px',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    zIndex: '2147483647',
-    padding: '10px 16px',
-    borderRadius: '8px',
-    fontFamily: 'Inter, system-ui, sans-serif',
-    fontSize: '12px',
-    fontWeight: '600',
-    color: tone === 'ok' ? '#022c22' : '#450a0a',
-    background: tone === 'ok' ? 'linear-gradient(90deg, #2dd4bf, #22d3ee)' : '#fca5a5',
-    boxShadow: '0 8px 20px rgba(0,0,0,0.4)',
-  });
-  t.innerText = message;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2600);
-}
-
-function reportPasteEvent(types: string[], action: string) {
-  browser.runtime
-    .sendMessage({
-      type: 'AI_PASTE_EVENT',
-      // Secret-free: only the detected type NAMES, the host, and the action.
-      payload: { hostname: window.location.hostname, types, action, isAiSite: isAiSite(window.location.hostname) },
-    })
-    .catch(() => {});
-}
-
-// Core handler shared by paste and drop. `text` is the incoming content, `el`
-// the editable target, `commit` inserts accepted text. Returns true when it
-// intercepted (the caller must have already prevented the default).
-async function runPasteGuard(text: string, el: HTMLElement, scan: ScanResult, caret: CaretSnapshot) {
-  guardActive = true;
+async function refreshPastePolicy(): Promise<void> {
   try {
-    const choice = await showPasteWarningDialog(scan, pastePolicy);
-    switch (choice) {
-      case 'redact': {
-        insertTextAtCaret(el, redact(text, scan.matches), caret);
-        reportPasteEvent(scan.types, 'redacted');
-        break;
-      }
-      case 'save': {
-        const label = `Secret from ${window.location.hostname}`;
-        const res: any = await browser.runtime
-          .sendMessage({ type: 'AI_SAVE_SECRET', payload: { value: text, label, url: window.location.origin } })
-          .catch(() => ({ error: 'Could not reach XoraPass.' }));
-        if (res && res.success) {
-          showToast('Saved to your vault — not pasted.');
-          reportPasteEvent(scan.types, 'saved_to_vault');
-        } else {
-          showToast(res?.error || 'Could not save to vault.', 'err');
-          reportPasteEvent(scan.types, 'save_failed');
-        }
-        break;
-      }
-      case 'paste': {
-        insertTextAtCaret(el, text, caret);
-        reportPasteEvent(scan.types, 'pasted_anyway');
-        break;
-      }
-      case 'cancel':
-      default:
-        reportPasteEvent(scan.types, pastePolicy.mode === 'block' ? 'blocked' : 'cancelled');
-        break;
+    const response: any = await browser.runtime.sendMessage({ type: 'AI_PASTE_POLICY' });
+    if (response?.policy) {
+      pastePolicy = coercePolicy(response.policy);
     }
-  } finally {
-    guardActive = false;
-    // The user consciously acted on this content; record it so the typing guard
-    // doesn't immediately re-warn about the same text (e.g. after "paste anyway").
-    acknowledgeCurrent(el);
+  } catch {
+    pastePolicy = DEFAULT_POLICY;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Typing guard: the same secret detection, but for secrets TYPED into an AI
-// input rather than pasted. Because the text is already in the field, we scan
-// the field's current content (debounced) and, on a hit, offer to remove or
-// redact it in place instead of preventing an incoming paste.
-// ---------------------------------------------------------------------------
+
+function captureCaret(target: HTMLElement): CaretSnapshot | null {
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    return {
+      kind: 'text',
+      start: target.selectionStart ?? target.value.length,
+      end: target.selectionEnd ?? target.value.length,
+    };
+  }
+
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return null;
+  return {
+    kind: 'contenteditable',
+    range: selection.getRangeAt(0).cloneRange(),
+  };
+}
+
+function insertTextAtCaret(target: HTMLElement, text: string, caret: CaretSnapshot | null): void {
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    target.focus();
+    if (caret?.kind === 'text' && typeof caret.start === 'number' && typeof caret.end === 'number') {
+      target.setRangeText(text, caret.start, caret.end, 'end');
+    } else {
+      const start = target.selectionStart ?? target.value.length;
+      const end = target.selectionEnd ?? target.value.length;
+      target.setRangeText(text, start, end, 'end');
+    }
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+
+  if (caret?.kind === 'contenteditable' && caret.range) {
+    target.focus();
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(caret.range);
+      document.execCommand('insertText', false, text);
+      return;
+    }
+  }
+
+  target.focus();
+  document.execCommand('insertText', false, text);
+}
+
+function getPasteTarget(e: Event): HTMLElement | null {
+  const isEditable = (node: HTMLElement) =>
+    node instanceof HTMLInputElement ||
+    node instanceof HTMLTextAreaElement ||
+    node.isContentEditable;
+
+  const path = e.composedPath ? e.composedPath() : [];
+  for (const node of path) {
+    if (node instanceof HTMLElement) {
+      if (isEditable(node)) {
+        return node;
+      }
+    }
+  }
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && isEditable(active)) {
+    return active;
+  }
+  return null;
+}
+
+function isEditableElement(el: HTMLElement): boolean {
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
+}
+
+function resolveEditableTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) return null;
+  if (isEditableElement(target)) return target;
+  const editableAncestor = target.closest('input, textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]');
+  return editableAncestor instanceof HTMLElement ? editableAncestor : null;
+}
 
 const TYPING_DEBOUNCE_MS = 650;
 let typingTimer: ReturnType<typeof setTimeout> | undefined;
-// Per-element text the user explicitly chose to keep, so we don't nag on every
-// subsequent keystroke for content they've already decided about.
 const acknowledgedText = new WeakMap<HTMLElement, string>();
-
-function acknowledgeCurrent(el: HTMLElement) {
-  acknowledgedText.set(el, readEditableText(el));
-}
-
-function onInput(e: Event) {
-  if (guardActive) return;
-  if (!shouldGuard(pastePolicy, window.location.hostname)) return;
-  const el = guardedEditable(e.target);
-  if (!el) return;
-  if (typingTimer) clearTimeout(typingTimer);
-  typingTimer = setTimeout(() => scanTypedInput(el), TYPING_DEBOUNCE_MS);
-}
-
-function scanTypedInput(el: HTMLElement) {
-  if (guardActive) return;
-  if (!el.isConnected) return; // element was removed while we waited
-  const text = readEditableText(el);
-  if (!text) return;
-  if (acknowledgedText.get(el) === text) return; // already decided about this exact text
-  const scan = scanForSecrets(text);
-  if (scan.matches.length === 0) return;
-  void runTypingGuard(el, text, scan);
-}
-
-async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult) {
-  guardActive = true;
-  try {
-    const choice = await showPasteWarningDialog(scan, pastePolicy, 'typing');
-    switch (choice) {
-      // For typed input, both "Remove secret" and "Redact" strip the secret from
-      // the field; only the audit label differs.
-      case 'cancel':
-      case 'redact': {
-        setEditableText(el, redact(text, scan.matches));
-        reportPasteEvent(scan.types, choice === 'redact' ? 'typed_redacted' : 'typed_removed');
-        break;
-      }
-      case 'save': {
-        const label = `Secret from ${window.location.hostname}`;
-        const res: any = await browser.runtime
-          .sendMessage({ type: 'AI_SAVE_SECRET', payload: { value: text, label, url: window.location.origin } })
-          .catch(() => ({ error: 'Could not reach XoraPass.' }));
-        if (res && res.success) {
-          setEditableText(el, redact(text, scan.matches));
-          showToast('Saved to your vault — removed from the field.');
-          reportPasteEvent(scan.types, 'typed_saved_to_vault');
-        } else {
-          showToast(res?.error || 'Could not save to vault.', 'err');
-          reportPasteEvent(scan.types, 'typed_save_failed');
-        }
-        break;
-      }
-      case 'paste': {
-        // "Keep anyway" — leave the text, but remember it so we don't re-warn.
-        reportPasteEvent(scan.types, 'typed_kept');
-        break;
-      }
-    }
-  } finally {
-    guardActive = false;
-    acknowledgeCurrent(el);
-  }
-}
-
-// Polling fallback. Rich editors (ChatGPT's ProseMirror, Claude, Slack, etc.)
-// manage their own DOM and don't always surface a bubbling `input` event a
-// document-level listener can see. Rather than depend on each editor's event
-// model, we also poll the currently-focused editable and scan it when its text
-// changes. This is what makes typed-secret detection work on those editors.
 const lastPolledText = new WeakMap<HTMLElement, string>();
 
-// The truly-focused element, descending through open shadow roots (some editors
-// nest their editable inside a shadow tree).
+function readEditableText(el: HTMLElement): string {
+  if (!isEditableElement(el)) return '';
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    return el.value || '';
+  }
+  return el.textContent || el.innerText || '';
+}
+
+function setEditableText(el: HTMLElement, text: string): void {
+  if (!isEditableElement(el)) return;
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const setter =
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set ||
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    if (setter) {
+      setter.call(el, text);
+    } else {
+      el.value = text;
+    }
+  } else {
+    el.textContent = text;
+  }
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function acknowledgeCurrent(el: HTMLElement) {
+  const text = readEditableText(el);
+  if (text) acknowledgedText.set(el, text);
+}
+
+async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): Promise<void> {
+  const hostname = window.location.hostname;
+
+  void browser.runtime
+    .sendMessage({
+      type: 'AI_PASTE_EVENT',
+      payload: {
+        hostname,
+        types: scan.types,
+        action: 'type',
+        isAiSite: isAiSite(hostname),
+      },
+    })
+    .catch(() => {});
+
+  const labels = Array.from(new Set(scan.matches.map((m) => m.label)));
+  const isBlock = pastePolicy.mode === 'block' || !pastePolicy.allowDismiss;
+
+  if (isBlock) {
+    const safeText = acknowledgedText.get(el) || '';
+    setEditableText(el, safeText);
+    await showConfirmDialog({
+      title: 'Secret typing blocked',
+      body: [
+        `XoraPass detected ${labels.join(', ')} in what you entered.`,
+        'Entering secrets into AI tools is blocked by policy.',
+        `Preview: ${redact(text, scan.matches).slice(0, 120)}`,
+      ],
+      confirmLabel: 'OK',
+      cancelLabel: '',
+    });
+    return;
+  }
+
+  const proceed = await showConfirmDialog({
+    title: 'Secret typing warning',
+    body: [
+      `XoraPass detected ${labels.join(', ')} in what you entered.`,
+      'This text is kept on-device. You can remove it, or keep it if you really want to.',
+      `Preview: ${redact(text, scan.matches).slice(0, 120)}`,
+    ],
+    confirmLabel: 'Keep anyway',
+    cancelLabel: 'Remove secret',
+  });
+
+  if (!proceed) {
+    setEditableText(el, redact(text, scan.matches));
+  }
+  acknowledgeCurrent(el);
+}
+
 function deepActiveElement(): Element | null {
   let el: Element | null = document.activeElement;
   while (el && el.shadowRoot && el.shadowRoot.activeElement) {
@@ -1656,82 +957,162 @@ function deepActiveElement(): Element | null {
 }
 
 function pollActiveEditable() {
-  if (guardActive) return;
-  if (!shouldGuard(pastePolicy, window.location.hostname)) return;
-  const el = guardedEditable(deepActiveElement());
+  const hostname = window.location.hostname;
+  if (!shouldGuard(pastePolicy, hostname)) return;
+  const active = deepActiveElement();
+  if (!active || !(active instanceof HTMLElement)) return;
+  const el = resolveEditableTarget(active);
   if (!el) return;
   const text = readEditableText(el);
   if (!text) return;
-  if (lastPolledText.get(el) === text) return; // unchanged since last poll
+  if (lastPolledText.get(el) === text) return;
   lastPolledText.set(el, text);
-  if (acknowledgedText.get(el) === text) return; // already decided about this text
+  if (acknowledgedText.get(el) === text) return;
   const scan = scanForSecrets(text);
   if (scan.matches.length === 0) return;
   void runTypingGuard(el, text, scan);
 }
 
-function onPaste(e: ClipboardEvent) {
-  if (guardActive) {
-    e.preventDefault();
-    return;
-  }
-  if (!shouldGuard(pastePolicy, window.location.hostname)) return;
-  const el = guardedEditable(e.target);
-  if (!el) return;
-  const text = e.clipboardData?.getData('text/plain') ?? '';
-  if (!text) return;
-  const scan = scanForSecrets(text);
-  if (scan.matches.length === 0) return;
-  // Block the default paste synchronously, capture the caret, then decide via
-  // the async dialog.
-  const caret = captureCaret(el);
-  e.preventDefault();
-  e.stopPropagation();
-  void runPasteGuard(text, el, scan, caret);
+function onInput(e: Event) {
+  const hostname = window.location.hostname;
+  if (!shouldGuard(pastePolicy, hostname)) return;
+  const rawTarget = (e.composedPath && e.composedPath()[0]) || e.target;
+  const target = resolveEditableTarget(rawTarget);
+  if (!target) return;
+  if (typingTimer) clearTimeout(typingTimer);
+  typingTimer = setTimeout(() => {
+    const text = readEditableText(target);
+    if (!text) return;
+    if (acknowledgedText.get(target) === text) return;
+    const scan = scanForSecrets(text);
+    if (scan.matches.length === 0) return;
+    void runTypingGuard(target, text, scan);
+  }, TYPING_DEBOUNCE_MS);
 }
 
-function onDrop(e: DragEvent) {
-  if (guardActive) {
-    e.preventDefault();
+async function handleSecretPaste(
+  target: HTMLElement | null,
+  text: string,
+  caret: CaretSnapshot | null,
+  action: 'paste' | 'drop',
+  scan: ScanResult
+): Promise<void> {
+  const hostname = window.location.hostname;
+
+  void browser.runtime
+    .sendMessage({
+      type: 'AI_PASTE_EVENT',
+      payload: {
+        hostname,
+        types: scan.types,
+        action,
+        isAiSite: isAiSite(hostname),
+      },
+    })
+    .catch(() => {});
+
+  const labels = Array.from(new Set(scan.matches.map((m) => m.label)));
+  const isBlock = pastePolicy.mode === 'block' || !pastePolicy.allowDismiss;
+
+  if (isBlock) {
+    await showConfirmDialog({
+      title: 'Secret paste blocked',
+      body: [
+        `XoraPass detected ${labels.join(', ')} in what you tried to paste.`,
+        'Pasting secrets into AI tools is blocked by policy.',
+        `Preview: ${redact(text, scan.matches).slice(0, 120)}`,
+      ],
+      confirmLabel: 'OK',
+      cancelLabel: '',
+    });
     return;
   }
-  if (!shouldGuard(pastePolicy, window.location.hostname)) return;
-  const el = guardedEditable(e.target);
-  if (!el) return;
-  const text = e.dataTransfer?.getData('text/plain') ?? '';
-  if (!text) return;
-  const scan = scanForSecrets(text);
-  if (scan.matches.length === 0) return;
-  const caret = captureCaret(el);
-  e.preventDefault();
-  e.stopPropagation();
-  void runPasteGuard(text, el, scan, caret);
+
+  const proceed = await showConfirmDialog({
+    title: 'Secret paste warning',
+    body: [
+      `XoraPass detected ${labels.join(', ')} in what you pasted.`,
+      'This text is kept on-device. You can cancel, or continue if you really want to paste it here.',
+      `Preview: ${redact(text, scan.matches).slice(0, 120)}`,
+    ],
+    confirmLabel: 'Paste anyway',
+    cancelLabel: 'Cancel',
+  });
+
+  if (proceed && target) {
+    insertTextAtCaret(target, text, caret);
+  }
 }
 
-function initPasteGuard() {
-  refreshPastePolicy();
-  window.addEventListener('focus', refreshPastePolicy);
-  // Capture phase so we intercept before the page's own paste handling.
-  document.addEventListener('paste', onPaste, true);
-  document.addEventListener('drop', onDrop, true);
-  // Typed secrets: scan the field's content (debounced) after input. Not capture
-  // phase — we react to the value after the keystroke lands, not before.
+function initPasteGuard(): void {
+  if (pasteGuardInitialized) return;
+  pasteGuardInitialized = true;
+
+  void refreshPastePolicy();
+
+  browser.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'local' && changes.pastePolicy?.newValue) {
+      pastePolicy = coercePolicy(changes.pastePolicy.newValue);
+    }
+  });
+
+  document.addEventListener(
+    'paste',
+    (e) => {
+      const text = e.clipboardData?.getData('text/plain') || e.clipboardData?.getData('text') || '';
+      if (!text) return;
+
+      const hostname = window.location.hostname;
+      if (!shouldGuard(pastePolicy, hostname)) return;
+
+      const scan = scanForSecrets(text);
+      if (scan.matches.length === 0) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const target = getPasteTarget(e);
+      const caret = target ? captureCaret(target) : null;
+      void handleSecretPaste(target, text, caret, 'paste', scan);
+    },
+    true
+  );
+
+  document.addEventListener(
+    'drop',
+    (e) => {
+      const text = e.dataTransfer?.getData('text/plain') || e.dataTransfer?.getData('text') || '';
+      if (!text) return;
+
+      const hostname = window.location.hostname;
+      if (!shouldGuard(pastePolicy, hostname)) return;
+
+      const scan = scanForSecrets(text);
+      if (scan.matches.length === 0) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const target = getPasteTarget(e);
+      const caret = target ? captureCaret(target) : null;
+      void handleSecretPaste(target, text, caret, 'drop', scan);
+    },
+    true
+  );
+
   document.addEventListener('input', onInput, true);
-  // Fallback for rich editors whose input events don't reach us: poll the
-  // focused editable and scan it when its text changes.
   setInterval(pollActiveEditable, 700);
 }
 
-// ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
 const frame = assessFrame();
 if (frame.isTop || !frame.isCrossOriginFrame) {
   // Only run in the top frame or in a same-origin (first-party) sub-frame.
+  initPasteGuard();
   loadCredentials();
   checkAiFill();
-  initPasteGuard();
   watchForUsernameEntry();
   watchForSubmission();
   watchForFocus();
@@ -1789,3 +1170,5 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   // fill -- the same framing attack this guard exists for applies equally.
   console.debug('[XoraPass] Autofill disabled inside third-party iframe.');
 }
+
+

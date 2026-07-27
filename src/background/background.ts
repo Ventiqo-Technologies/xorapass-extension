@@ -58,13 +58,6 @@ async function clearAiHeartbeat() {
   await browser.alarms.clear(AI_HEARTBEAT_ALARM);
 }
 
-async function scheduleAiHeartbeat() {
-  await browser.alarms.create(AI_HEARTBEAT_ALARM, { periodInMinutes: 1 });
-}
-async function clearAiHeartbeat() {
-  await browser.alarms.clear(AI_HEARTBEAT_ALARM);
-}
-
 // ── Clipboard auto-clear ────────────────────────────────────────────────────
 //
 // The popup writes the password to the clipboard itself (it has a DOM and a
@@ -615,27 +608,32 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // jwt is optional for backward compatibility, but the popup always sends
     // it now -- without it, the AI Access checks below simply find nothing
     // (getJwt() returns '' and apiJwt() fails closed), never an error state.
-    const { decryptedItems, email, jwt, encKey, token, offline } = msg.payload as {
+    const payload = msg.payload as {
       decryptedItems: unknown;
       email: string;
       jwt?: string;
       encKey?: string; // base64 -- needed only so "save to vault" can encrypt new entries
+      token?: string;
+      offline?: boolean;
     };
+    const { decryptedItems, email, jwt, encKey, token, offline } = payload;
     // token and encKey are held so the popup can re-fetch and decrypt the vault
     // without a full re-authentication. They live in storage.session, which is
     // memory-only, cleared on browser restart, and already restricted to
     // TRUSTED_CONTEXTS — the same place the decrypted vault itself sits.
+    const sessionData = {
+      unlocked: true,
+      email,
+      vaultItems: decryptedItems,
+      jwt: jwt || '',
+      encKey: encKey || '',
+      token: token || '',
+      // An offline unlock came from the cache and has no access token, so
+      // writes have to wait for a connection.
+      offline: !!offline,
+    };
     return browser.storage.session
-      .set({
-        unlocked: true,
-        email,
-        vaultItems: decryptedItems, jwt: jwt || '', encKey: encKey || '',
-        token,
-        encKey,
-        // An offline unlock came from the cache and has no access token, so
-        // writes have to wait for a connection.
-        offline: !!offline,
-      })
+      .set(sessionData)
       .then(() => {
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
