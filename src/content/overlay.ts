@@ -483,58 +483,166 @@ const STYLES = `
 
 .backdrop {
   position: fixed;
-  inset: 0;
-  background-color: rgba(2, 6, 23, 0.6);
-  backdrop-filter: blur(2px);
+  top: 16px;
+  right: 16px;
+  z-index: 2147483647;
   pointer-events: auto;
+}
+.backdrop.is-closing {
+  animation: xp-slide-out 0.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+.modal {
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  background-color: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  box-shadow:
+    0 2px 4px rgba(15, 23, 42, 0.04),
+    0 10px 28px -4px rgba(15, 23, 42, 0.16),
+    0 24px 48px -12px rgba(15, 23, 42, 0.18);
+  overflow: hidden;
+  color: #0f172a;
+  animation: xp-slide-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px 12px 18px;
+}
+.modal-close {
+  width: 26px;
+  height: 26px;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  font-family: inherit;
+  margin-left: auto;
+  transition: background-color 0.15s, color 0.15s;
 }
-.modal {
-  width: 340px;
-  max-width: 90vw;
-  background-color: #0f172a;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 12px;
-  box-shadow: 0 20px 40px -10px rgba(0,0,0,0.7);
-  overflow: hidden;
-  color: #e2e8f0;
+.modal-close:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+}
+.modal-head-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.modal-head-icon.is-danger {
+  background: rgba(225, 29, 72, 0.12);
+  border-color: rgba(225, 29, 72, 0.25);
 }
 .modal-title {
-  padding: 14px 16px;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 700;
-  color: #fca5a5;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
-  background-color: #0a1412;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
 }
-.modal-body { padding: 14px 16px; font-size: 12px; line-height: 1.5; }
-.modal-body p { margin: 0 0 8px 0; }
+.modal-body {
+  padding: 0 22px 18px 22px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #475569;
+}
+.modal-body-line {
+  margin: 0 0 8px 0;
+  color: #334155;
+  font-size: 13px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.modal-body-line:last-child {
+  margin-bottom: 0;
+}
+.modal-body-bullet {
+  color: #94a3b8;
+  font-size: 14px;
+  line-height: 1;
+  margin-top: 3px;
+}
+.modal-preview {
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+.modal-preview-label {
+  font-weight: 700;
+  color: #64748b;
+  font-family: Inter, system-ui, sans-serif;
+  margin-right: 6px;
+}
+.modal-preview-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #0f172a;
+  font-weight: 600;
+}
 .modal-actions {
   display: flex;
-  gap: 8px;
-  padding: 0 16px 16px 16px;
+  gap: 10px;
+  padding: 14px 22px 18px 22px;
+  background: #fafafa;
+  border-top: 1px solid #f1f5f9;
   justify-content: flex-end;
+  align-items: center;
 }
 .btn {
-  padding: 8px 14px;
-  font-size: 12px;
+  padding: 9px 18px;
+  font-size: 12.5px;
   font-weight: 600;
-  border-radius: 8px;
+  border-radius: 10px;
   cursor: pointer;
   font-family: inherit;
+  transition: all 0.15s ease;
+  outline: none;
 }
 .btn-cancel {
-  color: #e2e8f0;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.1);
+  color: #334155;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+.btn-cancel:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+  border-color: #94a3b8;
 }
 .btn-confirm {
-  color: #04231d;
-  background: linear-gradient(135deg, #2dd4bf, #34d399);
+  color: #ffffff;
+  background: linear-gradient(135deg, #0d9488, #059669);
   border: none;
   font-weight: 700;
+  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.25);
+}
+.btn-confirm:hover {
+  opacity: 0.95;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(13, 148, 136, 0.35);
+}
+.btn-confirm:active {
+  transform: translateY(0);
 }
 `;
 
@@ -858,17 +966,66 @@ export function showConfirmDialog(opts: {
     modal.setAttribute('role', 'alertdialog');
     modal.setAttribute('aria-modal', 'true');
 
+    // Header container with Warning icon + Title
+    const head = document.createElement('div');
+    head.className = 'modal-head';
+
+    const isDanger = opts.title.toLowerCase().includes('block');
+    const iconWrap = document.createElement('div');
+    iconWrap.className = isDanger ? 'modal-head-icon is-danger' : 'modal-head-icon';
+    iconWrap.innerHTML = isDanger
+      ? '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#e11d48" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'
+      : '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+    head.appendChild(iconWrap);
+
     const title = document.createElement('div');
     title.className = 'modal-title';
     title.textContent = opts.title;
-    modal.appendChild(title);
+    head.appendChild(title);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'modal-close';
+    closeBtn.innerHTML = '×';
+    closeBtn.title = 'Dismiss';
+    closeBtn.addEventListener('click', () => cleanup(false));
+    head.appendChild(closeBtn);
+
+    modal.appendChild(head);
 
     const body = document.createElement('div');
     body.className = 'modal-body';
     for (const line of opts.body) {
-      const p = document.createElement('p');
-      p.textContent = `• ${line}`;
-      body.appendChild(p);
+      if (line.startsWith('Preview:')) {
+        const prevBox = document.createElement('div');
+        prevBox.className = 'modal-preview';
+
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'modal-preview-label';
+        labelSpan.textContent = 'Preview:';
+        prevBox.appendChild(labelSpan);
+
+        const valSpan = document.createElement('span');
+        valSpan.className = 'modal-preview-value';
+        valSpan.textContent = line.replace(/^Preview:\s*/, '');
+        prevBox.appendChild(valSpan);
+
+        body.appendChild(prevBox);
+      } else {
+        const p = document.createElement('div');
+        p.className = 'modal-body-line';
+
+        const bullet = document.createElement('span');
+        bullet.className = 'modal-body-bullet';
+        bullet.textContent = '•';
+        p.appendChild(bullet);
+
+        const textSpan = document.createElement('span');
+        textSpan.textContent = line;
+        p.appendChild(textSpan);
+
+        body.appendChild(p);
+      }
     }
     modal.appendChild(body);
 
@@ -876,7 +1033,8 @@ export function showConfirmDialog(opts: {
     actions.className = 'modal-actions';
 
     const cleanup = (result: boolean) => {
-      backdrop.remove();
+      backdrop.classList.add('is-closing');
+      setTimeout(() => backdrop.remove(), 150);
       document.removeEventListener('keydown', onKey, true);
       resolve(result);
     };
