@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { 
   Shield,
@@ -898,7 +898,8 @@ export const PopupApp: React.FC = () => {
           </div>
         </form>
       ) : (
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-3.5 flex flex-col z-10">
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden z-10">
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-3.5 flex flex-col space-y-3">
             {offline && (
               <div className="p-2.5 bg-amber-50 border border-amber-200/80 text-amber-800 rounded-xl text-[10px] flex items-start gap-2 leading-snug shrink-0 shadow-xs">
                 <CloudOff className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
@@ -912,45 +913,6 @@ export const PopupApp: React.FC = () => {
                 <span>{syncError}</span>
               </div>
             )}
-
-            {/* Segmented Tab Navigation Bar */}
-            <div className="grid grid-cols-4 gap-1 p-1 bg-white/80 border border-slate-900/10 rounded-xl shrink-0 shadow-xs">
-              <button
-                onClick={() => { setTab('vault'); setSelectedItem(null); }}
-                className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${tab === 'vault' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
-              >
-                <LayoutGrid className="w-3.5 h-3.5" /> Vault
-              </button>
-              <button
-                onClick={() => { setTab('generate'); setSelectedItem(null); }}
-                className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${tab === 'generate' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
-              >
-                <Wand2 className="w-3.5 h-3.5" /> Generator
-              </button>
-              <button
-                onClick={() => { setTab('health'); setSelectedItem(null); }}
-                className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${tab === 'health' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
-              >
-                <Activity className="w-3.5 h-3.5" /> Health
-              </button>
-              <button
-                onClick={() => { setTab('settings'); setSelectedItem(null); }}
-                className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer ${tab === 'settings' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
-              >
-                <Settings className="w-3.5 h-3.5" /> Settings
-              </button>
-              <button
-                onClick={() => setTab('ai')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition cursor-pointer relative ${tab === 'ai' ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-400 hover:text-white'}`}
-              >
-                <Bot className="w-3.5 h-3.5" /> AI
-                {aiRequests.length > 0 && (
-                  <span className="absolute -top-1 -right-1 w-4 h-4 flex items-center justify-center rounded-full bg-brand-ruby text-white text-[9px] font-bold">
-                    {aiRequests.length}
-                  </span>
-                )}
-              </button>
-            </div>
 
             {/* ITEM DETAIL DRAWER VIEW */}
             {selectedItem ? (
@@ -1559,77 +1521,204 @@ export const PopupApp: React.FC = () => {
 
             {/* AI ACCESS TAB */}
             {tab === 'ai' && (
-              <div className="space-y-3 animate-fade-in flex-1 overflow-y-auto custom-scrollbar">
-                <p className="text-[10px] text-slate-500 leading-snug">
-                  AI tools never see your passwords. Approving here only grants a scoped,
-                  time-limited session - the credential stays encrypted in your vault.
-                </p>
-
-                <div className="p-2.5 bg-slate-900/60 border border-white/8 rounded-xl space-y-2">
-                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    <ShieldAlert className="w-3 h-3" /> Secret paste guard
+              <div className="space-y-3.5 animate-fade-in flex-1 overflow-y-auto custom-scrollbar">
+                {/* AI Security Banner Card */}
+                <div className="p-3 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden">
+                  <div className="flex items-center justify-between relative z-10">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-lg bg-brand-cyan/20 border border-brand-cyan/30 flex items-center justify-center text-brand-cyan">
+                        <Bot className="w-3.5 h-3.5" />
+                      </div>
+                      <h3 className="text-xs font-black tracking-tight text-white">AI Access & Security Guard</h3>
+                    </div>
+                    <button
+                      onClick={fetchAiData}
+                      className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
+                      title="Refresh AI requests & sessions"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${aiBusyId ? 'animate-spin' : ''}`} />
+                    </button>
                   </div>
-                  <p className="text-[9px] text-slate-500 leading-snug">
-                    Warns before you paste passwords, API keys, or tokens into AI tools. Detection runs entirely on your device.
+                  <p className="text-[10px] text-slate-300 leading-snug relative z-10">
+                    Zero-Knowledge Protection: Credentials remain encrypted in your vault. AI tools only receive scoped, time-limited tokens.
                   </p>
-                  <div className="flex gap-1 p-0.5 bg-slate-950/60 border border-white/5 rounded-lg">
+                </div>
+
+                {/* Secret Paste Guard */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
+                      <ShieldAlert className="w-3.5 h-3.5 text-brand-cyan" /> Secret Paste Guard
+                    </div>
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 uppercase">
+                      {pasteMode === 'warn' ? 'Warning Mode' : pasteMode === 'block' ? 'Strict Blocking' : 'Disabled'}
+                    </span>
+                  </div>
+                  
+                  <p className="text-[10px] text-slate-500 leading-snug">
+                    {pasteMode === 'warn'
+                      ? 'Warns before pasting passwords or secret keys into AI prompts.'
+                      : pasteMode === 'block'
+                      ? 'Automatically blocks pasting passwords or secret keys into AI prompts.'
+                      : 'Secret paste detection is turned off.'}
+                  </p>
+
+                  <div className="flex gap-1 p-1 bg-slate-100 border border-slate-900/8 rounded-xl">
                     {(['warn', 'block', 'off'] as const).map((m) => (
-                      <button key={m} onClick={() => changePasteMode(m)} className={`flex-1 py-1 rounded-md text-[10px] font-bold capitalize transition cursor-pointer ${pasteMode === m ? 'bg-brand-cyan/15 text-brand-cyan' : 'text-slate-400 hover:text-white'}`}>
+                      <button
+                        key={m}
+                        onClick={() => changePasteMode(m)}
+                        className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold capitalize transition cursor-pointer ${
+                          pasteMode === m
+                            ? 'bg-slate-900 text-white shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900 font-medium'
+                        }`}
+                      >
                         {m}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {aiError && <div className="p-2 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-lg text-[10px]">{aiError}</div>}
-
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                    <ShieldAlert className="w-3 h-3" /> Awaiting your decision
+                {aiError && (
+                  <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-xl text-[10px] font-medium leading-snug flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{aiError}</span>
                   </div>
+                )}
+
+                {/* Pending Requests Section */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
+                      <ShieldAlert className="w-3.5 h-3.5 text-amber-500" /> Awaiting Decision
+                    </div>
+                    {aiRequests.length > 0 && (
+                      <span className="px-1.5 py-0.2 text-[9px] font-extrabold rounded-full bg-brand-ruby text-white">
+                        {aiRequests.length} pending
+                      </span>
+                    )}
+                  </div>
+
                   {aiRequests.length === 0 ? (
-                    <p className="text-[10px] text-slate-600 py-2">No pending requests.</p>
+                    <div className="p-4 bg-white border border-slate-900/10 rounded-xl text-center space-y-1 shadow-xs">
+                      <div className="w-8 h-8 rounded-full bg-emerald-50 border border-emerald-200/80 flex items-center justify-center mx-auto text-emerald-600">
+                        <ShieldCheck className="w-4 h-4" />
+                      </div>
+                      <div className="text-xs font-bold text-slate-800">Vault Fully Secured</div>
+                      <p className="text-[10px] text-slate-400">No AI tools are currently requesting credential access.</p>
+                    </div>
                   ) : (
                     aiRequests.map((r) => (
-                      <div key={r.id} className="p-2.5 bg-slate-900/60 border border-white/8 rounded-xl space-y-1.5">
+                      <div key={r.id} className="p-3 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-1.5 min-w-0">
-                            <Bot className="w-3.5 h-3.5 text-brand-cyan flex-shrink-0" />
-                            <span className="text-xs font-bold text-white truncate">{r.ai_tool_name}</span>
+                            <Bot className="w-4 h-4 text-brand-cyan shrink-0" />
+                            <span className="text-xs font-extrabold text-slate-900 truncate">{r.ai_tool_name}</span>
                           </div>
-                          <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded" style={{ color: RISK_COLORS[r.risk_level] || '#94a3b8', background: `${RISK_COLORS[r.risk_level] || '#94a3b8'}22` }}>
-                            {r.risk_level}
+                          <span
+                            className="text-[8px] font-black uppercase px-2 py-0.5 rounded-md"
+                            style={{
+                              color: RISK_COLORS[r.risk_level] || '#94a3b8',
+                              background: `${RISK_COLORS[r.risk_level] || '#94a3b8'}15`,
+                              border: `1px solid ${RISK_COLORS[r.risk_level] || '#94a3b8'}30`,
+                            }}
+                          >
+                            {r.risk_level} risk
                           </span>
                         </div>
-                        <p className="text-[10px] text-slate-400">
-                          wants to <b className="text-slate-200">{r.action}</b> on <b className="text-slate-200">{r.domain || r.credential_label}</b>
+
+                        <p className="text-[10px] text-slate-600 leading-snug">
+                          Requests to <b className="text-slate-900 font-bold">{r.action}</b> for <b className="text-slate-900 font-bold">{r.domain || r.credential_label}</b>
                         </p>
+
+                        {r.requested_scopes && r.requested_scopes.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {r.requested_scopes.map((s) => (
+                              <span key={s} className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-900/8 text-[9px] font-mono font-semibold text-slate-600">
+                                {s}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
                         {r.reason && <p className="text-[9px] text-slate-500 italic truncate">"{r.reason}"</p>}
-                        <div className="flex gap-1.5 pt-0.5">
-                          <button disabled={aiBusyId === r.id} onClick={() => decideAiRequest(r.id, 'approve')} className="flex-1 py-1 bg-brand-emerald/15 text-brand-emerald rounded-md text-[10px] font-bold cursor-pointer disabled:opacity-50">Approve</button>
-                          <button disabled={aiBusyId === r.id} onClick={() => decideAiRequest(r.id, 'deny')} className="flex-1 py-1 bg-brand-ruby/15 text-brand-ruby rounded-md text-[10px] font-bold cursor-pointer disabled:opacity-50">Deny</button>
+
+                        <div className="flex gap-2 pt-0.5">
+                          <button
+                            disabled={aiBusyId === r.id}
+                            onClick={() => decideAiRequest(r.id, 'approve')}
+                            className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold transition shadow-xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
+                          >
+                            {aiBusyId === r.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                            <span>Approve</span>
+                          </button>
+                          <button
+                            disabled={aiBusyId === r.id}
+                            onClick={() => decideAiRequest(r.id, 'deny')}
+                            className="flex-1 py-1.5 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 border border-slate-900/10 text-slate-700 rounded-lg text-[10px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
+                          >
+                            <Ban className="w-3.5 h-3.5" />
+                            <span>Deny</span>
+                          </button>
                         </div>
                       </div>
                     ))
                   )}
                 </div>
 
-                <div className="space-y-1.5 pt-1">
-                  <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                    <Key className="w-3 h-3" /> Active sessions
+                {/* Active Sessions Section */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
+                      <Key className="w-3.5 h-3.5 text-slate-500" /> Active Sessions
+                    </div>
+                    {aiSessions.length > 1 && (
+                      <button
+                        onClick={() => aiSessions.forEach((s) => revokeAiSession(s.id))}
+                        className="text-[9px] font-bold text-rose-600 hover:underline cursor-pointer"
+                      >
+                        Revoke All
+                      </button>
+                    )}
                   </div>
+
                   {aiSessions.length === 0 ? (
-                    <p className="text-[10px] text-slate-600 py-2">No active AI sessions.</p>
+                    <div className="p-4 bg-white border border-slate-900/10 rounded-xl text-center space-y-1 shadow-xs">
+                      <div className="w-8 h-8 rounded-full bg-slate-100 border border-slate-900/8 flex items-center justify-center mx-auto text-slate-500">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      </div>
+                      <div className="text-xs font-bold text-slate-800">No Active AI Sessions</div>
+                      <p className="text-[10px] text-slate-400">No background AI sessions currently hold active access tokens.</p>
+                    </div>
                   ) : (
                     aiSessions.map((s) => (
-                      <div key={s.id} className="p-2.5 bg-brand-emerald/5 border border-brand-emerald/20 rounded-xl space-y-1">
+                      <div key={s.id} className="p-3 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-bold text-white truncate">{s.ai_tool_name}</span>
-                          <span className="text-[9px] text-brand-emerald font-mono flex-shrink-0">{fmtExpiresIn(s.expires_at)} left</span>
+                          <span className="text-xs font-extrabold text-slate-900 truncate">{s.ai_tool_name}</span>
+                          <span className="text-[9px] text-emerald-600 font-mono font-bold flex-shrink-0 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/80">
+                            {fmtExpiresIn(s.expires_at)} left
+                          </span>
                         </div>
-                        <p className="text-[9px] text-slate-500 truncate">{s.action} · {s.domain} · {s.granted_scopes.join(', ')}</p>
-                        <button disabled={aiBusyId === s.id} onClick={() => revokeAiSession(s.id)} className="w-full flex items-center justify-center gap-1 py-1 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-md text-[10px] font-bold cursor-pointer disabled:opacity-50">
-                          <Ban className="w-3 h-3" /> Revoke
+                        
+                        <p className="text-[10px] text-slate-600 truncate">{s.action} · {s.domain}</p>
+
+                        {s.granted_scopes && s.granted_scopes.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {s.granted_scopes.map((g) => (
+                              <span key={g} className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200/80 text-[9px] font-mono text-emerald-700 font-semibold">
+                                {g}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        <button
+                          disabled={aiBusyId === s.id}
+                          onClick={() => revokeAiSession(s.id)}
+                          className="w-full flex items-center justify-center gap-1 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 rounded-lg text-[10px] font-bold transition cursor-pointer disabled:opacity-50"
+                        >
+                          <Ban className="w-3.5 h-3.5" /> Revoke Session
                         </button>
                       </div>
                     ))
@@ -1638,7 +1727,76 @@ export const PopupApp: React.FC = () => {
               </div>
             )}
           </div>
-        )}
-      </div>
-    );
+
+          {/* Pinned Bottom Navigation Bar */}
+          <nav className="shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-900/10 px-1 py-1.5 grid grid-cols-5 gap-1 shadow-lg z-20">
+            <button
+              onClick={() => { setTab('vault'); setSelectedItem(null); }}
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${
+                tab === 'vault'
+                  ? 'bg-slate-900 text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
+              }`}
+            >
+              <LayoutGrid className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="text-[10px] leading-none tracking-tight">Vault</span>
+            </button>
+
+            <button
+              onClick={() => { setTab('generate'); setSelectedItem(null); }}
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${
+                tab === 'generate'
+                  ? 'bg-slate-900 text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
+              }`}
+            >
+              <Wand2 className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="text-[10px] leading-none tracking-tight">Generator</span>
+            </button>
+
+            <button
+              onClick={() => { setTab('health'); setSelectedItem(null); }}
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${
+                tab === 'health'
+                  ? 'bg-slate-900 text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
+              }`}
+            >
+              <Activity className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="text-[10px] leading-none tracking-tight">Health</span>
+            </button>
+
+            <button
+              onClick={() => { setTab('ai'); setSelectedItem(null); }}
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer relative ${
+                tab === 'ai'
+                  ? 'bg-slate-900 text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
+              }`}
+            >
+              <Bot className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="text-[10px] leading-none tracking-tight">AI</span>
+              {aiRequests.length > 0 && (
+                <span className="absolute top-1 right-2 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-brand-ruby text-white text-[9px] font-bold shadow-xs animate-pulse">
+                  {aiRequests.length}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => { setTab('settings'); setSelectedItem(null); }}
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${
+                tab === 'settings'
+                  ? 'bg-slate-900 text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
+              }`}
+            >
+              <Settings className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="text-[10px] leading-none tracking-tight">Settings</span>
+            </button>
+          </nav>
+        </div>
+      )}
+    </div>
+  );
 };
