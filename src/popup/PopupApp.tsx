@@ -977,7 +977,7 @@ export const PopupApp: React.FC = () => {
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
-                        {showDetailPassword ? selectedItem.value : 'â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢'}
+                        {showDetailPassword ? selectedItem.value : '•'.repeat(Math.min(selectedItem.value.length || 16, 24))}
                       </span>
                       <div className="flex items-center gap-1 shrink-0">
                         <button
