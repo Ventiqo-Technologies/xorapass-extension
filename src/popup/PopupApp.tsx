@@ -75,6 +75,24 @@ const CATEGORY_META: Record<string, { label: string; color: string }> = {
 const categoryLabel = (c: string) => CATEGORY_META[c]?.label || c;
 const categoryColor = (c: string) => CATEGORY_META[c]?.color || '#475569';
 
+const getItemSubtitle = (item: DecryptedItem) => {
+  if (item.category === 'card') {
+    if (item.cardNumber) {
+      // Show masked card number (e.g. •••• 9098)
+      const clean = item.cardNumber.replace(/\s+/g, '');
+      return clean.length > 4 ? `•••• ${clean.slice(-4)}` : item.cardNumber;
+    }
+    return 'Card';
+  }
+  if (item.category === 'sshkey') {
+    return item.username ? `SSH Key (${item.username})` : 'SSH Key';
+  }
+  if (item.category === 'note') {
+    return 'Secure Note';
+  }
+  return item.username || '—';
+};
+
 const VAULT_CATEGORIES = [
   { key: 'login', label: 'Logins' },
   { key: 'card', label: 'Cards' },
@@ -145,6 +163,15 @@ interface DecryptedItem {
   category: string;
   organization?: string;
   url?: string;
+  // Card fields
+  cardholderName?: string;
+  cardNumber?: string;
+  expiryDate?: string;
+  cvv?: string;
+  // SSH key fields
+  privateKey?: string;
+  publicKey?: string;
+  passphrase?: string;
 }
 
 const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; size?: string }> = ({
@@ -202,7 +229,7 @@ export const PopupApp: React.FC = () => {
   const [generated, setGenerated] = useState(() => generatePassword(DEFAULT_OPTIONS));
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<'all' | CategoryKey>('all');
-  const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' | 'url' } | null>(null);
+  const [copiedField, setCopiedField] = useState<{ id: string; field: string } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
@@ -411,7 +438,14 @@ export const PopupApp: React.FC = () => {
           notes: parsed.notes || "",
           category: parsed.category || "login",
           organization: parsed.organization || "",
-          url: parsed.url || ""
+          url: parsed.url || "",
+          cardholderName: parsed.cardholderName || "",
+          cardNumber: parsed.cardNumber || "",
+          expiryDate: parsed.expiryDate || "",
+          cvv: parsed.cvv || "",
+          privateKey: parsed.privateKey || "",
+          publicKey: parsed.publicKey || "",
+          passphrase: parsed.passphrase || ""
         };
       } catch (e) {
         console.error("Failed to decrypt entry:", entry.id, e);
@@ -491,7 +525,7 @@ export const PopupApp: React.FC = () => {
       setSyncError(null);
     } catch (err: any) {
       if (isAuthError(err)) {
-        setSyncError('Session expired â€” lock and unlock to sync.');
+        setSyncError('Session expired — lock and unlock to sync.');
       } else if (manual) {
         setSyncError("Couldn't reach the server.");
       }
@@ -608,11 +642,11 @@ export const PopupApp: React.FC = () => {
     setEmail('');
   };
 
-  const copyToClipboard = (text: string, id: string, field: 'username' | 'password' | 'url') => {
+  const copyToClipboard = (text: string, id: string, field: string) => {
     navigator.clipboard.writeText(text);
     setCopiedField({ id, field });
     setTimeout(() => setCopiedField(null), 2000);
-    if (field === 'password') {
+    if (field === 'password' || field === 'privateKey' || field === 'cvv') {
       void browser.runtime.sendMessage({ type: 'CLIPBOARD_COPIED' }).catch(() => undefined);
     }
   };
@@ -945,62 +979,239 @@ export const PopupApp: React.FC = () => {
                       )}
                     </div>
                   </div>
-
-                  {/* Username Field */}
-                  {selectedItem.username && (
-                    <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                      <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Username / Identity</div>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
-                        <button
-                          onClick={() => copyToClipboard(selectedItem.username, selectedItem.id, 'username')}
-                          className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
-                          title="Copy Username"
-                        >
-                          {copiedField?.id === selectedItem.id && copiedField?.field === 'username' ? (
-                            <Check className="w-3.5 h-3.5 text-brand-emerald" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                        </button>
+                        {/* 1. CARD CATEGORY DETAIL LAYOUT */}
+                  {selectedItem.category === 'card' && (
+                    <div className="space-y-2">
+                      {selectedItem.cardholderName && (
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Cardholder Name</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.cardholderName}</span>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.cardholderName || '', selectedItem.id, 'cardholderName')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy Cardholder Name"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'cardholderName' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {selectedItem.cardNumber && (
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Card Number</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
+                              {showDetailPassword ? selectedItem.cardNumber : `•••• •••• •••• ${selectedItem.cardNumber.replace(/\s+/g, '').slice(-4)}`}
+                            </span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => setShowDetailPassword(!showDetailPassword)}
+                                className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                                title={showDetailPassword ? 'Hide number' : 'Show number'}
+                              >
+                                {showDetailPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
+                              <button
+                                onClick={() => copyToClipboard(selectedItem.cardNumber || '', selectedItem.id, 'cardNumber')}
+                                className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                                title="Copy Card Number"
+                              >
+                                {copiedField?.id === selectedItem.id && copiedField?.field === 'cardNumber' ? (
+                                  <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Expiry Date</div>
+                          <span className="text-xs font-mono font-semibold text-slate-800 block">{selectedItem.expiryDate || '—'}</span>
+                        </div>
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">CVV</div>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-xs font-mono font-semibold text-slate-800">
+                              {showDetailPassword ? selectedItem.cvv : '•••'}
+                            </span>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.cvv || '', selectedItem.id, 'cvv')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy CVV"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'cvv' ? (
+                                <Check className="w-3 h-3 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3 h-3" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Password Field */}
-                  <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                    <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400 flex items-center justify-between">
-                      <span>Password</span>
-                      <span className="text-[9px] text-slate-500 font-mono">
-                        {entropyBits({ length: selectedItem.value.length, uppercase: true, lowercase: true, digits: true, symbols: true, avoidAmbiguous: false })} bits
-                      </span>
+                  {/* 2. SSH KEY CATEGORY DETAIL LAYOUT */}
+                  {selectedItem.category === 'sshkey' && (
+                    <div className="space-y-2">
+                      {selectedItem.username && (
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Username</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.username, selectedItem.id, 'username')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy Username"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'username' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {selectedItem.privateKey && (
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Private Key</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-mono text-slate-600 truncate flex-1 leading-snug">
+                              {showDetailPassword ? selectedItem.privateKey : '••••••••••••••••••••••••'}
+                            </span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => setShowDetailPassword(!showDetailPassword)}
+                                className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                                title={showDetailPassword ? 'Hide key' : 'Show key'}
+                              >
+                                {showDetailPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
+                              <button
+                                onClick={() => copyToClipboard(selectedItem.privateKey || '', selectedItem.id, 'privateKey')}
+                                className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                                title="Copy Private Key"
+                              >
+                                {copiedField?.id === selectedItem.id && copiedField?.field === 'privateKey' ? (
+                                  <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {selectedItem.publicKey && (
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Public Key</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-mono text-slate-600 truncate select-all">{selectedItem.publicKey}</span>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.publicKey || '', selectedItem.id, 'publicKey')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy Public Key"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'publicKey' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {selectedItem.passphrase && (
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Passphrase</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
+                              {showDetailPassword ? selectedItem.passphrase : '••••••••'}
+                            </span>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.passphrase || '', selectedItem.id, 'passphrase')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy Passphrase"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'passphrase' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
-                        {showDetailPassword ? selectedItem.value : '•'.repeat(Math.min(selectedItem.value.length || 16, 24))}
-                      </span>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          onClick={() => setShowDetailPassword(!showDetailPassword)}
-                          className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
-                          title={showDetailPassword ? 'Hide password' : 'Show password'}
-                        >
-                          {showDetailPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                        </button>
-                        <button
-                          onClick={() => copyToClipboard(selectedItem.value, selectedItem.id, 'password')}
-                          className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
-                          title="Copy Password"
-                        >
-                          {copiedField?.id === selectedItem.id && copiedField?.field === 'password' ? (
-                            <Check className="w-3.5 h-3.5 text-brand-emerald" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                        </button>
+                  )}
+
+                  {/* 3. DEFAULT LOGIN/OTHER/NOTE CATEGORY DETAIL LAYOUT */}
+                  {selectedItem.category !== 'card' && selectedItem.category !== 'sshkey' && (
+                    <>
+                      {selectedItem.username && (
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Username / Identity</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.username, selectedItem.id, 'username')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy Username"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'username' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                        <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400 flex items-center justify-between">
+                          <span>Password</span>
+                          <span className="text-[9px] text-slate-500 font-mono">
+                            {entropyBits({ length: selectedItem.value.length, uppercase: true, lowercase: true, digits: true, symbols: true, avoidAmbiguous: false })} bits
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
+                            {showDetailPassword ? selectedItem.value : '•'.repeat(Math.min(selectedItem.value.length || 16, 24))}
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => setShowDetailPassword(!showDetailPassword)}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title={showDetailPassword ? 'Hide password' : 'Show password'}
+                            >
+                              {showDetailPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            </button>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.value, selectedItem.id, 'password')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy Password"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'password' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
+                    </>
+                  )}
 
                   {/* Website Link Field */}
                   {selectedItem.url && (
@@ -1106,7 +1317,7 @@ export const PopupApp: React.FC = () => {
                             <ItemAvatar label={item.label} url={item.url} category={item.category} size="w-7 h-7 text-xs" />
                             <div className="min-w-0 flex-1">
                               <div className="text-xs font-bold text-slate-900 truncate leading-tight">{item.label}</div>
-                              <div className="text-[10px] text-slate-500 font-mono truncate">{item.username || "â€”"}</div>
+                              <div className="text-[10px] text-slate-500 font-mono truncate">{getItemSubtitle(item)}</div>
                             </div>
                             <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                               {item.username && (
@@ -1147,7 +1358,7 @@ export const PopupApp: React.FC = () => {
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
                     <input
                       type="text"
-                      placeholder={`Search ${vaultItems.length} itemsâ€¦`}
+                      placeholder={`Search ${vaultItems.length} items...`}
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                       className="w-full pl-9 pr-8 py-2 bg-white border border-slate-900/10 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition shadow-xs"
@@ -1221,7 +1432,7 @@ export const PopupApp: React.FC = () => {
 
                           <div className="min-w-0 flex-1">
                             <div className="text-xs font-bold text-slate-800 truncate leading-tight group-hover:text-brand-cyan transition">{item.label}</div>
-                            <div className="text-[9px] text-slate-500 font-mono truncate mt-0.5">{item.username || "â€”"}</div>
+                            <div className="text-[9px] text-slate-500 font-mono truncate mt-0.5">{getItemSubtitle(item)}</div>
                           </div>
                           
                           <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
