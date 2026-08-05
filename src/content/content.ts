@@ -280,10 +280,20 @@ function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null
   const passIdx = inputs.indexOf(passInput);
   if (passIdx === -1) return null;
 
+  let fallbackField: HTMLInputElement | null = null;
+
   // Scan backwards from the password field for the nearest username-like input.
   for (let i = passIdx - 1; i >= 0; i--) {
     const el = inputs[i];
     if (!isFillable(el)) continue;
+
+    const type = (el.type || 'text').toLowerCase();
+    if (type !== 'password' && type !== 'hidden' && type !== 'submit' && type !== 'button' && type !== 'checkbox' && type !== 'radio') {
+      if (!fallbackField) {
+        fallbackField = el;
+      }
+    }
+
     const matches = looksLikeUsername({
       type: el.type,
       autocomplete: el.getAttribute('autocomplete'),
@@ -294,7 +304,7 @@ function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null
     });
     if (matches) return el;
   }
-  return null;
+  return fallbackField;
 }
 
 // ---------------------------------------------------------------------------
