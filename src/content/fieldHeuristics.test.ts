@@ -34,8 +34,8 @@ describe('looksLikeUsername', () => {
     expect(looksLikeUsername({ type: 'text', name: 'account', placeholder: 'Promo code' })).toBe(false);
   });
 
-  it('treats autocomplete=off and new-password as disqualifying', () => {
-    expect(looksLikeUsername({ type: 'text', autocomplete: 'off', name: 'username' })).toBe(false);
+  it('treats autocomplete=off as allowed, but new-password as disqualifying', () => {
+    expect(looksLikeUsername({ type: 'text', autocomplete: 'off', name: 'username' })).toBe(true);
     expect(looksLikeUsername({ type: 'text', autocomplete: 'new-password', name: 'email' })).toBe(false);
   });
 
