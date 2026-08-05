@@ -30,7 +30,7 @@ export function looksLikeUsername(attrs: FieldAttrs): boolean {
   const ac = (attrs.autocomplete || '').toLowerCase();
   // An explicit autocomplete token is authoritative in both directions.
   if (ac.includes('username') || ac.includes('email')) return true;
-  if (ac === 'off' || ac === 'new-password') return false;
+  if (ac.includes('new-password')) return false;
 
   const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel]
     .filter(Boolean)
