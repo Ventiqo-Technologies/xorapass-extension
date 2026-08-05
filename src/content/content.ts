@@ -263,7 +263,7 @@ function scanForLoginFields(): void {
     // a <form> or that split username/password across containers.
     attachIcon(passInput, () => activate(passInput, passInput));
     focusActivators.set(passInput, passInput);
-    if (usernameInput && !hasIcon(usernameInput) && activeCredentials.length > 0) {
+    if (usernameInput && !hasIcon(usernameInput)) {
       fieldPairs.set(usernameInput, usernameInput);
       attachIcon(usernameInput, () => activate(passInput, usernameInput));
       focusActivators.set(usernameInput, passInput);
