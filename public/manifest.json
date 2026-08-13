@@ -17,7 +17,6 @@
   },
   "host_permissions": [
     "https://app.xorapass.com/*",
-    "https://password.clipmanz.shop/*",
     "http://localhost:8000/*"
   ],
   "action": {
