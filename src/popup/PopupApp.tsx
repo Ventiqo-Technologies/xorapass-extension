@@ -856,6 +856,21 @@ export const PopupApp: React.FC = () => {
                 </>
               )}
             </button>
+
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                // Open Web Vault SSO login bridge passing the Extension ID as parameter
+                const extId = browser.runtime.id;
+                browser.tabs.create({ url: `${WEB_APP_URL}/auth?ext_id=${extId}` });
+                window.close();
+              }}
+              className="w-full py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 border border-slate-900/10 hover:bg-slate-100/50 transition cursor-pointer font-semibold text-slate-700 bg-white"
+            >
+              <Key className="w-4 h-4 text-brand-cyan" />
+              <span>Sign in with Passkey</span>
+            </button>
           </div>
 
           <div className="space-y-2.5 pt-2 text-center border-t border-slate-900/8">
@@ -907,7 +922,28 @@ export const PopupApp: React.FC = () => {
               maxLength={6}
               placeholder="000000"
               value={mfaCode}
-              onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
+              onChange={(e) => {
+                const val = e.target.value.replace(/\D/g, '');
+                setMfaCode(val);
+                if (val.length === 6 && mfaToken && tempEncKey) {
+                  // Trigger validation automatically
+                  setLoading(true);
+                  setError(null);
+                  axios.post(`${API_BASE_URL}/api/auth/mfa/verify`, {
+                    email,
+                    mfa_token: mfaToken,
+                    code: val
+                  })
+                  .then((verifyRes) => {
+                    return processVault(verifyRes.data.access_token, tempEncKey, tempSalt);
+                  })
+                  .catch((err: any) => {
+                    console.error(err);
+                    setError(err.response?.data?.detail || "Invalid MFA code.");
+                    setLoading(false);
+                  });
+                }
+              }}
               className="w-full px-3 py-2.5 text-center bg-white border border-slate-900/12 rounded-xl text-xl text-slate-900 placeholder-slate-300 focus:outline-none focus:border-brand-emerald font-mono tracking-[0.5em] shadow-xs"
             />
 

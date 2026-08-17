@@ -45,6 +45,7 @@ export const KNOWN_MESSAGE_TYPES = [
   'AI_PASTE_POLICY',
   'AI_PASTE_EVENT',
   'AI_SAVE_SECRET',
+  'WEB_BRIDGE_LOGIN',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -109,10 +110,11 @@ export function validateMessage(
   message: unknown,
   sender: Runtime.MessageSender
 ): GuardResult {
-  // 1. Origin: only messages from our own extension are ever accepted.
-  if (sender.id !== browser.runtime.id) {
-    return { ok: false, reason: 'foreign-sender' };
-  }
+  // 1. Origin check:
+  // For standard extension pages & content scripts, sender.id === runtime.id.
+  // For externally_connectable web pages, sender.id is undefined or different but sender.origin is set.
+  const ownId = browser.runtime.id;
+  const isExternal = !sender.id || sender.id !== ownId;
 
   // 2. Basic shape.
   if (!isPlainObject(message) || typeof message.type !== 'string') {
@@ -124,6 +126,11 @@ export function validateMessage(
     return { ok: false, reason: 'unknown-type' };
   }
 
+  // Reject external calls requesting internal/privileged extension-only actions.
+  if (isExternal && type !== 'WEB_BRIDGE_LOGIN') {
+    return { ok: false, reason: 'unauthorized-external-type' };
+  }
+
   // 3. Secret-bearing operations must come from our own extension page.
   if (EXTENSION_PAGE_ONLY.has(type) && !isFromOwnExtensionPage(sender)) {
     return { ok: false, reason: 'privileged-from-content' };
@@ -133,6 +140,11 @@ export function validateMessage(
   const payload = isPlainObject(message.payload) ? message.payload : undefined;
 
   switch (type) {
+    case 'WEB_BRIDGE_LOGIN':
+      if (!payload || typeof payload.token !== 'string' || typeof payload.encKey !== 'string' || typeof payload.email !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
     case 'UNLOCK_VAULT':
       if (!payload || !Array.isArray(payload.decryptedItems) || typeof payload.email !== 'string') {
         return { ok: false, reason: 'bad-payload' };
