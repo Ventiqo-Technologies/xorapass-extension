@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   looksLikeUsername,
   looksLikeNewPassword,
+  looksLikeAwsAccountId,
   computeIconPosition,
   computeTrailingOffset,
   computeDropdownPosition,
@@ -43,6 +44,27 @@ describe('looksLikeUsername', () => {
     expect(looksLikeUsername({ type: 'text', name: 'street_address' })).toBe(false);
     expect(looksLikeUsername({ type: 'checkbox', name: 'email' })).toBe(false);
     expect(looksLikeUsername({})).toBe(false);
+  });
+});
+
+describe('looksLikeAwsAccountId', () => {
+  it('accepts field with id resolving_input', () => {
+    expect(looksLikeAwsAccountId({ id: 'resolving_input' })).toBe(true);
+  });
+
+  it('accepts field with name account or accountid', () => {
+    expect(looksLikeAwsAccountId({ name: 'account' })).toBe(true);
+    expect(looksLikeAwsAccountId({ name: 'accountId' })).toBe(true);
+  });
+
+  it('accepts placeholder containing account id or account alias', () => {
+    expect(looksLikeAwsAccountId({ placeholder: '12-digit Account ID or account alias' })).toBe(true);
+  });
+
+  it('rejects general non-AWS inputs', () => {
+    expect(looksLikeAwsAccountId({ name: 'username' })).toBe(false);
+    expect(looksLikeAwsAccountId({ placeholder: 'Search...' })).toBe(false);
+    expect(looksLikeAwsAccountId({})).toBe(false);
   });
 });
 

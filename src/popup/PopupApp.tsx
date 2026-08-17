@@ -71,6 +71,7 @@ const CATEGORY_META: Record<string, { label: string; color: string }> = {
   note: { label: 'Notes', color: '#0d9488' },
   sshkey: { label: 'SSH Keys', color: '#b45309' },
   identity: { label: 'Identities', color: '#e11d48' },
+  aws: { label: 'AWS', color: '#e28743' },
 };
 const categoryLabel = (c: string) => CATEGORY_META[c]?.label || c;
 const categoryColor = (c: string) => CATEGORY_META[c]?.color || '#475569';
@@ -90,6 +91,9 @@ const getItemSubtitle = (item: DecryptedItem) => {
   if (item.category === 'note') {
     return 'Secure Note';
   }
+  if (item.category === 'aws') {
+    return item.accountId ? `AWS (${item.accountId})` : 'AWS Console';
+  }
   return item.username || '—';
 };
 
@@ -98,6 +102,7 @@ const VAULT_CATEGORIES = [
   { key: 'card', label: 'Cards' },
   { key: 'note', label: 'Notes' },
   { key: 'sshkey', label: 'SSH' },
+  { key: 'aws', label: 'AWS' },
   { key: 'other', label: 'Other' },
 ] as const;
 
@@ -172,6 +177,8 @@ interface DecryptedItem {
   privateKey?: string;
   publicKey?: string;
   passphrase?: string;
+  // AWS fields
+  accountId?: string;
 }
 
 const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; size?: string }> = ({
@@ -445,7 +452,8 @@ export const PopupApp: React.FC = () => {
           cvv: parsed.cvv || "",
           privateKey: parsed.privateKey || "",
           publicKey: parsed.publicKey || "",
-          passphrase: parsed.passphrase || ""
+          passphrase: parsed.passphrase || "",
+          accountId: parsed.accountId || ""
         };
       } catch (e) {
         console.error("Failed to decrypt entry:", entry.id, e);
@@ -1192,8 +1200,82 @@ export const PopupApp: React.FC = () => {
                     </div>
                   )}
 
-                  {/* 3. DEFAULT LOGIN/OTHER/NOTE CATEGORY DETAIL LAYOUT */}
-                  {selectedItem.category !== 'card' && selectedItem.category !== 'sshkey' && (
+                  {/* 3. AWS CATEGORY DETAIL LAYOUT */}
+                  {selectedItem.category === 'aws' && (
+                    <div className="space-y-2">
+                      {selectedItem.accountId && (
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Account ID / Alias</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.accountId}</span>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.accountId || '', selectedItem.id, 'accountId')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy Account ID"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'accountId' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {selectedItem.username && (
+                        <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">IAM Username</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.username, selectedItem.id, 'username')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy IAM Username"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'username' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
+                        <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400 flex items-center justify-between">
+                          <span>Password</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
+                            {showDetailPassword ? selectedItem.value : '•'.repeat(Math.min(selectedItem.value.length || 16, 24))}
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => setShowDetailPassword(!showDetailPassword)}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title={showDetailPassword ? 'Hide password' : 'Show password'}
+                            >
+                              {showDetailPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            </button>
+                            <button
+                              onClick={() => copyToClipboard(selectedItem.value, selectedItem.id, 'password')}
+                              className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
+                              title="Copy Password"
+                            >
+                              {copiedField?.id === selectedItem.id && copiedField?.field === 'password' ? (
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 4. DEFAULT LOGIN/OTHER/NOTE CATEGORY DETAIL LAYOUT */}
+                  {selectedItem.category !== 'card' && selectedItem.category !== 'sshkey' && selectedItem.category !== 'aws' && (
                     <>
                       {selectedItem.username && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">

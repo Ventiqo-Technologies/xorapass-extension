@@ -15,7 +15,7 @@
 // and a warning is shown. All detection is on-device -- the pasted text is
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
-import { looksLikeUsername, looksLikeNewPassword } from './fieldHeuristics';
+import { looksLikeUsername, looksLikeNewPassword, looksLikeAwsAccountId } from './fieldHeuristics';
 import { generatePassword } from '../utils/passwordGenerator';
 import { scanForSecrets, redact, type ScanResult } from '../utils/secretScan';
 import { coercePolicy, DEFAULT_POLICY, isAiSite, shouldGuard, type PastePolicy } from '../utils/pasteGuard';
@@ -248,7 +248,7 @@ function scanForLoginFields(): void {
       hasSibling
     );
 
-    // Sign-up fields are worth decorating even with an empty vault â€” that is
+    // Sign-up fields are worth decorating even with an empty vault — that is
     // exactly when there is nothing to fill but a password to generate.
     if (!isNew && activeCredentials.length === 0) continue;
     if (hasIcon(passInput)) continue;
@@ -267,6 +267,59 @@ function scanForLoginFields(): void {
       fieldPairs.set(usernameInput, usernameInput);
       attachIcon(usernameInput, () => activate(passInput, usernameInput));
       focusActivators.set(usernameInput, passInput);
+    }
+  }
+
+  // ── AWS Console Account ID Specific Handling ────────────────────────────────
+  // Decorate the initial Step 1 Account ID input (#resolving_input) when active
+  if (window.location.hostname.endsWith('aws.amazon.com') && activeCredentials.length > 0) {
+    const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const accountInput = awsInputs.find(el => isFillable(el) && looksLikeAwsAccountId({
+      type: el.type,
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label')
+    }));
+
+    if (accountInput && !hasIcon(accountInput)) {
+      attachIcon(accountInput, () => {
+        openDropdown(accountInput, {
+          credentials: activeCredentials,
+          warning: null,
+          onPick: async (id) => {
+            const cred = activeCredentials.find((c) => c.id === id);
+            if (!cred) return;
+            const confirmed = await confirmFillIfNeeded(cred);
+            if (!confirmed) return;
+
+            // Fetch the secret which includes the account ID / alias (stored in accountId)
+            const res = (await browser.runtime
+              .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id } })
+              .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
+
+            if (!res || res.error) {
+              console.warn('[XoraPass] Fill refused:', res?.error || 'no_response');
+              return;
+            }
+
+            // Fill Account ID or fallback to IAM username
+            const fillValue = res.accountId || res.username || '';
+            autofillField(accountInput, fillValue);
+
+            // Automatically trigger the Next submission on Step 1
+            const form = accountInput.form;
+            const submitter = form?.querySelector('button[type="submit"], input[type="submit"]') ||
+              (form ? null : document.querySelector('button[type="submit"], input[type="submit"]'));
+            if (form && typeof form.requestSubmit === 'function') {
+              form.requestSubmit(submitter as HTMLElement | undefined);
+            } else if (submitter instanceof HTMLElement) {
+              submitter.click();
+            }
+          }
+        });
+      });
+      focusActivators.set(accountInput, accountInput);
     }
   }
 }

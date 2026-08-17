@@ -43,6 +43,22 @@ export function looksLikeUsername(attrs: FieldAttrs): boolean {
   return USERNAME_HINT.test(hints);
 }
 
+/**
+ * Heuristic for detecting the AWS Account ID or alias input field.
+ * In the AWS Management Console login page, this is typically '#resolving_input'.
+ */
+export function looksLikeAwsAccountId(attrs: FieldAttrs): boolean {
+  const id = (attrs.id || '').toLowerCase();
+  const name = (attrs.name || '').toLowerCase();
+  const placeholder = (attrs.placeholder || '').toLowerCase();
+  
+  if (id === 'resolving_input') return true;
+  if (name === 'account' || name === 'accountid') return true;
+  if (placeholder.includes('account id') || placeholder.includes('account alias')) return true;
+
+  return false;
+}
+
 const NEW_PASSWORD_HINT = /new|signup|sign-up|register|create|confirm|repeat|retype|verify/i;
 
 /**

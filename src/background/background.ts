@@ -173,6 +173,7 @@ interface VaultItem {
   category?: string;
   notes?: string;
   organization?: string;
+  accountId?: string;
 }
 
 // A credential submitted on a page, awaiting the user's decision. Keyed by tab
@@ -773,7 +774,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
 
       void scheduleAutoLock(); // filling counts as activity
-      return { username: item.username, value: item.value };
+      return { username: item.username, value: item.value, accountId: item.accountId };
     });
   }
 
@@ -1134,7 +1135,8 @@ if (api?.runtime?.onMessageExternal) {
               cvv: parsed.cvv || "",
               privateKey: parsed.privateKey || "",
               publicKey: parsed.publicKey || "",
-              passphrase: parsed.passphrase || ""
+              passphrase: parsed.passphrase || "",
+              accountId: parsed.accountId || ""
             };
           } catch {
             return { id: entry.id, label: "Couldn't decrypt", username: "", value: "", category: "login", url: "" };
