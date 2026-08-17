@@ -307,14 +307,17 @@ function scanForLoginFields(): void {
             const fillValue = res.accountId || res.username || '';
             autofillField(accountInput, fillValue);
 
-            // Automatically trigger the Next submission on Step 1
-            const form = accountInput.form;
-            const submitter = form?.querySelector('button[type="submit"], input[type="submit"]') ||
-              (form ? null : document.querySelector('button[type="submit"], input[type="submit"]'));
-            if (form && typeof form.requestSubmit === 'function') {
-              form.requestSubmit(submitter as HTMLElement | undefined);
-            } else if (submitter instanceof HTMLElement) {
-              submitter.click();
+            // Automatically trigger the Next submission on Step 1 only if password field is not visible
+            const passwordVisible = (Array.from(document.querySelectorAll('input[type="password"]')) as HTMLInputElement[]).some(isFillable);
+            if (!passwordVisible) {
+              const form = accountInput.form;
+              const submitter = form?.querySelector('button[type="submit"], input[type="submit"]') ||
+                (form ? null : document.querySelector('button[type="submit"], input[type="submit"]'));
+              if (form && typeof form.requestSubmit === 'function') {
+                form.requestSubmit(submitter as HTMLElement | undefined);
+              } else if (submitter instanceof HTMLElement) {
+                submitter.click();
+              }
             }
           }
         });
@@ -432,13 +435,32 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
 
   // ── AWS Step 2 Multi-field Handling ────────────────────────────────────────
   if (cred.category === 'aws' || window.location.hostname.endsWith('aws.amazon.com')) {
-    // AWS fields have extremely stable IDs/names. Select them directly if possible.
-    const accountInput = (document.getElementById('resolving_input') || 
-                          document.getElementById('account') || 
-                          document.querySelector('input[name="account"]')) as HTMLInputElement | null;
-                          
-    const usernameInput = (document.getElementById('username') || 
-                           document.querySelector('input[name="username"]')) as HTMLInputElement | null;
+    const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    
+    // 1. Find Account ID / Alias field
+    const accountInput = awsInputs.find(el => looksLikeAwsAccountId({
+      type: el.type,
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label')
+    }));
+
+    // 2. Find IAM Username field (any editable text field that isn't the Account ID field and isn't a password field)
+    const usernameInput = awsInputs.find(el => el !== accountInput && el.type !== 'password' && el.type !== 'hidden' && (
+      el.id === 'username' || 
+      el.name === 'username' ||
+      el.id?.toLowerCase().includes('username') ||
+      el.name?.toLowerCase().includes('username') ||
+      looksLikeUsername({
+        type: el.type,
+        autocomplete: el.getAttribute('autocomplete'),
+        name: el.name,
+        id: el.id,
+        placeholder: el.getAttribute('placeholder'),
+        ariaLabel: el.getAttribute('aria-label')
+      })
+    ));
 
     if (accountInput && res.accountId) {
       autofillField(accountInput, res.accountId);
