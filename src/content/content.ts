@@ -457,8 +457,16 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
       })
     ));
 
-    if (accountInput && res.accountId) autofillField(accountInput, res.accountId);
-    if (usernameInput && res.username) autofillField(usernameInput, res.username);
+    if (accountInput && res.accountId) {
+      autofillField(accountInput, res.accountId);
+    }
+    
+    // Always fall back to username or email for the Username field
+    const iamUser = res.username || '';
+    if (usernameInput && iamUser) {
+      autofillField(usernameInput, iamUser);
+    }
+    
     autofillField(passInput, res.value);
     return;
   }
