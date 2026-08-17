@@ -204,7 +204,7 @@ export const PopupApp: React.FC = () => {
   // Matches the background's default so the control doesn't flash a value the
   // user never chose while GET_SETTINGS is in flight.
   const [autoLockMinutes, setAutoLockMinutes] = useState(0);
-  const [lockOnScreenLock, setLockOnScreenLock] = useState(true);
+  const [lockOnScreenLock, setLockOnScreenLock] = useState(false);
   const [clipboardClearSeconds, setClipboardClearSeconds] = useState(
     DEFAULT_CLIPBOARD_CLEAR_SECONDS
   );
@@ -1829,7 +1829,8 @@ export const PopupApp: React.FC = () => {
                     <div className="min-w-0 pr-2">
                       <div className="text-xs font-bold text-slate-800">Lock on Screen Lock</div>
                       <div className="text-[10px] text-slate-500">
-                        Also lock when your computer locks or sleeps
+                        Also lock when your computer locks, sleeps, or its
+                        screensaver starts
                       </div>
                     </div>
                     <button

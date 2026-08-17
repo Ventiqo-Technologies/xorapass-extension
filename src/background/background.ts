@@ -90,11 +90,25 @@ async function getAutoLockMinutes(): Promise<number> {
 // INDEPENDENT of the idle timer — both can be on, and the strictest wins.
 const SCREEN_LOCK_KEY = 'lockOnScreenLock';
 
-/** Default on: it is the compensating control for the no-idle-timer default. */
+/**
+ * Default OFF, opt-in.
+ *
+ * It shipped default-on as a compensating control, which was the wrong call for
+ * two reasons. Practically: Chrome reports state "locked" for a screensaver as
+ * well as a real lock, so on a machine that dims after 15 minutes this silently
+ * reinstated the 15-minute lock the no-idle-timer default exists to remove.
+ *
+ * And on the merits it buys less than it first appears: while the screen is
+ * locked nobody can reach the browser at all, because the OS password already
+ * gates it. Locking the vault too only helps against someone who knows that
+ * password, or against unlocking the machine and walking away again — real, but
+ * niche enough that it belongs to the user's judgement rather than ours. That is
+ * why the mainstream managers offer it as a choice instead of a default.
+ */
 async function getLockOnScreenLock(): Promise<boolean> {
   const res = await browser.storage.local.get([SCREEN_LOCK_KEY]);
   const v = (res as Record<string, unknown>)[SCREEN_LOCK_KEY];
-  return typeof v === 'boolean' ? v : true;
+  return typeof v === 'boolean' ? v : false;
 }
 
 async function lockVaultNow(reason: string): Promise<void> {
