@@ -307,6 +307,23 @@ function scanForLoginFields(): void {
             const fillValue = res.accountId || res.username || '';
             autofillField(accountInput, fillValue);
 
+            // Also fill Username and Password if they are visible on the same page
+            const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+            const usernameInput = awsInputs.find(el => el !== accountInput && el.type !== 'password' && el.type !== 'hidden' && (
+              el.id === 'username' || 
+              el.name === 'username' ||
+              el.id?.toLowerCase().includes('username') ||
+              el.name?.toLowerCase().includes('username')
+            ));
+            const passwordInput = awsInputs.find(el => el.type === 'password' && isFillable(el));
+
+            if (usernameInput && res.username) {
+              autofillField(usernameInput, res.username);
+            }
+            if (passwordInput && res.value) {
+              autofillField(passwordInput, res.value);
+            }
+
             // Automatically trigger the Next submission on Step 1 only if password field is not visible
             const passwordVisible = (Array.from(document.querySelectorAll('input[type="password"]')) as HTMLInputElement[]).some(isFillable);
             if (!passwordVisible) {
