@@ -112,9 +112,15 @@ export function validateMessage(
 ): GuardResult {
   // 1. Origin check:
   // For standard extension pages & content scripts, sender.id === runtime.id.
-  // For externally_connectable web pages, sender.id is undefined or different but sender.origin is set.
+  // For other installed extensions, sender.id !== runtime.id and is defined.
+  // For externally_connectable web pages, sender.id is undefined but sender.origin/url is set.
   const ownId = browser.runtime.id;
-  const isExternal = !sender.id || sender.id !== ownId;
+  const isFromOtherExtension = sender.id && sender.id !== ownId;
+  const isExternalWebPage = !sender.id;
+
+  if (isFromOtherExtension) {
+    return { ok: false, reason: 'foreign-sender' };
+  }
 
   // 2. Basic shape.
   if (!isPlainObject(message) || typeof message.type !== 'string') {
@@ -126,8 +132,8 @@ export function validateMessage(
     return { ok: false, reason: 'unknown-type' };
   }
 
-  // Reject external calls requesting internal/privileged extension-only actions.
-  if (isExternal && type !== 'WEB_BRIDGE_LOGIN') {
+  // Reject external web calls requesting internal/privileged extension-only actions.
+  if (isExternalWebPage && type !== 'WEB_BRIDGE_LOGIN') {
     return { ok: false, reason: 'unauthorized-external-type' };
   }
 
