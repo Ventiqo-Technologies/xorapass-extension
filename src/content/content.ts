@@ -432,36 +432,18 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
 
   // ── AWS Step 2 Multi-field Handling ────────────────────────────────────────
   if (cred.category === 'aws' || window.location.hostname.endsWith('aws.amazon.com')) {
-    const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
-    
-    // 1. Find Account ID / Alias field
-    const accountInput = awsInputs.find(el => isFillable(el) && looksLikeAwsAccountId({
-      type: el.type,
-      name: el.name,
-      id: el.id,
-      placeholder: el.getAttribute('placeholder'),
-      ariaLabel: el.getAttribute('aria-label')
-    }));
-
-    // 2. Find IAM Username field
-    const usernameInput = awsInputs.find(el => isFillable(el) && el !== accountInput && el.type !== 'password' && (
-      el.id === 'username' || 
-      el.name === 'username' || 
-      looksLikeUsername({
-        type: el.type,
-        autocomplete: el.getAttribute('autocomplete'),
-        name: el.name,
-        id: el.id,
-        placeholder: el.getAttribute('placeholder'),
-        ariaLabel: el.getAttribute('aria-label')
-      })
-    ));
+    // AWS fields have extremely stable IDs/names. Select them directly if possible.
+    const accountInput = (document.getElementById('resolving_input') || 
+                          document.getElementById('account') || 
+                          document.querySelector('input[name="account"]')) as HTMLInputElement | null;
+                          
+    const usernameInput = (document.getElementById('username') || 
+                           document.querySelector('input[name="username"]')) as HTMLInputElement | null;
 
     if (accountInput && res.accountId) {
       autofillField(accountInput, res.accountId);
     }
     
-    // Always fall back to username or email for the Username field
     const iamUser = res.username || '';
     if (usernameInput && iamUser) {
       autofillField(usernameInput, iamUser);
