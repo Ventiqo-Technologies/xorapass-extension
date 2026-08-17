@@ -1142,12 +1142,15 @@ if (api?.runtime?.onMessageExternal) {
         });
 
         // 4. Save session context
+        // NOTE: encKey must be stored as hex (matching bytesToHex from the popup login path)
+        // so that refreshVault can correctly recover it with hexToBytes.
+        const encKeyHex = Array.from(derivedEncBytes).map(b => b.toString(16).padStart(2, '0')).join('');
         await browser.storage.session.set({
           unlocked: true,
           email,
           token,
           jwt: token,
-          encKey: encKey, // cache base64 encoded version
+          encKey: encKeyHex, // stored as hex to match popup storeSession convention
           vaultItems: decryptedItems,
           offline: false,
         });
