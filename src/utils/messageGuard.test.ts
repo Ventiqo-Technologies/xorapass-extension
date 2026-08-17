@@ -125,6 +125,34 @@ describe('validateMessage — payload validation', () => {
       validateMessage({ type: 'SET_AUTO_LOCK', payload: { minutes: 5 } }, contentSender()).reason
     ).toBe('privileged-from-content');
   });
+  it('accepts a valid SET_LOCK_ON_SCREEN_LOCK from the popup', () => {
+    const res = validateMessage(
+      { type: 'SET_LOCK_ON_SCREEN_LOCK', payload: { enabled: false } },
+      popupSender()
+    );
+    expect(res.ok).toBe(true);
+  });
+  it('rejects SET_LOCK_ON_SCREEN_LOCK with a non-boolean payload', () => {
+    // Truthy-but-not-boolean must not sneak through: `enabled: 0` or
+    // `enabled: 'no'` coerced by the handler would flip the control the wrong
+    // way round.
+    for (const enabled of ['no', 0, 1, null, undefined]) {
+      expect(
+        validateMessage({ type: 'SET_LOCK_ON_SCREEN_LOCK', payload: { enabled } }, popupSender())
+          .reason
+      ).toBe('bad-payload');
+    }
+  });
+  it('rejects SET_LOCK_ON_SCREEN_LOCK from a content script (privileged)', () => {
+    // This is the load-bearing case: a page that could send this would be able
+    // to disable the control protecting an unattended machine.
+    expect(
+      validateMessage(
+        { type: 'SET_LOCK_ON_SCREEN_LOCK', payload: { enabled: false } },
+        contentSender()
+      ).reason
+    ).toBe('privileged-from-content');
+  });
   it('accepts a valid SET_CLIPBOARD_CLEAR from the popup', () => {
     const res = validateMessage(
       { type: 'SET_CLIPBOARD_CLEAR', payload: { seconds: 30 } },

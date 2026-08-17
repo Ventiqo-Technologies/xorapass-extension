@@ -1,6 +1,7 @@
 // XoraPass Background Service Worker (Manifest V3)
 import browser from 'webextension-polyfill';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
+import { isFillableCategory } from '../utils/fillPolicy';
 import { validateMessage } from '../utils/messageGuard';
 import {
   encryptPayload,
@@ -20,15 +21,37 @@ import {
 import { coercePolicy, DEFAULT_POLICY, PastePolicy } from '../utils/pasteGuard';
 import { base64ToBytes } from '../utils/crypto';
 
-// Logged on every service-worker (cold) start. If the session were cleared by a
-// mere page refresh you would NOT see this line on refresh — it only prints when
-// the worker itself restarts, which is what actually resets storage.session.
+// Logged on every service-worker (cold) start.
+//
+// Note for anyone debugging "the vault locked itself": a worker restart does
+// NOT clear storage.session. That API exists precisely because MV3 workers are
+// killed after ~30s idle, and it holds its contents for the whole BROWSER
+// session — surviving any number of worker restarts. Chrome only drops it when
+// the browser itself shuts down.
+//
+// So a mid-session lock is never the worker respawning. It is one of exactly
+// two things, and both are ours: the auto-lock alarm, or an explicit
+// LOCK_VAULT. Those are the only callers of storage.session.clear().
 console.debug('[XoraPass] service worker started at', new Date().toISOString());
 
 const DISABLED_SITES_KEY = 'disabledSites';
 const AUTO_LOCK_KEY = 'autoLockMinutes';
 const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
-const DEFAULT_AUTO_LOCK_MINUTES = 15;
+
+/**
+ * 0 = no idle timer: the vault stays unlocked until the BROWSER restarts.
+ *
+ * This is not "never lock". Everything sensitive — the vault key, the decrypted
+ * items, the access token — lives in storage.session, which the browser clears
+ * when its session ends. So zero means "locked on restart", which is the same
+ * default the mainstream password-manager extensions ship.
+ *
+ * It replaces a 15-minute idle lock that was the single biggest source of
+ * re-authentication: it fired before the 30-minute access token had even
+ * expired, so the extension was locking users out more often than the API was.
+ * The shorter intervals remain available for anyone who wants them.
+ */
+const DEFAULT_AUTO_LOCK_MINUTES = 0;
 let lastCopiedSecret = '';
 let lastCopiedId = '';
 let lastCopiedField = '';
@@ -45,12 +68,58 @@ const CLIPBOARD_PENDING_KEY = 'clipboardPending';
 const OFFSCREEN_TARGET = 'xorapass-offscreen';
 const OFFSCREEN_URL = 'offscreen.html';
 
-/** Idle-timeout (minutes) after which the vault auto-locks. 0 = never. */
+/** Idle-timeout (minutes) after which the vault auto-locks. 0 = no idle timer,
+ *  i.e. locked on browser restart — not "never". */
 async function getAutoLockMinutes(): Promise<number> {
   const res = await browser.storage.local.get([AUTO_LOCK_KEY]);
   const v = (res as Record<string, unknown>)[AUTO_LOCK_KEY];
   return typeof v === 'number' && v >= 0 ? v : DEFAULT_AUTO_LOCK_MINUTES;
 }
+
+// ── Lock on screen lock / sleep ──────────────────────────────────────────────
+//
+// This is what makes "locked on browser restart" a safe default rather than
+// merely a convenient one. Without it, dropping the idle timer means an
+// unlocked vault sits in memory for the whole browser session, and anyone who
+// reaches the running machine can read every credential — which is precisely
+// what the old 15-minute timer was defending against.
+//
+// Keying on the OS instead of a clock is a better defence anyway: it locks when
+// the user actually leaves (screen lock, suspend) rather than punishing someone
+// who is sitting right there reading a long document. It is deliberately
+// INDEPENDENT of the idle timer — both can be on, and the strictest wins.
+const SCREEN_LOCK_KEY = 'lockOnScreenLock';
+
+/** Default on: it is the compensating control for the no-idle-timer default. */
+async function getLockOnScreenLock(): Promise<boolean> {
+  const res = await browser.storage.local.get([SCREEN_LOCK_KEY]);
+  const v = (res as Record<string, unknown>)[SCREEN_LOCK_KEY];
+  return typeof v === 'boolean' ? v : true;
+}
+
+async function lockVaultNow(reason: string): Promise<void> {
+  const session = await browser.storage.session.get(['unlocked']);
+  if (!session.unlocked) return; // already locked — nothing to clear or log
+  console.debug('[XoraPass] locking vault:', reason);
+  await browser.alarms.clear(AUTO_LOCK_ALARM);
+  await clearAiHeartbeat();
+  dismissedByTab.clear();
+  // Same ordering as the auto-lock alarm: drain the clipboard before the
+  // pending marker is wiped along with the rest of the session.
+  await clearClipboard().catch(() => undefined);
+  await browser.storage.session.clear();
+}
+
+// "locked" fires when the OS screen locks or the machine suspends. "idle" is
+// deliberately NOT treated as a lock: it means no input for the detection
+// interval, which happens while reading, and locking then would recreate the
+// interruption this whole change set out to remove.
+browser.idle.onStateChanged.addListener((state) => {
+  if (state !== 'locked') return;
+  void getLockOnScreenLock().then((enabled) => {
+    if (enabled) return lockVaultNow('screen locked');
+  });
+});
 
 // (Re)arm the idle auto-lock. Called on unlock and on any popup interaction, so
 // the countdown restarts each time the user actively uses the extension.
@@ -673,9 +742,22 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'GET_SETTINGS') {
-    return Promise.all([getAutoLockMinutes(), getClipboardClearSeconds()]).then(
-      ([autoLockMinutes, clipboardClearSeconds]) => ({ autoLockMinutes, clipboardClearSeconds })
-    );
+    return Promise.all([
+      getAutoLockMinutes(),
+      getClipboardClearSeconds(),
+      getLockOnScreenLock(),
+    ]).then(([autoLockMinutes, clipboardClearSeconds, lockOnScreenLock]) => ({
+      autoLockMinutes,
+      clipboardClearSeconds,
+      lockOnScreenLock,
+    }));
+  }
+
+  if (type === 'SET_LOCK_ON_SCREEN_LOCK') {
+    const enabled = !!msg.payload.enabled;
+    return browser.storage.local
+      .set({ [SCREEN_LOCK_KEY]: enabled })
+      .then(() => ({ success: true, lockOnScreenLock: enabled }));
   }
 
   if (type === 'SET_CLIPBOARD_CLEAR') {
@@ -740,7 +822,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const items = res.vaultItems as VaultItem[];
 
       // Safe, exact/subdomain/registrable-domain matching (no substring hacks).
-      const matching = items.filter((item) => !!item.url && isDomainMatch(hostname, item.url!));
+      // The category check is part of the match, not a nicety: a card entry's
+      // username/value are the CARD NUMBER and CVV, and a note's value is the
+      // literal sentinel "SECURE_NOTE" — see utils/fillPolicy.
+      const matching = items.filter(
+        (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)
+      );
 
       // Warn if the current page looks like a deceptive variant of a site the
       // user actually has credentials for, but did not itself match.
@@ -788,6 +875,16 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
       const item = (res.vaultItems as VaultItem[]).find((i) => i.id === id);
       if (!item || !item.url) return { error: 'not_found' };
+
+      // Re-authorize the category as well as the domain. The listing above
+      // already excludes non-login items, so reaching here means the id was
+      // chosen by something other than our own dropdown — exactly the case this
+      // endpoint re-checks everything for. Releasing a card's CVV to a page
+      // because it asked for that id by name is not a mistake worth allowing.
+      if (!isFillableCategory(item.category)) {
+        console.warn('[XoraPass] Refused non-login item for autofill:', item.category);
+        return { error: 'not_fillable' };
+      }
 
       // Re-authorize: the item must still match the tab's real hostname.
       if (!isDomainMatch(hostname, item.url)) {

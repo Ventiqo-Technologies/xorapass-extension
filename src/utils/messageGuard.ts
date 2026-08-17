@@ -27,6 +27,7 @@ export const KNOWN_MESSAGE_TYPES = [
   'SET_SITE_DISABLED',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  'SET_LOCK_ON_SCREEN_LOCK',
   'SET_CLIPBOARD_CLEAR',
   'CLIPBOARD_COPIED',
   // AI Access: the extension is a consumer of XoraPass's AI-access API, using
@@ -74,6 +75,10 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'GET_STATUS',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  // Turning the screen-lock guard OFF weakens the vault, so it belongs to the
+  // popup alone. A content script that could send this would be able to
+  // silently disable the control that protects an unattended machine.
+  'SET_LOCK_ON_SCREEN_LOCK',
   // Account-wide AI actions (every pending request / every session) --
   // reserved for the popup, same tier as the vault-lifecycle messages above.
   // The page-scoped ones (AI_CHECK_TAB, AI_FILL_CONFIRM, AI_FILL_HANDLED,
@@ -256,6 +261,11 @@ export function validateMessage(
       break;
     case 'SET_CLIPBOARD_CLEAR':
       if (!payload || typeof payload.seconds !== 'number' || !Number.isFinite(payload.seconds)) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'SET_LOCK_ON_SCREEN_LOCK':
+      if (!payload || typeof payload.enabled !== 'boolean') {
         return { ok: false, reason: 'bad-payload' };
       }
       break;
