@@ -940,6 +940,8 @@ export const PopupApp: React.FC = () => {
                   .catch((err: any) => {
                     console.error(err);
                     setError(err.response?.data?.detail || "Invalid MFA code.");
+                  })
+                  .finally(() => {
                     setLoading(false);
                   });
                 }
