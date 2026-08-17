@@ -423,10 +423,43 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
   // Fetch the secret only now, for this one entry.
   const res = (await browser.runtime
     .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id } })
-    .catch(() => null)) as { username?: string; value?: string; error?: string } | null;
+    .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
 
   if (!res || res.error || typeof res.value !== 'string') {
     console.warn('[XoraPass] Fill refused:', res?.error || 'no_response');
+    return;
+  }
+
+  // ── AWS Step 2 Multi-field Handling ────────────────────────────────────────
+  if (cred.category === 'aws' || window.location.hostname.endsWith('aws.amazon.com')) {
+    const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    
+    // 1. Find Account ID / Alias field
+    const accountInput = awsInputs.find(el => isFillable(el) && looksLikeAwsAccountId({
+      type: el.type,
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label')
+    }));
+
+    // 2. Find IAM Username field
+    const usernameInput = awsInputs.find(el => isFillable(el) && el !== accountInput && el.type !== 'password' && (
+      el.id === 'username' || 
+      el.name === 'username' || 
+      looksLikeUsername({
+        type: el.type,
+        autocomplete: el.getAttribute('autocomplete'),
+        name: el.name,
+        id: el.id,
+        placeholder: el.getAttribute('placeholder'),
+        ariaLabel: el.getAttribute('aria-label')
+      })
+    ));
+
+    if (accountInput && res.accountId) autofillField(accountInput, res.accountId);
+    if (usernameInput && res.username) autofillField(usernameInput, res.username);
+    autofillField(passInput, res.value);
     return;
   }
 
