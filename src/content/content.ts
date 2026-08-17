@@ -15,7 +15,7 @@
 // and a warning is shown. All detection is on-device -- the pasted text is
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
-import { looksLikeUsername, looksLikeNewPassword } from './fieldHeuristics';
+import { looksLikeUsername, looksLikeNewPassword, looksLikeAwsAccountId } from './fieldHeuristics';
 import { generatePassword } from '../utils/passwordGenerator';
 import { scanForSecrets, redact, type ScanResult } from '../utils/secretScan';
 import { coercePolicy, DEFAULT_POLICY, isAiSite, shouldGuard, type PastePolicy } from '../utils/pasteGuard';
@@ -248,7 +248,7 @@ function scanForLoginFields(): void {
       hasSibling
     );
 
-    // Sign-up fields are worth decorating even with an empty vault â€” that is
+    // Sign-up fields are worth decorating even with an empty vault — that is
     // exactly when there is nothing to fill but a password to generate.
     if (!isNew && activeCredentials.length === 0) continue;
     if (hasIcon(passInput)) continue;
@@ -267,6 +267,79 @@ function scanForLoginFields(): void {
       fieldPairs.set(usernameInput, usernameInput);
       attachIcon(usernameInput, () => activate(passInput, usernameInput));
       focusActivators.set(usernameInput, passInput);
+    }
+  }
+
+  // ── AWS Console Account ID Specific Handling ────────────────────────────────
+  // Decorate the initial Step 1 Account ID input (#resolving_input) when active
+  if (window.location.hostname.endsWith('aws.amazon.com') && activeCredentials.length > 0) {
+    const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const accountInput = awsInputs.find(el => isFillable(el) && looksLikeAwsAccountId({
+      type: el.type,
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label')
+    }));
+
+    if (accountInput && !hasIcon(accountInput)) {
+      attachIcon(accountInput, () => {
+        openDropdown(accountInput, {
+          credentials: activeCredentials,
+          warning: null,
+          onPick: async (id) => {
+            const cred = activeCredentials.find((c) => c.id === id);
+            if (!cred) return;
+            const confirmed = await confirmFillIfNeeded(cred);
+            if (!confirmed) return;
+
+            // Fetch the secret which includes the account ID / alias (stored in accountId)
+            const res = (await browser.runtime
+              .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id } })
+              .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
+
+            if (!res || res.error) {
+              console.warn('[XoraPass] Fill refused:', res?.error || 'no_response');
+              return;
+            }
+
+            // Fill Account ID or fallback to IAM username
+            const fillValue = res.accountId || res.username || '';
+            autofillField(accountInput, fillValue);
+
+            // Also fill Username and Password if they are visible on the same page
+            const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+            const usernameInput = awsInputs.find(el => el !== accountInput && el.type !== 'password' && el.type !== 'hidden' && (
+              el.id === 'username' || 
+              el.name === 'username' ||
+              el.id?.toLowerCase().includes('username') ||
+              el.name?.toLowerCase().includes('username')
+            ));
+            const passwordInput = awsInputs.find(el => el.type === 'password' && isFillable(el));
+
+            if (usernameInput && res.username) {
+              autofillField(usernameInput, res.username);
+            }
+            if (passwordInput && res.value) {
+              autofillField(passwordInput, res.value);
+            }
+
+            // Automatically trigger the Next submission on Step 1 only if password field is not visible
+            const passwordVisible = (Array.from(document.querySelectorAll('input[type="password"]')) as HTMLInputElement[]).some(isFillable);
+            if (!passwordVisible) {
+              const form = accountInput.form;
+              const submitter = form?.querySelector('button[type="submit"], input[type="submit"]') ||
+                (form ? null : document.querySelector('button[type="submit"], input[type="submit"]'));
+              if (form && typeof form.requestSubmit === 'function') {
+                form.requestSubmit(submitter as HTMLElement | undefined);
+              } else if (submitter instanceof HTMLElement) {
+                submitter.click();
+              }
+            }
+          }
+        });
+      });
+      focusActivators.set(accountInput, accountInput);
     }
   }
 }
@@ -370,10 +443,52 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
   // Fetch the secret only now, for this one entry.
   const res = (await browser.runtime
     .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id } })
-    .catch(() => null)) as { username?: string; value?: string; error?: string } | null;
+    .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
 
   if (!res || res.error || typeof res.value !== 'string') {
     console.warn('[XoraPass] Fill refused:', res?.error || 'no_response');
+    return;
+  }
+
+  // ── AWS Step 2 Multi-field Handling ────────────────────────────────────────
+  if (cred.category === 'aws' || window.location.hostname.endsWith('aws.amazon.com')) {
+    const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    
+    // 1. Find Account ID / Alias field
+    const accountInput = awsInputs.find(el => looksLikeAwsAccountId({
+      type: el.type,
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label')
+    }));
+
+    // 2. Find IAM Username field (any editable text field that isn't the Account ID field and isn't a password field)
+    const usernameInput = awsInputs.find(el => el !== accountInput && el.type !== 'password' && el.type !== 'hidden' && (
+      el.id === 'username' || 
+      el.name === 'username' ||
+      el.id?.toLowerCase().includes('username') ||
+      el.name?.toLowerCase().includes('username') ||
+      looksLikeUsername({
+        type: el.type,
+        autocomplete: el.getAttribute('autocomplete'),
+        name: el.name,
+        id: el.id,
+        placeholder: el.getAttribute('placeholder'),
+        ariaLabel: el.getAttribute('aria-label')
+      })
+    ));
+
+    if (accountInput && res.accountId) {
+      autofillField(accountInput, res.accountId);
+    }
+    
+    const iamUser = res.username || '';
+    if (usernameInput && iamUser) {
+      autofillField(usernameInput, iamUser);
+    }
+    
+    autofillField(passInput, res.value);
     return;
   }
 

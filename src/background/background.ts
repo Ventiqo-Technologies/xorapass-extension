@@ -173,6 +173,7 @@ interface VaultItem {
   category?: string;
   notes?: string;
   organization?: string;
+  accountId?: string;
 }
 
 // A credential submitted on a page, awaiting the user's decision. Keyed by tab
@@ -773,7 +774,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
 
       void scheduleAutoLock(); // filling counts as activity
-      return { username: item.username, value: item.value };
+      return { username: item.username, value: item.value, accountId: item.accountId };
     });
   }
 
@@ -807,9 +808,23 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // Already stored with this exact password: nothing worth asking about.
       if (existing && existing.value === password) return { prompt: false };
 
-      const pending: PendingSave = existing
+      const isAws = hostname.endsWith('aws.amazon.com');
+      let accountId = '';
+      if (isAws) {
+        const remembered = await getLastUsernames().then((m) => m[String(tabId)] || '');
+        // If we remembered a Step 1 value and it differs from the IAM username, it is the Account ID/Alias
+        if (remembered && remembered !== username) {
+          accountId = remembered;
+        }
+      }
+
+      const pending: PendingSave & { accountId?: string } = existing
         ? { hostname, username, password, mode: 'update', entryId: existing.id }
         : { hostname, username, password, mode: 'new' };
+
+      if (isAws) {
+        pending.accountId = accountId;
+      }
 
       await setPendingSave(tabId, pending);
       return { prompt: true, mode: pending.mode };
@@ -1003,14 +1018,19 @@ async function savePendingCredential(
   const items = (session.vaultItems as VaultItem[]) || [];
   const existing = pending.entryId ? items.find((i) => i.id === pending.entryId) : undefined;
 
+  const isAws = pending.hostname.endsWith('aws.amazon.com');
+  const defaultCategory = isAws ? 'aws' : 'login';
+  const accountIdVal = isAws ? (pending as any).accountId || '' : '';
+
   const entry = {
     label: existing?.label || registrableDomain(pending.hostname) || pending.hostname,
     username: pending.username,
     value: pending.password,
     notes: existing?.notes || '',
-    category: existing?.category || 'login',
+    category: existing?.category || defaultCategory,
     organization: existing?.organization || '',
     url: existing?.url || `https://${pending.hostname}`,
+    accountId: existing?.accountId || accountIdVal
   };
 
   // encryptPayload bundles the nonce, but the API stores it in its own column.
@@ -1134,7 +1154,8 @@ if (api?.runtime?.onMessageExternal) {
               cvv: parsed.cvv || "",
               privateKey: parsed.privateKey || "",
               publicKey: parsed.publicKey || "",
-              passphrase: parsed.passphrase || ""
+              passphrase: parsed.passphrase || "",
+              accountId: parsed.accountId || ""
             };
           } catch {
             return { id: entry.id, label: "Couldn't decrypt", username: "", value: "", category: "login", url: "" };
