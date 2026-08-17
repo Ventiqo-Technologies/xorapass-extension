@@ -59,6 +59,7 @@
     }
   ],
   "externally_connectable": {
+    "ids": ["*"],
     "matches": [
       "https://app.xorapass.com/*",
       "http://localhost:3000/*"
