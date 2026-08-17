@@ -484,6 +484,62 @@ async function getActiveAiSessions(): Promise<AiSession[]> {
   return sessions;
 }
 
+// ── Brokered fills (the AI-initiated half of the flow) ──────────────────────
+//
+// When an AI calls use_credential, core-api creates a PENDING FILL and blocks
+// waiting for a client to claim, apply, and report it. That record carries a
+// reference (vault_entry_id) and a domain binding — never a secret; the server
+// has never held one. This is the piece that closes the loop, so the AI learns
+// "applied" or "not applied" instead of always being told nothing listened.
+//
+// Claiming is deliberately tied to the user pressing Fill rather than done
+// eagerly on discovery. A claim starts the server's short result grace, so
+// claiming before a human has decided would convert "waiting for the user" into
+// "client crashed" and report a failure for a fill that was about to succeed.
+
+interface PendingFill {
+  id: string;
+  session_id: string;
+  vault_entry_id?: string;
+  domain: string;
+  scope: string;
+}
+
+/**
+ * Claims the pending fill belonging to `sessionId`, if one is waiting.
+ *
+ * Returns null whenever there is nothing to claim, or the claim is lost to
+ * another client — both are normal. A null result means "fill locally but do
+ * not report", which preserves the pre-existing session-driven behaviour for
+ * users whose AI never called use_credential at all.
+ */
+async function claimFillForSession(sessionId: string): Promise<PendingFill | null> {
+  const list = await apiJwt('GET', '/ai/pending-fills');
+  if (!list.ok) return null;
+  const fills = (list.data?.pending_fills as PendingFill[] | undefined) ?? [];
+  const waiting = fills.find((f) => f.session_id === sessionId);
+  if (!waiting) return null;
+
+  // 409 here means another client got it first. Returning null is correct: that
+  // client owns reporting the outcome, and two reports would race.
+  const claim = await apiJwt('POST', `/ai/pending-fills/${waiting.id}/claim`);
+  if (!claim.ok) return null;
+  return (claim.data?.fill as PendingFill | undefined) ?? waiting;
+}
+
+/**
+ * Reports what actually happened. Never silently swallowed into "filled": the
+ * server treats a claimed-but-unreported fill as failed, which is the correct
+ * default, so a lost report degrades to "not applied" rather than a false
+ * success in the audit trail.
+ */
+async function reportFillOutcome(fillId: string, outcome: 'filled' | 'failed', reason = ''): Promise<void> {
+  const res = await apiJwt('POST', `/ai/pending-fills/${fillId}/result`, { outcome, reason });
+  if (!res.ok) {
+    console.warn('[XoraPass] could not report fill outcome:', outcome, reason, res.status);
+  }
+}
+
 /**
  * Finds an active AI session, scoped to `autofill`, whose domain matches the
  * given hostname and hasn't already been dismissed in this tab. Returns null
@@ -863,7 +919,15 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // a session only ever unlocks the one credential it was actually
     // approved for.
     const { sessionId } = msg.payload as { sessionId: string };
-    return apiJwt('GET', '/ai/sessions').then(({ ok, data }) => {
+
+    // The hostname comes from the SENDER TAB, never the payload — the same rule
+    // GET_CREDENTIAL_SECRET follows. The offer was pushed to a matching tab, but
+    // that is not evidence the tab still matches: it may have navigated since,
+    // and a compromised content script must not be able to name a domain.
+    const senderHost = extractHostname(sender.tab?.url || sender.url || '');
+    if (!senderHost) return Promise.resolve({ error: 'Unknown page origin.' });
+
+    return apiJwt('GET', '/ai/sessions').then(async ({ ok, data }) => {
       if (!ok || !Array.isArray(data)) {
         return { error: 'Could not verify this AI session -- try again.' };
       }
@@ -871,13 +935,45 @@ browser.runtime.onMessage.addListener((message, sender) => {
       if (!session || session.status !== 'active' || !session.granted_scopes.includes('autofill') || !session.vault_entry_id) {
         return { error: 'This AI session is no longer active.' };
       }
-      return browser.storage.session.get(['vaultItems']).then((res) => {
-        const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
-        const item = items?.find((i) => i.id === session.vault_entry_id);
-        if (!item) return { error: 'Credential not found in this session -- try unlocking again.' };
-        return { username: item.username, value: item.value };
-      });
+      // Re-authorize the domain at the moment of use, against live state.
+      if (!session.domain || !isDomainMatch(senderHost, session.domain)) {
+        console.warn('[XoraPass] AI fill refused: page does not match approved domain', senderHost);
+        return { error: 'This page does not match the approved domain.' };
+      }
+
+      const res = await browser.storage.session.get(['vaultItems']);
+      const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
+      const item = items?.find((i) => i.id === session.vault_entry_id);
+      if (!item) return { error: 'Credential not found in this session -- try unlocking again.' };
+
+      // Claim last, once everything else has passed. A claim starts the server's
+      // result grace, so it must not be taken on a path that can still refuse.
+      const fill = await claimFillForSession(sessionId);
+      if (fill) {
+        // The fill carries its own binding, and the server explicitly delegates
+        // this check to us: it never sees the page. A mismatch here is reported
+        // rather than filled, which releases the reserved use.
+        if (fill.domain && !isDomainMatch(senderHost, fill.domain)) {
+          console.warn('[XoraPass] AI fill refused: page does not match fill domain', senderHost);
+          void reportFillOutcome(fill.id, 'failed', 'domain_mismatch');
+          return { error: 'This page does not match the approved domain.' };
+        }
+      }
+
+      return { username: item.username, value: item.value, fillId: fill?.id };
     });
+  }
+
+  if (type === 'AI_FILL_RESULT') {
+    // Reported by the content script once it has actually typed (or failed to).
+    // Only the tab that received the fillId can resolve it, and the server
+    // accepts exactly one result per claim.
+    const { fillId, outcome, reason } = msg.payload as {
+      fillId: string;
+      outcome: 'filled' | 'failed';
+      reason?: string;
+    };
+    return reportFillOutcome(fillId, outcome, reason || '').then(() => ({ success: true }));
   }
 
   if (type === 'AI_FILL_HANDLED') {

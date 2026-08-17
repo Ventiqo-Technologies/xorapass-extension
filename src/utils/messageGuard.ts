@@ -35,6 +35,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // JIT session). See BrokerAction / AIAccessSession in core-api/modules/ai.
   'AI_CHECK_TAB',
   'AI_FILL_CONFIRM',
+  'AI_FILL_RESULT',
   'AI_FILL_HANDLED',
   'AI_LIST_REQUESTS',
   'AI_DECIDE_REQUEST',
@@ -220,6 +221,20 @@ export function validateMessage(
       break;
     case 'AI_FILL_CONFIRM':
       if (!payload || typeof payload.sessionId !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'AI_FILL_RESULT':
+      // The outcome is an enum, not free text: anything other than these two
+      // values must be rejected here rather than reaching the API, where an
+      // unrecognised outcome is coerced to "failed" and would quietly mask a
+      // malformed caller.
+      if (
+        !payload ||
+        typeof payload.fillId !== 'string' ||
+        (payload.outcome !== 'filled' && payload.outcome !== 'failed') ||
+        (payload.reason !== undefined && typeof payload.reason !== 'string')
+      ) {
         return { ok: false, reason: 'bad-payload' };
       }
       break;

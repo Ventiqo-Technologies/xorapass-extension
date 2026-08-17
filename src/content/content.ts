@@ -502,14 +502,12 @@ async function handleAiFill(offer: AiFillOffer, alsoSubmit: boolean) {
 
   const passwordInputs = Array.from(document.querySelectorAll('input[type="password"]')) as HTMLInputElement[];
   const passEl = passwordInputs.find(isFillable);
-  if (!passEl) {
-    removeAiBanner();
-    return;
-  }
-  const usernameEl = findUsernameField(passEl);
+  const usernameEl = passEl ? findUsernameField(passEl) : null;
 
   // The credential to fill is derived server-side from the session record --
-  // this only needs to name which session is being used.
+  // this only needs to name which session is being used. The response may also
+  // carry a fillId: that means an AI is blocked on use_credential waiting to
+  // hear whether this actually got applied.
   const response: any = await browser.runtime
     .sendMessage({ type: 'AI_FILL_CONFIRM', payload: { sessionId: offer.sessionId } })
     .catch(() => null);
@@ -519,8 +517,29 @@ async function handleAiFill(offer: AiFillOffer, alsoSubmit: boolean) {
     return;
   }
 
+  // Reports the outcome exactly once, and only ever for what really happened.
+  // The server treats an unreported claim as failed, so staying silent is the
+  // safe direction — never report "filled" on a path that did not type.
+  const reportFill = (outcome: 'filled' | 'failed', reason = '') => {
+    if (!response.fillId) return;
+    browser.runtime
+      .sendMessage({ type: 'AI_FILL_RESULT', payload: { fillId: response.fillId, outcome, reason } })
+      .catch(() => {});
+  };
+
+  // Checked after the confirm call rather than before it, so that a page with
+  // nowhere to type still resolves the AI's pending fill instead of leaving it
+  // to time out as "no client" — which would misreport a reachable client as an
+  // absent one.
+  if (!passEl) {
+    reportFill('failed', 'no_password_field');
+    removeAiBanner();
+    return;
+  }
+
   if (usernameEl && response.username) autofillField(usernameEl, response.username);
   autofillField(passEl, response.value);
+  reportFill('filled');
 
   if (alsoSubmit) {
     const form = passEl.form;

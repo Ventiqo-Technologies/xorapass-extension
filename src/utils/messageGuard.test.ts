@@ -137,6 +137,45 @@ describe('validateMessage — payload validation', () => {
   it('accepts a payload-free CLIPBOARD_COPIED from the popup', () => {
     expect(validateMessage({ type: 'CLIPBOARD_COPIED' }, popupSender()).ok).toBe(true);
   });
+
+  // AI_FILL_RESULT is what tells the server a brokered credential really was
+  // applied, so a malformed one must never reach the API — an unrecognised
+  // outcome is coerced to "failed" there, which would mask a broken caller.
+  it('accepts a well-formed AI_FILL_RESULT from a content script', () => {
+    // Content-reachable on purpose: the content script is the thing that typed,
+    // so it is the only context that knows the outcome.
+    expect(
+      validateMessage(
+        { type: 'AI_FILL_RESULT', payload: { fillId: 'f1', outcome: 'filled' } },
+        contentSender()
+      ).ok
+    ).toBe(true);
+    expect(
+      validateMessage(
+        { type: 'AI_FILL_RESULT', payload: { fillId: 'f1', outcome: 'failed', reason: 'domain_mismatch' } },
+        contentSender()
+      ).ok
+    ).toBe(true);
+  });
+  it('rejects AI_FILL_RESULT with an outcome outside the enum', () => {
+    for (const outcome of ['ok', 'FILLED', 'success', true, 1, undefined]) {
+      expect(
+        validateMessage({ type: 'AI_FILL_RESULT', payload: { fillId: 'f1', outcome } }, contentSender())
+          .reason
+      ).toBe('bad-payload');
+    }
+  });
+  it('rejects AI_FILL_RESULT without a fillId, or with a non-string reason', () => {
+    expect(
+      validateMessage({ type: 'AI_FILL_RESULT', payload: { outcome: 'filled' } }, contentSender()).reason
+    ).toBe('bad-payload');
+    expect(
+      validateMessage(
+        { type: 'AI_FILL_RESULT', payload: { fillId: 'f1', outcome: 'failed', reason: { a: 1 } } },
+        contentSender()
+      ).reason
+    ).toBe('bad-payload');
+  });
   it('rejects clipboard messages from a content script (privileged)', () => {
     // A page could otherwise re-arm the timer repeatedly and postpone the
     // clear indefinitely.
