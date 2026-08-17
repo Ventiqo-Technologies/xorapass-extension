@@ -2,7 +2,7 @@
 import browser from 'webextension-polyfill';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
 import { validateMessage } from '../utils/messageGuard';
-import { encryptPayload, hexToBytes } from '../utils/crypto';
+import { encryptPayload, decryptPayload, hexToBytes } from '../utils/crypto';
 import { API_BASE_URL } from '../utils/config';
 import {
   CLIPBOARD_PLACEHOLDER,
@@ -1075,3 +1075,96 @@ if (browser.storage && browser.storage.session && (browser.storage.session as an
     console.warn("Unable to restrict storage session access level:", err);
   });
 }
+
+// ── Secure Web Bridge: External Messages Listener ────────────────────────────
+// Listens for external calls from trusted externally_connectable origins (e.g. app.xorapass.com)
+// to securely receive login payloads containing JWTs and derived master encryption keys.
+const api = (globalThis as any).chrome;
+if (api?.runtime?.onMessageExternal) {
+  api.runtime.onMessageExternal.addListener((message: any, sender: any, sendResponse: (r: any) => void) => {
+    // Validate message payload structure
+    const guard = validateMessage(message, sender);
+    if (!guard.ok) {
+      console.warn('[XoraPass Bridge] Rejected external message:', guard.reason);
+      sendResponse({ error: 'invalid_message', reason: guard.reason });
+      return;
+    }
+
+    if (guard.type === 'WEB_BRIDGE_LOGIN') {
+      const { token, encKey, email } = message.payload;
+      console.debug('[XoraPass Bridge] Received login bridge for:', email);
+
+      // Perform secure unlocking
+      // 1. Convert encKey base64 string to bytes
+      let derivedEncBytes;
+      try {
+        derivedEncBytes = base64ToBytes(encKey);
+      } catch (e) {
+        sendResponse({ error: 'invalid_enc_key_base64' });
+        return;
+      }
+
+      // 2. Fetch vault items from server using the bridge token
+      fetch(`${API_BASE_URL}/api/vault`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      .then(res => {
+        if (!res.ok) throw new Error(`Vault API error ${res.status}`);
+        return res.json();
+      })
+      .then(async (vaultData) => {
+        // 3. Store the decrypted session context
+        const decryptedItems = vaultData.map((entry: any) => {
+          try {
+            const rawCiphertext = entry.encrypted_payload;
+            const opened = decryptPayload({ ...rawCiphertext, nonce: entry.nonce }, derivedEncBytes);
+            const parsed = JSON.parse(opened);
+            return {
+              id: entry.id,
+              label: parsed.label || "Unnamed Entry",
+              username: parsed.username || "",
+              value: parsed.value || "",
+              notes: parsed.notes || "",
+              category: parsed.category || "login",
+              organization: parsed.organization || "",
+              url: parsed.url || "",
+              cardholderName: parsed.cardholderName || "",
+              cardNumber: parsed.cardNumber || "",
+              expiryDate: parsed.expiryDate || "",
+              cvv: parsed.cvv || "",
+              privateKey: parsed.privateKey || "",
+              publicKey: parsed.publicKey || "",
+              passphrase: parsed.passphrase || ""
+            };
+          } catch {
+            return { id: entry.id, label: "Couldn't decrypt", username: "", value: "", category: "login", url: "" };
+          }
+        });
+
+        // 4. Save session context
+        await browser.storage.session.set({
+          unlocked: true,
+          email,
+          token,
+          jwt: token,
+          encKey: encKey, // cache base64 encoded version
+          vaultItems: decryptedItems,
+          offline: false,
+        });
+
+        void scheduleAutoLock();
+        void scheduleAiHeartbeat();
+
+        console.debug('[XoraPass Bridge] Bridge unlock complete');
+        sendResponse({ success: true });
+      })
+      .catch(err => {
+        console.error('[XoraPass Bridge] Bridge sync failed:', err);
+        sendResponse({ error: 'sync_failed', detail: String(err) });
+      });
+
+      return true; // Keep message channel open for async response
+    }
+  });
+}
+

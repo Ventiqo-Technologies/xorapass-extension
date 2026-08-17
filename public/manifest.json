@@ -57,5 +57,11 @@
       "resources": ["xorapass_logo_horizontal.png", "xorapass_logo_mark.png"],
       "matches": ["<all_urls>"]
     }
-  ]
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://app.xorapass.com/*",
+      "http://localhost:3000/*"
+    ]
+  }
 }
