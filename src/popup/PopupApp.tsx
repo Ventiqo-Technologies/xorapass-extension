@@ -452,7 +452,8 @@ export const PopupApp: React.FC = () => {
     token: string,
     encKey: Uint8Array,
     accountEmail: string,
-    isOffline = false
+    isOffline = false,
+    refreshToken = ''
   ) =>
     browser.runtime.sendMessage({
       type: 'UNLOCK_VAULT',
@@ -463,16 +464,22 @@ export const PopupApp: React.FC = () => {
         encKey: bytesToHex(encKey),
         jwt: token,
         offline: isOffline,
+        refreshToken,
       }
     });
 
-  const processVault = async (token: string, encKey: Uint8Array, masterSalt: string) => {
+  const processVault = async (
+    token: string,
+    encKey: Uint8Array,
+    masterSalt: string,
+    refreshToken = ''
+  ) => {
     const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
       headers: { Authorization: `Bearer ${token}` }
     });
 
     const decrypted = decryptEntries(vaultRes.data, encKey);
-    const res: any = await storeSession(decrypted, token, encKey, email);
+    const res: any = await storeSession(decrypted, token, encKey, email, false, refreshToken);
     if (res && res.success) {
       await writeVaultCache(email, masterSalt, vaultRes.data as RawVaultEntry[]);
       setUnlocked(true);
@@ -499,27 +506,52 @@ export const PopupApp: React.FC = () => {
     setStep('login');
   };
 
+  const fetchAndStoreVault = async (token: string, encKeyHex: string, accountEmail: string) => {
+    const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const encKey = hexToBytes(encKeyHex);
+    const decrypted = decryptEntries(vaultRes.data, encKey);
+    // No refreshToken passed through here on purpose -- background.ts's
+    // UNLOCK_VAULT handler leaves the stored one alone when this call omits
+    // it, so a routine sync can never clobber a token apiRefresh() rotated.
+    await storeSession(decrypted, token, encKey, accountEmail);
+    await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
+    setVaultItems(decrypted);
+  };
+
   const refreshVault = async (manual = false) => {
     const session = await browser.storage.session.get(['token', 'encKey', 'email']);
     const token = session.token as string | undefined;
     const encKeyHex = session.encKey as string | undefined;
     if (!token || !encKeyHex) return;
+    const accountEmail = (session.email as string) || email;
 
     setRefreshing(true);
     try {
-      const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const encKey = hexToBytes(encKeyHex);
-      const accountEmail = (session.email as string) || email;
-      const decrypted = decryptEntries(vaultRes.data, encKey);
-      await storeSession(decrypted, token, encKey, accountEmail);
-      await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
-      setVaultItems(decrypted);
+      await fetchAndStoreVault(token, encKeyHex, accountEmail);
       setSyncError(null);
     } catch (err: any) {
       if (isAuthError(err)) {
-        setSyncError('Session expired — lock and unlock to sync.');
+        // The access token may simply have expired -- ask the background
+        // worker to renew it (it owns the refresh token and the concurrency
+        // guard around using it) and retry once before telling the user
+        // their session is gone.
+        let renewed = false;
+        try {
+          const resp: any = await browser.runtime.sendMessage({ type: 'REFRESH_TOKEN' });
+          const newToken = resp?.accessToken as string | undefined;
+          if (newToken) {
+            await fetchAndStoreVault(newToken, encKeyHex, accountEmail);
+            setSyncError(null);
+            renewed = true;
+          }
+        } catch {
+          /* renewal or the retried fetch failed -- fall through below */
+        }
+        if (!renewed) {
+          setSyncError('Session expired — lock and unlock to sync.');
+        }
       } else if (manual) {
         setSyncError("Couldn't reach the server.");
       }
@@ -582,7 +614,7 @@ export const PopupApp: React.FC = () => {
         return;
       }
 
-      await processVault(loginRes.data.access_token, derived.encKey, salt);
+      await processVault(loginRes.data.access_token, derived.encKey, salt, loginRes.data.refresh_token);
 
     } catch (err: any) {
       console.error(err);
@@ -606,7 +638,7 @@ export const PopupApp: React.FC = () => {
         code: mfaCode
       });
       
-      await processVault(verifyRes.data.access_token, tempEncKey, tempSalt);
+      await processVault(verifyRes.data.access_token, tempEncKey, tempSalt, verifyRes.data.refresh_token);
     } catch (err: any) {
       console.error(err);
       setError(err.response?.data?.detail || "Invalid MFA code.");

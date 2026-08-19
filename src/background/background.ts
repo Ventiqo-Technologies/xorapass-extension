@@ -62,6 +62,7 @@ let lastCopiedField = '';
 // (AI_CHECK_TAB) and tab activation/navigation (see below), both of which are
 // much faster in practice.
 const AI_HEARTBEAT_ALARM = 'xorapass-ai-heartbeat';
+const TOKEN_REFRESH_ALARM = 'xorapass-token-refresh';
 const CLIPBOARD_KEY = 'clipboardClearSeconds';
 const CLIPBOARD_ALARM = 'xorapass-clipboard-clear';
 const CLIPBOARD_PENDING_KEY = 'clipboardPending';
@@ -117,6 +118,7 @@ async function lockVaultNow(reason: string): Promise<void> {
   console.debug('[XoraPass] locking vault:', reason);
   await browser.alarms.clear(AUTO_LOCK_ALARM);
   await clearAiHeartbeat();
+  await clearTokenRefresh();
   dismissedByTab.clear();
   // Same ordering as the auto-lock alarm: drain the clipboard before the
   // pending marker is wiped along with the rest of the session.
@@ -150,6 +152,18 @@ async function scheduleAiHeartbeat() {
 }
 async function clearAiHeartbeat() {
   await browser.alarms.clear(AI_HEARTBEAT_ALARM);
+}
+
+// Renews the access token proactively, well before its ~30-minute server
+// lifetime, so ordinary use never hits a 401 in the first place. apiJwt()
+// below also refreshes reactively on a 401 as a backstop (a missed alarm
+// tick, a worker that was asleep, clock drift) -- this alarm just makes the
+// common case not depend on that retry ever firing.
+async function scheduleTokenRefresh() {
+  await browser.alarms.create(TOKEN_REFRESH_ALARM, { periodInMinutes: 20 });
+}
+async function clearTokenRefresh() {
+  await browser.alarms.clear(TOKEN_REFRESH_ALARM);
 }
 
 // ── Clipboard auto-clear ────────────────────────────────────────────────────
@@ -258,6 +272,9 @@ browser.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name === AI_HEARTBEAT_ALARM) {
     void pushAiFillToActiveTabs();
+  }
+  if (alarm.name === TOKEN_REFRESH_ALARM) {
+    void apiRefresh();
   }
 });
 
@@ -382,14 +399,12 @@ async function getJwt(): Promise<string> {
   return typeof jwt === 'string' ? jwt : '';
 }
 
-/** Calls core-api authenticated as the logged-in human -- never a bridge token. */
-async function apiJwt(
+async function callApiJwt(
   method: string,
   path: string,
-  body?: unknown
+  body: unknown,
+  jwt: string
 ): Promise<{ ok: boolean; status: number; data: any }> {
-  const jwt = await getJwt();
-  if (!jwt) return { ok: false, status: 0, data: { detail: 'locked' } };
   try {
     const res = await fetch(`${API_BASE_URL}/api${path}`, {
       method,
@@ -406,6 +421,82 @@ async function apiJwt(
   } catch (e) {
     console.warn('[XoraPass] AI Access API call failed:', e);
     return { ok: false, status: 0, data: { detail: 'network error' } };
+  }
+}
+
+/** Calls core-api authenticated as the logged-in human -- never a bridge token. */
+async function apiJwt(
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<{ ok: boolean; status: number; data: any }> {
+  const jwt = await getJwt();
+  if (!jwt) return { ok: false, status: 0, data: { detail: 'locked' } };
+
+  const first = await callApiJwt(method, path, body, jwt);
+  if (first.status !== 401) return first;
+
+  // The access token may simply have expired (the proactive refresh alarm
+  // missed a tick, the worker was asleep, clock drift) -- try once to renew
+  // it before giving up. A failed renewal (no refresh token stored, already
+  // redeemed, expired) just returns the original 401 unchanged, so this can
+  // only help and never turn a working call into a failing one.
+  const renewed = await apiRefresh();
+  if (!renewed) return first;
+  return callApiJwt(method, path, body, renewed);
+}
+
+// A proactive alarm tick and a reactive 401 retry can land at nearly the same
+// moment. Only one refresh should ever be in flight -- the server-side
+// rotation makes a refresh token single-use, so a second, overlapping call
+// would race the first and one of them would fail and clobber the good
+// result. Concurrent callers instead await the same in-flight attempt.
+let refreshInFlight: Promise<string> | null = null;
+
+/**
+ * Exchanges the stored refresh token for a new access token, rotating both
+ * in storage.session (the server invalidates the old refresh token on every
+ * use, so the old one must be overwritten too). Returns the new access
+ * token, or '' if there was nothing to refresh with or the refresh itself
+ * failed -- callers fall back to their existing behavior in that case
+ * (apiJwt's normal 401 handling, or the popup's "Session expired" prompt),
+ * never anything worse than what happens today without this at all.
+ */
+async function apiRefresh(): Promise<string> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = doTokenRefresh().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
+async function doTokenRefresh(): Promise<string> {
+  const res = await browser.storage.session.get(['refreshToken', 'unlocked']);
+  const refreshToken = (res as Record<string, unknown>).refreshToken;
+  if (!res.unlocked || typeof refreshToken !== 'string' || !refreshToken) return '';
+
+  try {
+    const resp = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!resp.ok) {
+      console.debug('[XoraPass] token refresh failed:', resp.status);
+      return '';
+    }
+    const data = await resp.json();
+    if (typeof data.access_token !== 'string' || typeof data.refresh_token !== 'string') return '';
+
+    await browser.storage.session.set({
+      jwt: data.access_token,
+      token: data.access_token,
+      refreshToken: data.refresh_token,
+    });
+    return data.access_token;
+  } catch (e) {
+    console.warn('[XoraPass] token refresh network error:', e);
+    return '';
   }
 }
 
@@ -715,13 +806,14 @@ browser.runtime.onMessage.addListener((message, sender) => {
       encKey?: string; // base64 -- needed only so "save to vault" can encrypt new entries
       token?: string;
       offline?: boolean;
+      refreshToken?: string;
     };
-    const { decryptedItems, email, jwt, encKey, token, offline } = payload;
+    const { decryptedItems, email, jwt, encKey, token, offline, refreshToken } = payload;
     // token and encKey are held so the popup can re-fetch and decrypt the vault
     // without a full re-authentication. They live in storage.session, which is
     // memory-only, cleared on browser restart, and already restricted to
     // TRUSTED_CONTEXTS — the same place the decrypted vault itself sits.
-    const sessionData = {
+    const sessionData: Record<string, unknown> = {
       unlocked: true,
       email,
       vaultItems: decryptedItems,
@@ -732,11 +824,22 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // writes have to wait for a connection.
       offline: !!offline,
     };
+    // Deliberately omitted rather than defaulted to '' when absent:
+    // refreshVault() (a routine vault-data sync, not a real unlock) also
+    // sends UNLOCK_VAULT to update vaultItems/token, but never carries a
+    // refresh token of its own -- storage.session.set() only merges the keys
+    // given, so leaving this one out here preserves whatever apiRefresh()
+    // already rotated it to, instead of clobbering a live token back to ''
+    // on every sync. An old popup build or an offline unlock similarly just
+    // never has one to begin with, and everything falls back to today's
+    // behavior: the access token dies at its own natural expiry.
+    if (refreshToken) sessionData.refreshToken = refreshToken;
     return browser.storage.session
       .set(sessionData)
       .then(() => {
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
+        void scheduleTokenRefresh();
         console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', (decryptedItems as unknown[]).length, 'items )');
         return { success: true };
       });
@@ -746,6 +849,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     console.debug('[XoraPass] LOCK_VAULT -> clearing session');
     void browser.alarms.clear(AUTO_LOCK_ALARM);
     void clearAiHeartbeat();
+    void clearTokenRefresh();
     dismissedByTab.clear();
     // Same ordering as auto-lock: drain the clipboard before the pending
     // marker is wiped along with the rest of the session.
@@ -753,6 +857,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
       .catch(() => undefined)
       .then(() => browser.storage.session.clear())
       .then(() => ({ success: true }));
+  }
+
+  if (type === 'REFRESH_TOKEN') {
+    return apiRefresh().then((accessToken) => ({ accessToken: accessToken || null }));
   }
 
   if (type === 'GET_SETTINGS') {

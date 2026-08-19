@@ -16,6 +16,9 @@ export const KNOWN_MESSAGE_TYPES = [
   'GET_STATUS',
   'UNLOCK_VAULT',
   'LOCK_VAULT',
+  // Exchanges the stored refresh token for a fresh access token. Popup-only:
+  // it reads and rewrites the stored bearer credentials.
+  'REFRESH_TOKEN',
   'GET_MATCHING_CREDENTIALS',
   'GET_CREDENTIAL_SECRET',
   'REMEMBER_USERNAME',
@@ -72,6 +75,7 @@ export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
 const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'UNLOCK_VAULT',
   'LOCK_VAULT',
+  'REFRESH_TOKEN',
   'GET_STATUS',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
@@ -209,9 +213,16 @@ export function validateMessage(
       if (!payload || !Array.isArray(payload.decryptedItems) || typeof payload.email !== 'string') {
         return { ok: false, reason: 'bad-payload' };
       }
-      // token and encKey back the refresh path: re-fetching the vault needs a
-      // bearer token, and decrypting anything new needs the key.
+      // token and encKey back the vault-data refresh path: re-fetching the
+      // vault needs a bearer token, and decrypting anything new needs the key.
       if (typeof payload.token !== 'string' || typeof payload.encKey !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      // refreshToken (distinct from the above) backs renewing the ACCESS
+      // TOKEN itself once it expires, without asking for the master password
+      // again. Optional -- a client that doesn't send one just falls back to
+      // today's behavior (re-prompt on expiry) exactly as before.
+      if (payload.refreshToken !== undefined && typeof payload.refreshToken !== 'string') {
         return { ok: false, reason: 'bad-payload' };
       }
       break;
