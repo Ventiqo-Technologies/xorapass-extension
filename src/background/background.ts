@@ -58,6 +58,47 @@ async function clearAiHeartbeat() {
   await browser.alarms.clear(AI_HEARTBEAT_ALARM);
 }
 
+// ── Toolbar badge: "an AI is waiting on you" ────────────────────────────────
+//
+// Without this, a pending request is invisible: the popup's AI tab only fetches
+// when it is opened, so noticing one required already suspecting it existed.
+// The request expires in ten minutes, so a user who never thinks to look simply
+// finds that nothing happened, with no way to tell a denial from an oversight.
+//
+// The badge carries a COUNT and nothing else. It is drawn on a surface visible
+// on every site, including hostile ones, so it must not leak which credential
+// or which site is involved — that detail belongs behind the popup, which only
+// opens on a user gesture.
+async function updateAiBadge(): Promise<void> {
+  try {
+    const session = await browser.storage.session.get(['unlocked']);
+    if (!session.unlocked) return void clearAiBadge();
+
+    const { ok, data } = await apiJwt('GET', '/ai/access-requests');
+    if (!ok || !Array.isArray(data)) return;
+    const pending = (data as { status?: string }[]).filter((r) => r.status === 'pending').length;
+
+    await browser.action.setBadgeText({ text: pending > 0 ? String(pending) : '' });
+    if (pending > 0) {
+      await browser.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+      await browser.action.setTitle({ title: `XoraPass — ${pending} AI request${pending === 1 ? '' : 's'} awaiting your decision` });
+    } else {
+      await browser.action.setTitle({ title: 'XoraPass' });
+    }
+  } catch {
+    // Never let a badge refresh surface as a failure; it is ambient.
+  }
+}
+
+async function clearAiBadge(): Promise<void> {
+  try {
+    await browser.action.setBadgeText({ text: '' });
+    await browser.action.setTitle({ title: 'XoraPass' });
+  } catch {
+    /* action API unavailable */
+  }
+}
+
 // ── Clipboard auto-clear ────────────────────────────────────────────────────
 //
 // The popup writes the password to the clipboard itself (it has a DOM and a
@@ -151,6 +192,7 @@ browser.alarms.onAlarm.addListener((alarm) => {
     // Locking must not leave a password sitting in the clipboard, so clear it
     // first — storage.session.clear() would otherwise drop the pending marker
     // and make the clear a no-op.
+    void clearAiBadge();
     void clearClipboard().finally(() => browser.storage.session.clear());
     return;
   }
@@ -161,6 +203,13 @@ browser.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name === AI_HEARTBEAT_ALARM) {
     void pushAiFillToActiveTabs();
+    // Same tick as the fill push: both answer "has anything changed for me?",
+    // and the request list is the cheaper of the two calls.
+    void updateAiBadge();
+    // Catches an approval made from the WEB APP rather than this extension —
+    // the only path this extension has to learn about it at all, since nothing
+    // pushes to a browser extension from outside itself.
+    void notifyForNewActiveSessions();
   }
 });
 
@@ -274,6 +323,115 @@ interface AiFillOffer {
 // Per-tab set of session ids the user already dismissed/handled, so the same
 // offer isn't re-shown on every check. Cleared on navigation to a fresh page.
 const dismissedByTab = new Map<number, Set<string>>();
+
+// ── OS-level nudge for a newly-approved session ─────────────────────────────
+//
+// The in-page banner (getAiFillForHostname) only ever shows on a tab the user
+// is ALREADY looking at, because it is injected by the content script running
+// on that page. It never told anyone anything: approving a request while the
+// matching site was not the focused tab left the session sitting there with no
+// way to discover it short of switching tabs by chance.
+//
+// This closes that gap with a real chrome.notifications toast — the closest
+// this API surface gets to "pop the extension" — fired once per session,
+// and ONLY when no currently-focused tab already matches (i.e. only when the
+// banner is genuinely not visible to the user right now). Clicking it focuses
+// the matching tab if one is open, or opens one, which is what then lets the
+// existing tab-activation handlers show the real banner and — same as any
+// other fill — still requires the user to press Fill themselves.
+const notifiedSessionIds = new Set<string>();
+// Notification id -> the domain to focus/open when it is clicked.
+const notificationDomains = new Map<string, string>();
+
+async function notifyIfNoMatchingActiveTab(
+  sessionId: string,
+  domain: string,
+  aiToolName: string,
+): Promise<void> {
+  if (!domain || notifiedSessionIds.has(sessionId)) return;
+  notifiedSessionIds.add(sessionId);
+  // Bounded for the same reason every other per-request map in this file is:
+  // the key space is a server-issued id, but nothing should grow unboundedly
+  // across a long-running service worker.
+  if (notifiedSessionIds.size > 500) notifiedSessionIds.clear();
+
+  try {
+    // "Active" tab per window is exactly what the user is looking at, and is
+    // also what pushAiFillToActiveTabs uses to decide who gets the in-page
+    // banner — so this check answers "would they have seen a banner already?"
+    const activeTabs = await browser.tabs.query({ active: true });
+    const alreadyVisible = activeTabs.some(
+      (t) => t.url && isDomainMatch(extractHostname(t.url), domain),
+    );
+    if (alreadyVisible) return;
+
+    const api = (globalThis as any).chrome;
+    if (!api?.notifications?.create) return; // e.g. Firefox without the API
+
+    const notificationId = `xorapass-ai-${sessionId}`;
+    notificationDomains.set(notificationId, domain);
+    api.notifications.create(notificationId, {
+      type: 'basic',
+      iconUrl: browser.runtime.getURL('icons/icon128.png'),
+      title: 'XoraPass — AI sign-in approved',
+      message: `${aiToolName || 'An AI tool'} was approved to fill your ${domain} login. Click to open it.`,
+      priority: 2,
+    });
+  } catch (err) {
+    console.warn('[XoraPass] AI session notification failed:', err);
+  }
+}
+
+if ((globalThis as any).chrome?.notifications?.onClicked) {
+  (globalThis as any).chrome.notifications.onClicked.addListener(async (notificationId: string) => {
+    const domain = notificationDomains.get(notificationId);
+    notificationDomains.delete(notificationId);
+    void (globalThis as any).chrome.notifications.clear(notificationId);
+    if (!domain) return;
+
+    // Prefer an already-open tab over a new one: it preserves scroll/typed
+    // state, and is what a user clicking "go there" actually expects.
+    const tabs = await browser.tabs.query({});
+    const match = tabs.find(
+      (t) => t.id !== undefined && t.url && isDomainMatch(extractHostname(t.url), domain),
+    );
+    if (match?.id !== undefined) {
+      await browser.tabs.update(match.id, { active: true });
+      if (match.windowId !== undefined) {
+        await browser.windows.update(match.windowId, { focused: true }).catch(() => {});
+      }
+      // onActivated (below) fires from this and shows the real in-page banner.
+    } else {
+      await browser.tabs.create({ url: `https://${domain}` });
+    }
+  });
+}
+
+// Dismissed without a click (timeout, or the user closes it directly) still
+// needs the mapping cleaned up, or notificationDomains grows for as long as
+// the service worker stays alive.
+if ((globalThis as any).chrome?.notifications?.onClosed) {
+  (globalThis as any).chrome.notifications.onClosed.addListener((notificationId: string) => {
+    notificationDomains.delete(notificationId);
+  });
+}
+
+/**
+ * Notifies for every active AI session the user has not yet been told about.
+ *
+ * Covers BOTH approval paths with one function: the extension's own approve
+ * action calls this immediately for a fast nudge, and the heartbeat calls it
+ * on every tick so a request approved from the WEB APP — which this extension
+ * has no other way to learn about — surfaces within one heartbeat interval.
+ */
+async function notifyForNewActiveSessions(): Promise<void> {
+  const sessions = await getActiveAiSessions();
+  for (const s of sessions) {
+    if (s.status === 'active' && s.granted_scopes.includes('autofill')) {
+      void notifyIfNoMatchingActiveTab(s.id, s.domain, s.ai_tool_name);
+    }
+  }
+}
 browser.tabs.onRemoved.addListener((tabId) => {
   dismissedByTab.delete(tabId);
 });
@@ -482,6 +640,17 @@ async function getActiveAiSessions(): Promise<AiSession[]> {
   const sessions = ok && Array.isArray(data) ? (data as AiSession[]) : [];
   sessionsCache = { data: sessions, fetchedAt: now };
   return sessions;
+}
+
+/** Forces the next getActiveAiSessions() call to hit the network.
+ *
+ * Needed right after this extension's own approve action: the cache may hold a
+ * fetch from moments earlier that predates the session just created, and
+ * without this the OS-notification fast path could read stale data and miss
+ * it — falling back to the next heartbeat, up to 60s later.
+ */
+function invalidateSessionsCache(): void {
+  sessionsCache = null;
 }
 
 // ── Brokered fills (the AI-initiated half of the flow) ──────────────────────
@@ -693,6 +862,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
       .then(() => {
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
+        // Immediately, not on the next heartbeat: a request raised while the
+        // vault was locked would otherwise sit unbadged for up to a minute
+        // after unlocking, which is most of its ten-minute life.
+        void updateAiBadge();
         console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', (decryptedItems as unknown[]).length, 'items )');
         return { success: true };
       });
@@ -702,7 +875,14 @@ browser.runtime.onMessage.addListener((message, sender) => {
     console.debug('[XoraPass] LOCK_VAULT -> clearing session');
     void browser.alarms.clear(AUTO_LOCK_ALARM);
     void clearAiHeartbeat();
+    // The count is session state and must not outlive the session: a badge left
+    // behind would claim pending work to someone who can no longer see it.
+    void clearAiBadge();
     dismissedByTab.clear();
+    // A notification already shown must not resurface after re-unlock claiming
+    // to be new, and its session id may not even be valid anymore.
+    notifiedSessionIds.clear();
+    notificationDomains.clear();
     // Same ordering as auto-lock: drain the clipboard before the pending
     // marker is wiped along with the rest of the session.
     return clearClipboard()
@@ -1027,9 +1207,22 @@ browser.runtime.onMessage.addListener((message, sender) => {
             ...(maxUses ? { max_uses: maxUses } : {}),
           }
         : undefined;
-    return apiJwt('POST', path, body).then(({ ok, status, data }) =>
-      ok ? { success: true, data } : { error: data?.detail || `HTTP ${status}` }
-    );
+    return apiJwt('POST', path, body).then(({ ok, status, data }) => {
+      if (!ok) return { error: data?.detail || `HTTP ${status}` };
+      // Deciding is the moment the count changes, and the user is looking right
+      // at the toolbar when they do it. Waiting for the next heartbeat would
+      // leave the badge asserting work they just finished.
+      void updateAiBadge();
+      // An approval mints a session, so the tab they are on may now have a fill
+      // to offer. Pushing here is what makes "approve, then switch to the tab"
+      // work without waiting a minute for the heartbeat to notice.
+      if (decision === 'approve') {
+        void pushAiFillToActiveTabs();
+        invalidateSessionsCache();
+        void notifyForNewActiveSessions();
+      }
+      return { success: true, data };
+    });
   }
 
   // ── Secret paste guard messages ─────────────────────────────────────────
@@ -1253,6 +1446,10 @@ if (api?.runtime?.onMessageExternal) {
 
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
+        // Immediately, not on the next heartbeat: a request raised while the
+        // vault was locked would otherwise sit unbadged for up to a minute
+        // after unlocking, which is most of its ten-minute life.
+        void updateAiBadge();
 
         console.debug('[XoraPass Bridge] Bridge unlock complete');
         sendResponse({ success: true });
