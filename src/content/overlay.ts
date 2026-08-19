@@ -83,7 +83,7 @@ const STYLES = `
   padding: 0;
   margin: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: 50%;
   background: transparent;
   cursor: pointer;
   pointer-events: auto;
@@ -93,7 +93,7 @@ const STYLES = `
   transition: background-color 0.15s;
 }
 .icon:hover { background-color: rgba(45, 212, 191, 0.15); }
-.icon:focus-visible { outline: 2px solid #2dd4bf; outline-offset: 1px; }
+.icon:focus-visible { outline: 2px solid #2dd4bf; outline-offset: 2px; }
 .menu {
   position: fixed;
   width: ${MENU_WIDTH}px;
