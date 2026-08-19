@@ -3,7 +3,7 @@ import browser from 'webextension-polyfill';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
 import { validateMessage } from '../utils/messageGuard';
 import { encryptPayload, decryptPayload, hexToBytes } from '../utils/crypto';
-import { API_BASE_URL } from '../utils/config';
+import { API_BASE_URL, WEB_APP_URL } from '../utils/config';
 import {
   CLIPBOARD_PLACEHOLDER,
   clearDelayInMinutes,
@@ -18,6 +18,23 @@ import { base64ToBytes } from '../utils/crypto';
 console.debug('[XoraPass] service worker started at', new Date().toISOString());
 
 const DISABLED_SITES_KEY = 'disabledSites';
+
+// XoraPass's own web app is never an autofill target -- see the matching
+// (and more detailed) comment in content.ts. This is the second of two checks:
+// content.ts already disqualifies itself entirely on this domain, so nothing
+// should even reach this handler for it. This exists as the same defense-in-
+// depth this file already applies everywhere else (GET_CREDENTIAL_SECRET and
+// AI_FILL_CONFIRM both re-verify the domain at the point of use rather than
+// trusting a single earlier gate) -- so a future caller of this handler that
+// bypasses the content-script gate still cannot get the master-password field
+// treated as a matchable login.
+const OWN_APP_HOSTNAME = (() => {
+  try {
+    return new URL(WEB_APP_URL).hostname;
+  } catch {
+    return '';
+  }
+})();
 const AUTO_LOCK_KEY = 'autoLockMinutes';
 const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
 const DEFAULT_AUTO_LOCK_MINUTES = 15;
@@ -382,6 +399,20 @@ async function notifyIfNoMatchingActiveTab(
   }
 }
 
+// An AI session's `domain` is whatever the request payload sent -- a bare
+// host ("github.com") historically, but now (core-api preserves the path
+// rather than collapsing it) potentially a full URL ("https://github.com/
+// login") too. Blindly prepending "https://" doubles the scheme on the
+// latter, producing a malformed address the browser cannot load. Use the
+// value as-is when it is already an absolute URL.
+function toNavigableUrl(domain: string): string {
+  try {
+    return new URL(domain).toString();
+  } catch {
+    return `https://${domain}`;
+  }
+}
+
 if ((globalThis as any).chrome?.notifications?.onClicked) {
   (globalThis as any).chrome.notifications.onClicked.addListener(async (notificationId: string) => {
     const domain = notificationDomains.get(notificationId);
@@ -402,7 +433,7 @@ if ((globalThis as any).chrome?.notifications?.onClicked) {
       }
       // onActivated (below) fires from this and shows the real in-page banner.
     } else {
-      await browser.tabs.create({ url: `https://${domain}` });
+      await browser.tabs.create({ url: toNavigableUrl(domain) });
     }
   });
 }
@@ -933,7 +964,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'GET_MATCHING_CREDENTIALS') {
     const hostname: string = msg.payload.hostname || '';
-    if (!hostname) {
+    if (!hostname || (OWN_APP_HOSTNAME && hostname === OWN_APP_HOSTNAME)) {
       return Promise.resolve({ credentials: [], disabled: false, lookalike: null });
     }
 
@@ -990,6 +1021,14 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const hostname = extractHostname(senderUrl);
     if (!hostname) {
       return Promise.resolve({ error: 'unknown_origin' });
+    }
+    // Refused outright, not just unmatched: a saved entry genuinely CAN carry
+    // this exact URL (see OWN_APP_HOSTNAME above), so the normal domain
+    // re-check below would legitimately pass it. This is a narrower rule than
+    // "does the domain match" -- it is "this domain is never a fill target",
+    // which the URL-matching logic has no way to express on its own.
+    if (OWN_APP_HOSTNAME && hostname === OWN_APP_HOSTNAME) {
+      return Promise.resolve({ error: 'not_fillable' });
     }
 
     return Promise.all([

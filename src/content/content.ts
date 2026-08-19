@@ -15,6 +15,7 @@
 // and a warning is shown. All detection is on-device -- the pasted text is
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
+import { WEB_APP_URL } from '../utils/config';
 import { looksLikeUsername, looksLikeNewPassword } from './fieldHeuristics';
 import { generatePassword } from '../utils/passwordGenerator';
 import { scanForSecrets, redact, type ScanResult } from '../utils/secretScan';
@@ -31,6 +32,7 @@ import {
   closeSavePrompt,
   isSavePromptOpen,
   clearAll,
+  SHIELD_SVG,
   type OverlayCredential,
 } from './overlay';
 
@@ -81,6 +83,15 @@ interface AiFillOffer {
 }
 
 let aiBanner: HTMLElement | null = null;
+// The offer background last handed us, held even when there is nothing on the
+// page to fill yet -- see renderAiBanner for why.
+let pendingAiOffer: AiFillOffer | null = null;
+// Guards against firing a second concurrent auto-fill for a session that is
+// already mid-flight -- a DOM mutation can retrigger tryShowAiBanner() before
+// the first attempt's own cleanup has run (see tryShowAiBanner). Content
+// scripts get a fresh JS context on every navigation, so this never needs
+// explicit clearing the way the background worker's longer-lived maps do.
+const autoFilledSessions = new Set<string>();
 
 // Categories whose values are sensitive enough to always require an explicit
 // confirmation before being written into a page.
@@ -93,6 +104,34 @@ const SENSITIVE_CATEGORIES = new Set(['card', 'identity']);
 interface FrameAssessment {
   isTop: boolean;
   isCrossOriginFrame: boolean;
+}
+
+// XoraPass's own web app is never an autofill target.
+//
+// The content script has no way to tell a login field apart from any other
+// password-type input, so without this it decorates the MASTER PASSWORD field
+// on the vault's own sign-in page exactly like any third-party login -- and
+// will offer to autofill whatever the user separately saved as a vault entry
+// literally named "xorapass.com". That entry (if it exists at all) is not the
+// master password: it is unrelated secret being offered into the one field
+// that actually derives the encryption key, which is confusing at best and
+// teaches the user to treat their master password like any other autofillable
+// value at worst -- exactly the habit a zero-knowledge product cannot afford.
+//
+// So the whole content script disqualifies itself here, once, at the same
+// point the third-party-iframe check does -- no icon, no menu, no AI-fill
+// banner, no save-prompt capture -- rather than patching each feature
+// individually and risking a new one forgetting the exclusion.
+const OWN_APP_HOSTNAME = (() => {
+  try {
+    return new URL(WEB_APP_URL).hostname;
+  } catch {
+    return '';
+  }
+})();
+
+function isOwnAppDomain(): boolean {
+  return !!OWN_APP_HOSTNAME && window.location.hostname === OWN_APP_HOSTNAME;
 }
 
 function escapeHtml(s: string): string {
@@ -193,7 +232,8 @@ function checkAiFill() {
     .sendMessage({ type: 'AI_CHECK_TAB', payload: { hostname } })
     .then((response: any) => {
       if (response && response.offer) {
-        renderAiBanner(response.offer as AiFillOffer);
+        pendingAiOffer = response.offer as AiFillOffer;
+        tryShowAiBanner();
       } else {
         removeAiBanner();
       }
@@ -208,7 +248,8 @@ function checkAiFill() {
 browser.runtime.onMessage.addListener((message: any) => {
   if (!message || typeof message.type !== 'string') return undefined;
   if (message.type === 'AI_FILL_AVAILABLE') {
-    renderAiBanner(message.payload as AiFillOffer);
+    pendingAiOffer = message.payload as AiFillOffer;
+    tryShowAiBanner();
   }
   return undefined;
 });
@@ -389,17 +430,92 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
 // AI Access banner
 // ---------------------------------------------------------------------------
 
+/** Removes the visible banner AND drops the offer -- use for an explicit
+ *  dismissal (Not now / Revoke / a fill that actually happened), where a
+ *  later DOM change must not resurrect what the user just decided on. */
 function removeAiBanner() {
+  aiBanner?.remove();
+  aiBanner = null;
+  pendingAiOffer = null;
+}
+
+/** Hides the banner without forgetting the offer -- for "nothing to show
+ *  against right now", not a decision. tryShowAiBanner() can bring it back
+ *  the moment a fillable field appears (see the MutationObserver hook). */
+function hideAiBanner() {
   aiBanner?.remove();
   aiBanner = null;
 }
 
+/** Swaps the banner's content for a plain status line, then removes it. Used
+ *  for the rare click-time race where a field vanished after the banner was
+ *  shown -- a brief, visible reason instead of the banner just disappearing. */
+function flashAiBannerMessage(text: string) {
+  if (aiBanner) {
+    aiBanner.innerHTML = '';
+    const msg = document.createElement('span');
+    msg.textContent = text;
+    Object.assign(msg.style, { flex: '1', color: '#e2e8f0' });
+    aiBanner.appendChild(msg);
+  }
+  setTimeout(removeAiBanner, 1800);
+}
+
+/**
+ * Shows pendingAiOffer if -- and only if -- the page currently has a fillable
+ * password field. Re-run on every structural DOM change (see the
+ * MutationObserver below), not just once at offer time.
+ *
+ * Without this, the banner offered itself on domain match alone: an approved
+ * session for "github.com" showed "fill now?" on ANY github.com page, not
+ * just the sign-in one. Clicking Fill on, say, the dashboard found no
+ * password field and quietly did nothing -- from the user's side, a banner
+ * that offers to do something it visibly can't. Gating on the same
+ * `isFillable` check handleAiFill uses means the banner is never shown unless
+ * that click can actually succeed, and re-running it on mutation means an
+ * SPA's login form appearing after the fact still gets offered rather than
+ * being missed because the very first check ran too early.
+ */
+function tryShowAiBanner() {
+  if (!pendingAiOffer) return;
+  const hasField = Array.from(document.querySelectorAll('input[type="password"]')).some((el) =>
+    isFillable(el as HTMLInputElement)
+  );
+  if (!hasField) {
+    hideAiBanner();
+    return;
+  }
+
+  // Auto-fill an AI-approved session the moment there is something to fill,
+  // rather than waiting on a click -- but only on an ordinary page. A warning
+  // condition (insecure HTTP, lookalike domain) still renders the normal
+  // banner below and waits for Fill, because that click is what the warning
+  // dialog is gated on; skipping it would fill straight through the one check
+  // meant to catch a lookalike site. Manual autofill (the credential-picker
+  // icon a user clicks themselves) is a completely separate code path and is
+  // untouched by any of this -- this function only ever runs for a session an
+  // AI already asked for and a human already approved.
+  if (!autoFilledSessions.has(pendingAiOffer.sessionId) && !hasSecurityWarnings()) {
+    autoFilledSessions.add(pendingAiOffer.sessionId);
+    renderAiBanner(pendingAiOffer);
+    void handleAiFill(pendingAiOffer, false);
+    return;
+  }
+
+  renderAiBanner(pendingAiOffer);
+}
+
 function renderAiBanner(offer: AiFillOffer) {
+  pendingAiOffer = offer;
   // Don't stack duplicate banners for the same session, and don't downgrade
   // an already-shown banner for a different offer without replacing it.
   if (aiBanner && aiBanner.dataset.sessionId === offer.sessionId) return;
-  removeAiBanner();
+  hideAiBanner(); // NOT removeAiBanner() -- that would drop the offer we just set above.
 
+  // Colors match the extension's own dark-surface convention exactly (see
+  // overlay.ts: .menu's #0f172a/teal-glow shadow, .save-btn-primary's
+  // teal→emerald gradient) rather than the unrelated indigo/violet this banner
+  // used before — the two UI surfaces read as two different products.
   const bar = document.createElement('div');
   bar.dataset.sessionId = offer.sessionId;
   Object.assign(bar.style, {
@@ -413,23 +529,38 @@ function renderAiBanner(offer: AiFillOffer) {
     flexWrap: 'wrap',
     gap: '10px',
     padding: '10px 16px',
-    background: 'linear-gradient(90deg, #312e81, #3730a3)',
-    borderBottom: '1px solid rgba(129, 140, 248, 0.4)',
-    boxShadow: '0 4px 20px rgba(49, 46, 129, 0.4)',
+    background: 'linear-gradient(90deg, #0f172a, #1e293b)',
+    borderBottom: '1px solid rgba(45, 212, 191, 0.3)',
+    boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5), 0 8px 24px rgba(45,212,191,0.15)',
     fontFamily: 'Inter, system-ui, sans-serif',
     fontSize: '13px',
-    color: '#e0e7ff',
+    color: '#e2e8f0',
   });
 
+  // The shield mark used everywhere else in this extension (the autofill icon,
+  // the save-prompt header) — not an emoji, so it reads as this product's own
+  // UI rather than a generic chat-bot notice.
+  const icon = document.createElement('span');
+  icon.innerHTML = SHIELD_SVG;
+  icon.style.display = 'inline-flex';
+  icon.style.verticalAlign = 'middle';
+  icon.style.marginRight = '2px';
+
   const label = document.createElement('span');
-  label.innerHTML = `ðŸ¤– <b>${escapeHtml(offer.aiToolName)}</b> was approved to ${escapeHtml(
-    offer.action
-  )} on this page â€” fill now?`;
+  label.style.display = 'inline-flex';
+  label.style.alignItems = 'center';
+  label.style.gap = '6px';
   label.style.flex = '1';
   label.style.minWidth = '200px';
+  label.appendChild(icon);
+  const text = document.createElement('span');
+  text.innerHTML = `<b>${escapeHtml(offer.aiToolName)}</b> was approved to ${escapeHtml(
+    offer.action
+  )} on this page — fill now?`;
+  label.appendChild(text);
   bar.appendChild(label);
 
-  const mkBtn = (text: string, bg: string, color: string) => {
+  const mkBtn = (text: string, bg: string, color: string, shadow?: string) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.innerText = text;
@@ -442,21 +573,29 @@ function renderAiBanner(offer: AiFillOffer) {
       border: 'none',
       borderRadius: '8px',
       cursor: 'pointer',
+      ...(shadow ? { boxShadow: shadow } : {}),
     });
     return b;
   };
 
-  const fillBtn = mkBtn('Fill', 'linear-gradient(90deg, #818cf8, #6366f1)', '#0f172a');
+  // Exactly overlay.ts's .save-btn-primary — the same "primary confirm" button
+  // used for Save/Update — so Fill reads as the same action family.
+  const fillBtn = mkBtn(
+    'Fill',
+    'linear-gradient(135deg, #0d9488, #059669)',
+    '#ffffff',
+    '0 2px 8px rgba(13, 148, 136, 0.24)',
+  );
   fillBtn.addEventListener('click', () => void handleAiFill(offer, false));
   bar.appendChild(fillBtn);
 
   if (offer.grantedScopes.includes('submit')) {
-    const submitBtn = mkBtn('Fill & Submit', 'rgba(255,255,255,0.15)', '#e0e7ff');
+    const submitBtn = mkBtn('Fill & Submit', 'rgba(45, 212, 191, 0.14)', '#5eead4');
     submitBtn.addEventListener('click', () => void handleAiFill(offer, true));
     bar.appendChild(submitBtn);
   }
 
-  const dismissBtn = mkBtn('Not now', 'rgba(255,255,255,0.08)', '#c7d2fe');
+  const dismissBtn = mkBtn('Not now', 'rgba(255,255,255,0.08)', '#e2e8f0');
   dismissBtn.addEventListener('click', () => {
     browser.runtime
       .sendMessage({ type: 'AI_FILL_HANDLED', payload: { sessionId: offer.sessionId } })
@@ -479,9 +618,27 @@ function renderAiBanner(offer: AiFillOffer) {
   aiBanner = bar;
 }
 
-// Performs the actual fill for an AI-approved session, gated by the same
-// insecure-context / lookalike-domain checks manual autofill uses, plus the
-// explicit click on this banner that got us here.
+/** True when this page is insecure HTTP, or looks like a deceptive variant of
+ *  a site the user has saved credentials for. Used to decide whether an
+ *  AI-approved fill may proceed WITHOUT a click at all (see tryShowAiBanner) --
+ *  a warning condition always keeps the manual click, because that click is
+ *  the thing that actually shows the warning; skipping it would mean
+ *  auto-filling straight through the one check meant to catch a lookalike
+ *  domain. */
+function hasSecurityWarnings(): boolean {
+  return isInsecureContext() || !!lookalikeWarning;
+}
+
+// Performs the actual fill for an AI-approved session.
+//
+// Reached two ways: a click on the banner's Fill button (the ordinary case),
+// or automatically from tryShowAiBanner when hasSecurityWarnings() is false --
+// an AI-approved session is a decision the user already made when they
+// approved it, so on an ordinary page there is nothing further for a click to
+// confirm. Either way this function still re-derives and re-checks the
+// warnings below itself rather than trusting the caller's earlier check, so a
+// warning that appears between that check and this call (a redirect, a DOM
+// change) is never silently skipped.
 async function handleAiFill(offer: AiFillOffer, alsoSubmit: boolean) {
   const warnings: string[] = [];
   if (isInsecureContext()) {
@@ -533,7 +690,12 @@ async function handleAiFill(offer: AiFillOffer, alsoSubmit: boolean) {
   // absent one.
   if (!passEl) {
     reportFill('failed', 'no_password_field');
-    removeAiBanner();
+    // The proactive gate in tryShowAiBanner means this should be rare -- the
+    // field would have had to disappear in the moment between the banner
+    // rendering and this click. Rare is not never, though, and the old
+    // behaviour here was to just vanish with no explanation, which is exactly
+    // the silent-failure complaint this whole banner rework exists to fix.
+    flashAiBannerMessage('No login form found on this page.');
     return;
   }
 
@@ -1137,8 +1299,9 @@ function initPasteGuard(): void {
 // ---------------------------------------------------------------------------
 
 const frame = assessFrame();
-if (frame.isTop || !frame.isCrossOriginFrame) {
-  // Only run in the top frame or in a same-origin (first-party) sub-frame.
+if ((frame.isTop || !frame.isCrossOriginFrame) && !isOwnAppDomain()) {
+  // Only run in the top frame or in a same-origin (first-party) sub-frame --
+  // and never on the vault's own app (see isOwnAppDomain above).
   initPasteGuard();
   loadCredentials();
   checkAiFill();
@@ -1167,6 +1330,12 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     if (!structural) return;
     scanForLoginFields();
     scheduleReposition();
+    // An SPA that reveals its login form after the fact (e.g. a "Sign in"
+    // click that swaps in a password field with no navigation) would
+    // otherwise never get offered: the original checkAiFill() ran before the
+    // field existed. This retries the held offer against the page as it is
+    // now, and is a no-op whenever there is nothing pending.
+    tryShowAiBanner();
   });
 
   observer.observe(document.documentElement, {
@@ -1194,6 +1363,8 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     closeDropdown();
     closeSavePrompt();
   });
+} else if (isOwnAppDomain()) {
+  console.debug('[XoraPass] Autofill disabled on the XoraPass app itself.');
 } else {
   // Third-party iframe: autofill deliberately blocked, and so is AI-approved
   // fill -- the same framing attack this guard exists for applies equally.
