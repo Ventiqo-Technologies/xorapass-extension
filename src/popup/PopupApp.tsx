@@ -32,7 +32,11 @@ import {
   X,
   Bot,
   Ban,
-  ShieldAlert
+  ShieldAlert,
+  Server,
+  Clock,
+  Layers,
+  KeyRound
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
@@ -173,6 +177,22 @@ const RISK_COLORS: Record<string, string> = {
   critical: '#f43f5e',
 };
 
+function fmtDuration(sec: number): string {
+  if (!sec) return '—';
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  return `${Math.round(sec / 3600)}h`;
+}
+
+const Meta: React.FC<{ icon: React.ReactNode; label: string; value: string }> = ({ icon, label, value }) => (
+  <div className="rounded-lg border border-slate-900/8 bg-slate-50/60 px-2 py-1">
+    <div className="flex items-center gap-1 text-[8px] font-black uppercase tracking-wide text-slate-400">
+      {icon} {label}
+    </div>
+    <div className="mt-0.5 text-[10px] font-semibold text-slate-800 truncate">{value}</div>
+  </div>
+);
+
 function fmtExpiresIn(iso: string): string {
   const ms = new Date(iso).getTime() - Date.now();
   if (ms <= 0) return 'expired';
@@ -290,6 +310,18 @@ const AiRequestCard: React.FC<AiRequestCardProps> = ({
       maxUses: maxUses > 0 ? maxUses : undefined,
     });
 
+  // Mirrors xorapass-go/apps/web's per-request_kind reassurance copy in the
+  // credential box below (PendingCard) exactly, so the same request looks
+  // the same regardless of which surface approves it.
+  const workflowNote =
+    r.request_kind === 'create_vault_item'
+      ? 'A new item to add — you fill in and encrypt it here; the AI never sees the contents.'
+      : r.request_kind === 'secret_rotation'
+        ? 'A suspected exposure to confirm. Rotation records the KIND of credential, never its value.'
+        : r.request_kind === 'create_workspace'
+          ? 'A proposed shared workspace. It is created on your own session, so you own it.'
+          : 'The secret stays encrypted in your vault and is never shown to the AI.';
+
   return (
     <div className="p-3 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
       <div className="flex items-center justify-between gap-2">
@@ -309,28 +341,20 @@ const AiRequestCard: React.FC<AiRequestCardProps> = ({
         </span>
       </div>
 
-      <p className="text-[10px] text-slate-600 leading-snug">
-        Requests to <b className="text-slate-900 font-bold">{r.action}</b> for{' '}
-        <b className="text-slate-900 font-bold">{r.domain || r.credential_label}</b>
-      </p>
-
-      {r.requested_scopes && r.requested_scopes.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {r.requested_scopes.map((s) => (
-            <span key={s} className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-900/8 text-[9px] font-mono font-semibold text-slate-600">
-              {s}
-            </span>
-          ))}
+      <div className="rounded-lg bg-slate-50 border border-slate-900/8 px-2.5 py-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-800">
+          <KeyRound className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <span className="truncate">{r.credential_label || r.domain || r.action}</span>
         </div>
-      )}
-
-      {r.reason && <p className="text-[9px] text-slate-500 italic truncate">"{r.reason}"</p>}
+        <div className="mt-0.5 text-[9px] text-slate-500 leading-snug">{workflowNote}</div>
+      </div>
 
       {needsBinding && (
-        <div className="space-y-1">
-          <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">
-            Which saved item is "{r.credential_label}"?
-          </label>
+        <div className="rounded-lg border border-amber-400/40 bg-amber-50 px-2.5 py-2 space-y-1.5">
+          <div className="flex items-center gap-1.5 text-[10px] font-bold text-amber-600">
+            <KeyRound className="w-3 h-3 shrink-0" />
+            <span>{r.ai_tool_name} asked for "{r.credential_label || 'a credential'}" — which item is that?</span>
+          </div>
           <select
             value={pickedVaultEntry}
             onChange={(e) => onPickVaultEntry(e.target.value)}
@@ -343,8 +367,35 @@ const AiRequestCard: React.FC<AiRequestCardProps> = ({
               </option>
             ))}
           </select>
+          <p className="text-[9px] text-amber-600/80">
+            The AI never learns which item you picked, or that any other item exists.
+          </p>
         </div>
       )}
+
+      <div className="grid grid-cols-2 gap-1.5">
+        <Meta icon={<Activity className="w-3 h-3" />} label="Action" value={r.action} />
+        <Meta icon={<Globe className="w-3 h-3" />} label="Domain" value={r.domain || '—'} />
+        <Meta icon={<Server className="w-3 h-3" />} label="Environment" value={r.environment || '—'} />
+        {!isWorkflow && (
+          <Meta icon={<Clock className="w-3 h-3" />} label="Duration" value={fmtDuration(r.requested_duration_seconds)} />
+        )}
+      </div>
+
+      {!isWorkflow && r.requested_scopes && r.requested_scopes.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[8px] font-black uppercase tracking-wide text-slate-400 flex items-center gap-0.5">
+            <Layers className="w-2.5 h-2.5" /> Requests
+          </span>
+          {r.requested_scopes.map((s) => (
+            <span key={s} className="rounded-md bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/20 text-[9px] font-semibold px-1.5 py-0.5">
+              {SCOPE_LABELS[s as Scope] || s}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {r.reason && <p className="text-[9px] text-slate-500 italic truncate">"{r.reason}"</p>}
 
       {reduceOpen && (
         <div className="rounded-lg border border-slate-900/10 bg-slate-50 p-2.5 space-y-2">

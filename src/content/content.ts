@@ -36,6 +36,7 @@ import {
   showAiRequestPrompt,
   type OverlayCredential,
   type AiRequestPromptOffer,
+  type AiRequestDecision,
 } from './overlay';
 
 let activeCredentials: OverlayCredential[] = [];
@@ -254,16 +255,29 @@ browser.runtime.onMessage.addListener((message: any) => {
     tryShowAiBanner();
   }
   if (message.type === 'AI_REQUEST_AVAILABLE') {
-    void handleNewAiRequest(message.payload as AiRequestPromptOffer);
+    // Awaited before acking, and the ack reflects whether the dialog is
+    // actually up -- not just that this message arrived. A fire-and-forget
+    // ack sent before showAiRequestPrompt ran would tell the background
+    // "delivered" even if fetching vault items failed or the dialog threw
+    // while building, and the background has no other way to find out: it
+    // would mark the request seen and never retry, so the user gets nothing
+    // and no explanation.
+    return showNewAiRequest(message.payload as AiRequestPromptOffer)
+      .then(() => ({ received: true }))
+      .catch((err) => {
+        console.error('[XoraPass] failed to show AI request prompt:', err);
+        return { received: false };
+      });
   }
   return undefined;
 });
 
 // Shows the in-page Approve/Deny/Adjust dialog background pushed here for a
-// brand-new pending AI request, and carries out whatever the user decides.
-// Label-only vault-item metadata is fetched fresh each time rather than
-// cached, since the vault can change between one request and the next.
-async function handleNewAiRequest(offer: AiRequestPromptOffer): Promise<void> {
+// brand-new pending AI request. Resolves once the dialog is actually on
+// screen -- NOT once the user decides, which can take arbitrarily long and
+// must not hold up the delivery ack above. The decision itself is submitted
+// separately, whenever it eventually happens.
+async function showNewAiRequest(offer: AiRequestPromptOffer): Promise<void> {
   const isWorkflow = !!offer.requestKind && offer.requestKind !== 'credential_access';
   const needsBinding = !isWorkflow && offer.credentialType === 'personal' && !offer.vaultEntryId;
   let vaultItems: { id: string; label: string; username: string }[] = [];
@@ -272,10 +286,18 @@ async function handleNewAiRequest(offer: AiRequestPromptOffer): Promise<void> {
     vaultItems = res?.items || [];
   }
 
-  const decision = await showAiRequestPrompt(offer, vaultItems);
+  // showAiRequestPrompt builds and inserts the dialog synchronously and only
+  // returns a promise for the eventual decision -- a construction failure
+  // throws here, synchronously, which is what makes the .catch() above able
+  // to tell "never showed" apart from "showed, awaiting the user".
+  const decisionPromise = showAiRequestPrompt(offer, vaultItems);
+  void decisionPromise.then((decision) => submitAiRequestDecision(offer.id, decision));
+}
+
+async function submitAiRequestDecision(requestId: string, decision: AiRequestDecision): Promise<void> {
   if (!decision) return; // dismissed -- the badge still covers it
 
-  const payload: Record<string, unknown> = { requestId: offer.id, decision: decision.action };
+  const payload: Record<string, unknown> = { requestId, decision: decision.action };
   if (decision.action === 'approve') {
     if (decision.vaultEntryId) payload.vaultEntryId = decision.vaultEntryId;
     if (decision.grantedScopes) payload.grantedScopes = decision.grantedScopes;

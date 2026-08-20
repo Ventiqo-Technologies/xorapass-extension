@@ -1248,7 +1248,20 @@ export function showAiRequestPrompt(
 ): Promise<AiRequestDecision> {
   const root = ensureHost();
 
-  return new Promise((resolve) => {
+  // Deliberately not "return new Promise((resolve) => { ...build... })": a
+  // throw during DOM construction inside that executor would be swallowed
+  // into a REJECTED promise instead of propagating synchronously, so a
+  // caller doing try { showAiRequestPrompt(...) } catch {} to confirm the
+  // dialog actually rendered would never see it -- only a later .catch()
+  // microtask, by which point a caller that already reported success can't
+  // take it back. Building outside any Promise means a construction failure
+  // throws here, synchronously, to whoever called this.
+  let resolveDecision!: (result: AiRequestDecision) => void;
+  const decision = new Promise<AiRequestDecision>((resolve) => {
+    resolveDecision = resolve;
+  });
+
+  {
     const isWorkflow = !!offer.requestKind && offer.requestKind !== 'credential_access';
     const needsBinding = !isWorkflow && offer.credentialType === 'personal' && !offer.vaultEntryId;
     let pickedVaultEntry = '';
@@ -1364,7 +1377,7 @@ export function showAiRequestPrompt(
       backdrop.classList.add('is-closing');
       setTimeout(() => backdrop.remove(), 150);
       document.removeEventListener('keydown', onKey, true);
-      resolve(result);
+      resolveDecision(result);
     };
 
     const denyBtn = document.createElement('button');
@@ -1503,7 +1516,9 @@ export function showAiRequestPrompt(
 
     root.appendChild(backdrop);
     approveBtn.focus();
-  });
+  }
+
+  return decision;
 }
 
 // ---------------------------------------------------------------------------

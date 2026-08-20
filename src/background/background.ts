@@ -361,7 +361,9 @@ const dismissedByTab = new Map<number, Set<string>>();
 // existing tab-activation handlers show the real banner and — same as any
 // other fill — still requires the user to press Fill themselves.
 const notifiedSessionIds = new Set<string>();
-// Notification id -> the domain to focus/open when it is clicked.
+// Notification id -> the domain to focus/open when it is clicked. This is a
+// same-instance cache only now (see below for why it can't be the source of
+// truth); still checked first as a fast path.
 const notificationDomains = new Map<string, string>();
 // In-flight guard, separate from notifiedSessionIds: this function is called
 // from two places (the immediate post-approve nudge and the once-a-minute
@@ -374,6 +376,66 @@ const notificationDomains = new Map<string, string>();
 // still only gets marked once a notification actually shows.
 const checkingSessionIds = new Set<string>();
 
+// notifiedSessionIds/notificationDomains above only guard a race WITHIN one
+// service-worker lifetime. MV3 tears the worker down after a short idle
+// period and respawns it fresh for the next event -- routine, not an edge
+// case -- which wipes both Sets/Maps with it. A session left active across
+// two heartbeat ticks that each happened to run in a different worker
+// instance would then look "never notified" the second time too, and the
+// user gets the same toast twice. storage.session survives a worker restart
+// (cleared only on browser restart, or explicitly on LOCK_VAULT below), so
+// it is the actual source of truth across ticks; the in-memory Sets/Map stay
+// as the fast path for the same-tick race the comment above describes.
+const AI_NOTIFIED_SESSIONS_KEY = 'aiNotifiedSessionIds';
+const AI_NOTIFICATION_DOMAINS_KEY = 'aiNotificationDomains';
+
+async function wasSessionNotifiedPersisted(sessionId: string): Promise<boolean> {
+  const res = await browser.storage.session.get([AI_NOTIFIED_SESSIONS_KEY]);
+  const ids = (res as Record<string, unknown>)[AI_NOTIFIED_SESSIONS_KEY];
+  return Array.isArray(ids) && ids.includes(sessionId);
+}
+
+async function markSessionNotifiedPersisted(
+  sessionId: string,
+  notificationId: string,
+  domain: string,
+): Promise<void> {
+  const res = await browser.storage.session.get([AI_NOTIFIED_SESSIONS_KEY, AI_NOTIFICATION_DOMAINS_KEY]);
+  const prevIds = (res as Record<string, unknown>)[AI_NOTIFIED_SESSIONS_KEY];
+  const ids = Array.isArray(prevIds) ? (prevIds as string[]) : [];
+  const prevDomains = (res as Record<string, unknown>)[AI_NOTIFICATION_DOMAINS_KEY];
+  const domains = (prevDomains && typeof prevDomains === 'object' ? prevDomains : {}) as Record<string, string>;
+  // Bounded the same way every other per-request map in this file is: the key
+  // space is a server-issued id, but nothing should grow unboundedly across
+  // an extension install that is never uninstalled.
+  const nextIds = ids.includes(sessionId) ? ids : [...ids, sessionId].slice(-500);
+  domains[notificationId] = domain;
+  await browser.storage.session.set({
+    [AI_NOTIFIED_SESSIONS_KEY]: nextIds,
+    [AI_NOTIFICATION_DOMAINS_KEY]: domains,
+  });
+}
+
+/** Looks up (and forgets) the domain for a clicked/closed notification. */
+async function takeNotificationDomain(notificationId: string): Promise<string | undefined> {
+  const cached = notificationDomains.get(notificationId);
+  notificationDomains.delete(notificationId);
+  if (cached) return cached;
+
+  // Not in this worker instance's memory -- the notification may have been
+  // created by an earlier instance. Fall back to the persisted copy.
+  const res = await browser.storage.session.get([AI_NOTIFICATION_DOMAINS_KEY]);
+  const domains = (res as Record<string, unknown>)[AI_NOTIFICATION_DOMAINS_KEY];
+  if (!domains || typeof domains !== 'object') return undefined;
+  const map = domains as Record<string, string>;
+  const domain = map[notificationId];
+  if (domain !== undefined) {
+    delete map[notificationId];
+    await browser.storage.session.set({ [AI_NOTIFICATION_DOMAINS_KEY]: map });
+  }
+  return domain;
+}
+
 async function notifyIfNoMatchingActiveTab(
   sessionId: string,
   domain: string,
@@ -383,6 +445,11 @@ async function notifyIfNoMatchingActiveTab(
   checkingSessionIds.add(sessionId);
 
   try {
+    if (await wasSessionNotifiedPersisted(sessionId)) {
+      notifiedSessionIds.add(sessionId);
+      return;
+    }
+
     // "Active" tab per window is exactly what the user is looking at, and is
     // also what pushAiFillToActiveTabs uses to decide who gets the in-page
     // banner — so this check answers "would they have seen a banner already?"
@@ -405,13 +472,14 @@ async function notifyIfNoMatchingActiveTab(
     // Only a REAL notification earns the mark -- this is what actually
     // prevents re-notifying for the same session on the next tick.
     notifiedSessionIds.add(sessionId);
-    // Bounded for the same reason every other per-request map in this file is:
-    // the key space is a server-issued id, but nothing should grow unboundedly
-    // across a long-running service worker.
     if (notifiedSessionIds.size > 500) notifiedSessionIds.clear();
 
     const notificationId = `xorapass-ai-${sessionId}`;
     notificationDomains.set(notificationId, domain);
+    // Persisted BEFORE create(): a worker restart between these two lines
+    // would otherwise leave the toast shown but nothing recording that fact,
+    // which is exactly the gap this whole mechanism exists to close.
+    await markSessionNotifiedPersisted(sessionId, notificationId, domain);
     api.notifications.create(notificationId, {
       type: 'basic',
       iconUrl: browser.runtime.getURL('icons/icon128.png'),
@@ -442,8 +510,11 @@ function toNavigableUrl(domain: string): string {
 
 if ((globalThis as any).chrome?.notifications?.onClicked) {
   (globalThis as any).chrome.notifications.onClicked.addListener(async (notificationId: string) => {
-    const domain = notificationDomains.get(notificationId);
-    notificationDomains.delete(notificationId);
+    // A click can arrive in a worker instance that did not create this
+    // notification (the one that did may have already been torn down), so
+    // the in-memory map alone cannot be trusted -- takeNotificationDomain
+    // falls back to the persisted copy when it is empty here.
+    const domain = await takeNotificationDomain(notificationId);
     void (globalThis as any).chrome.notifications.clear(notificationId);
     if (!domain) return;
 
@@ -466,11 +537,12 @@ if ((globalThis as any).chrome?.notifications?.onClicked) {
 }
 
 // Dismissed without a click (timeout, or the user closes it directly) still
-// needs the mapping cleaned up, or notificationDomains grows for as long as
-// the service worker stays alive.
+// needs the mapping cleaned up, or it grows for as long as the browser stays
+// open (storage.session, unlike the in-memory Map, isn't bounded by a single
+// worker's lifetime).
 if ((globalThis as any).chrome?.notifications?.onClosed) {
   (globalThis as any).chrome.notifications.onClosed.addListener((notificationId: string) => {
-    notificationDomains.delete(notificationId);
+    void takeNotificationDomain(notificationId);
   });
 }
 
@@ -860,20 +932,28 @@ interface AiRequestOffer {
  */
 async function pushNewAiRequestsToActiveTab(): Promise<void> {
   const jwt = await getJwt();
-  if (!jwt) return;
+  if (!jwt) {
+    console.debug('[XoraPass] pushNewAiRequestsToActiveTab: no jwt, skipping');
+    return;
+  }
 
   const { ok, data } = await apiJwt('GET', '/ai/access-requests');
-  if (!ok || !Array.isArray(data)) return;
+  if (!ok || !Array.isArray(data)) {
+    console.debug('[XoraPass] pushNewAiRequestsToActiveTab: bad /ai/access-requests response', ok, data);
+    return;
+  }
 
   const fresh = (data as any[]).find((r) => r.status === 'pending' && !seenAiRequestIds.has(r.id));
-  if (!fresh) return;
-
-  const tabs = await browser.tabs.query({ active: true });
-  const target = tabs.find((t) => t.id !== undefined);
-  if (target?.id === undefined) return; // no window open at all -- badge is the fallback
-
-  seenAiRequestIds.add(fresh.id);
-  if (seenAiRequestIds.size > 500) seenAiRequestIds.clear();
+  if (!fresh) {
+    console.debug(
+      '[XoraPass] pushNewAiRequestsToActiveTab: nothing fresh',
+      (data as any[]).map((r) => ({ id: r.id, status: r.status })),
+      'already seen:',
+      [...seenAiRequestIds],
+    );
+    return;
+  }
+  console.debug('[XoraPass] pushNewAiRequestsToActiveTab: fresh request', fresh.id, fresh.request_kind);
 
   const offer: AiRequestOffer = {
     id: fresh.id,
@@ -889,10 +969,39 @@ async function pushNewAiRequestsToActiveTab(): Promise<void> {
     vaultEntryId: fresh.vault_entry_id,
     requestKind: fresh.request_kind,
   };
-  browser.tabs.sendMessage(target.id, { type: 'AI_REQUEST_AVAILABLE', payload: offer }).catch(() => {
-    /* content script not present on this page (e.g. chrome:// tab) -- the
-       badge is still there as a fallback, so this is not marked un-seen. */
-  });
+
+  // `active: true` with no windowId returns the active tab of EVERY open
+  // window, not just the one the user is looking at right now. Earlier this
+  // tried only the first of those and marked the request seen regardless of
+  // whether delivery actually landed -- a tab that had no content script
+  // listening yet (still loading, a chrome:// tab, a restricted page) burned
+  // the request's only shot at the popup, silently, forever. Unlike the
+  // desktop notification (a direct OS call needing no tab at all), this UI
+  // has nowhere to render without a live content script, so every candidate
+  // tab is tried and the request is marked seen only once one of them
+  // actually confirms it showed the dialog.
+  const tabs = await browser.tabs.query({ active: true });
+  console.debug(
+    '[XoraPass] pushNewAiRequestsToActiveTab: candidate tabs',
+    tabs.map((t) => ({ id: t.id, url: t.url, windowId: t.windowId })),
+  );
+  for (const t of tabs) {
+    if (t.id === undefined) continue;
+    try {
+      const ack: any = await browser.tabs.sendMessage(t.id, { type: 'AI_REQUEST_AVAILABLE', payload: offer });
+      console.debug('[XoraPass] pushNewAiRequestsToActiveTab: ack from tab', t.id, ack);
+      if (ack && ack.received) {
+        seenAiRequestIds.add(fresh.id);
+        if (seenAiRequestIds.size > 500) seenAiRequestIds.clear();
+        return;
+      }
+    } catch (err) {
+      console.debug('[XoraPass] pushNewAiRequestsToActiveTab: sendMessage failed for tab', t.id, err);
+    }
+  }
+  console.debug('[XoraPass] pushNewAiRequestsToActiveTab: no tab acknowledged delivery, will retry next heartbeat');
+  // No eligible tab right now. Left un-seen on purpose: the next heartbeat
+  // tick retries, and the badge covers the gap until then.
 }
 
 // Re-check on tab switch (fast, cheap) and on navigation completing. A fresh
