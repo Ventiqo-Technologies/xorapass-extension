@@ -814,14 +814,27 @@ interface PendingFill {
  */
 async function claimFillForSession(sessionId: string): Promise<PendingFill | null> {
   const list = await apiJwt('GET', '/ai/pending-fills');
-  if (!list.ok) return null;
+  if (!list.ok) {
+    console.debug('[XoraPass] claimFillForSession: /ai/pending-fills failed', list.status);
+    return null;
+  }
   const fills = (list.data?.pending_fills as PendingFill[] | undefined) ?? [];
+  console.debug(
+    '[XoraPass] claimFillForSession: pending fills',
+    fills.map((f) => ({ id: f.id, session_id: f.session_id })),
+    'looking for session',
+    sessionId,
+  );
   const waiting = fills.find((f) => f.session_id === sessionId);
-  if (!waiting) return null;
+  if (!waiting) {
+    console.debug('[XoraPass] claimFillForSession: no pending fill for this session');
+    return null;
+  }
 
   // 409 here means another client got it first. Returning null is correct: that
   // client owns reporting the outcome, and two reports would race.
   const claim = await apiJwt('POST', `/ai/pending-fills/${waiting.id}/claim`);
+  console.debug('[XoraPass] claimFillForSession: claim result', claim.ok, claim.status);
   if (!claim.ok) return null;
   return (claim.data?.fill as PendingFill | undefined) ?? waiting;
 }
@@ -834,6 +847,7 @@ async function claimFillForSession(sessionId: string): Promise<PendingFill | nul
  */
 async function reportFillOutcome(fillId: string, outcome: 'filled' | 'failed', reason = ''): Promise<void> {
   const res = await apiJwt('POST', `/ai/pending-fills/${fillId}/result`, { outcome, reason });
+  console.debug('[XoraPass] reportFillOutcome:', fillId, outcome, reason, '-> ok:', res.ok, res.status);
   if (!res.ok) {
     console.warn('[XoraPass] could not report fill outcome:', outcome, reason, res.status);
   }
@@ -1353,26 +1367,36 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // that is not evidence the tab still matches: it may have navigated since,
     // and a compromised content script must not be able to name a domain.
     const senderHost = extractHostname(sender.tab?.url || sender.url || '');
+    console.debug('[XoraPass] AI_FILL_CONFIRM: sessionId', sessionId, 'senderHost', senderHost);
     if (!senderHost) return Promise.resolve({ error: 'Unknown page origin.' });
 
     return apiJwt('GET', '/ai/sessions').then(async ({ ok, data }) => {
       if (!ok || !Array.isArray(data)) {
+        console.debug('[XoraPass] AI_FILL_CONFIRM: /ai/sessions failed', ok);
         return { error: 'Could not verify this AI session -- try again.' };
       }
       const session = (data as AiSession[]).find((s) => s.id === sessionId);
       if (!session || session.status !== 'active' || !session.granted_scopes.includes('autofill') || !session.vault_entry_id) {
+        console.debug('[XoraPass] AI_FILL_CONFIRM: session not usable', session && {
+          status: session.status,
+          scopes: session.granted_scopes,
+          hasEntry: !!session.vault_entry_id,
+        });
         return { error: 'This AI session is no longer active.' };
       }
       // Re-authorize the domain at the moment of use, against live state.
       if (!session.domain || !isDomainMatch(senderHost, session.domain)) {
-        console.warn('[XoraPass] AI fill refused: page does not match approved domain', senderHost);
+        console.warn('[XoraPass] AI fill refused: page does not match approved domain', senderHost, session.domain);
         return { error: 'This page does not match the approved domain.' };
       }
 
       const res = await browser.storage.session.get(['vaultItems']);
       const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
       const item = items?.find((i) => i.id === session.vault_entry_id);
-      if (!item) return { error: 'Credential not found in this session -- try unlocking again.' };
+      if (!item) {
+        console.debug('[XoraPass] AI_FILL_CONFIRM: vault entry not found locally', session.vault_entry_id, 'have', items?.length ?? 0, 'items');
+        return { error: 'Credential not found in this session -- try unlocking again.' };
+      }
 
       // Claim last, once everything else has passed. A claim starts the server's
       // result grace, so it must not be taken on a path that can still refuse.
