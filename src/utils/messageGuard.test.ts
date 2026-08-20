@@ -22,6 +22,11 @@ const popupSender = (): any => ({ id: OWN_ID, url: `${OWN_BASE}popup.html` });
 
 const contentSender = (): any => ({ id: OWN_ID, url: 'https://example.com/login', tab: { id: 1 } });
 
+// externally_connectable senders (app.xorapass.com) have no extension id at
+// all -- that is precisely how the guard tells them apart from a content
+// script, which always carries this extension's own id.
+const externalWebSender = (): any => ({ url: 'https://app.xorapass.com/', origin: 'https://app.xorapass.com' });
+
 describe('validateMessage — origin', () => {
   it('rejects messages from other extensions', () => {
     const res = validateMessage({ type: 'GET_STATUS' }, { id: 'other', url: `chrome-extension://other/x` } as any);
@@ -149,5 +154,79 @@ describe('validateMessage — payload validation', () => {
         contentSender()
       ).reason
     ).toBe('privileged-from-content');
+  });
+});
+
+describe('validateMessage — companion-device linking bridge', () => {
+  it('allows a payload-free WEB_BRIDGE_DEVICE_INFO from app.xorapass.com', () => {
+    expect(validateMessage({ type: 'WEB_BRIDGE_DEVICE_INFO' }, externalWebSender()).ok).toBe(true);
+  });
+
+  const sealedEncKeyFixture = () => ({
+    ciphertext: 'ciphertext-b64',
+    tag: 'tag-b64',
+    nonce: 'nonce-b64',
+    keyVersion: 1,
+  });
+  const ephemeralPublicKeyFixture = () => ({ kty: 'EC', crv: 'P-256', x: 'x-coord', y: 'y-coord' });
+
+  it('accepts a well-formed WEB_BRIDGE_DELIVER_KEY from app.xorapass.com', () => {
+    const res = validateMessage(
+      {
+        type: 'WEB_BRIDGE_DELIVER_KEY',
+        payload: {
+          token: 'jwt-token',
+          email: 'a@b.c',
+          ephemeralPublicKey: ephemeralPublicKeyFixture(),
+          sealedEncKey: sealedEncKeyFixture(),
+        },
+      },
+      externalWebSender()
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it('rejects WEB_BRIDGE_DELIVER_KEY missing the encrypted key', () => {
+    const res = validateMessage(
+      {
+        type: 'WEB_BRIDGE_DELIVER_KEY',
+        payload: { token: 'jwt-token', email: 'a@b.c', ephemeralPublicKey: ephemeralPublicKeyFixture() },
+      },
+      externalWebSender()
+    );
+    expect(res.reason).toBe('bad-payload');
+  });
+
+  it('rejects WEB_BRIDGE_DELIVER_KEY missing the ephemeral public key', () => {
+    const res = validateMessage(
+      {
+        type: 'WEB_BRIDGE_DELIVER_KEY',
+        payload: { token: 'jwt-token', email: 'a@b.c', sealedEncKey: sealedEncKeyFixture() },
+      },
+      externalWebSender()
+    );
+    expect(res.reason).toBe('bad-payload');
+  });
+
+  it('rejects WEB_BRIDGE_DELIVER_KEY with a malformed sealedEncKey', () => {
+    const res = validateMessage(
+      {
+        type: 'WEB_BRIDGE_DELIVER_KEY',
+        payload: {
+          token: 'jwt-token',
+          email: 'a@b.c',
+          ephemeralPublicKey: ephemeralPublicKeyFixture(),
+          sealedEncKey: { ciphertext: 'x' }, // missing tag/nonce
+        },
+      },
+      externalWebSender()
+    );
+    expect(res.reason).toBe('bad-payload');
+  });
+
+  it('still rejects a privileged, non-bridge type from an external web page', () => {
+    expect(validateMessage({ type: 'GET_STATUS' }, externalWebSender()).reason).toBe(
+      'unauthorized-external-type'
+    );
   });
 });

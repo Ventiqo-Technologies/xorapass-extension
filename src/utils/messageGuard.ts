@@ -46,6 +46,13 @@ export const KNOWN_MESSAGE_TYPES = [
   'AI_PASTE_EVENT',
   'AI_SAVE_SECRET',
   'WEB_BRIDGE_LOGIN',
+  // Companion-device linking: a same-browser web login can hand this
+  // extension a fresh session without a separate master-password unlock.
+  // DEVICE_INFO only ever answers with a public key (never anything
+  // secret); DELIVER_KEY carries the vault key pre-encrypted to that public
+  // key, decryptable only by the private half this extension alone holds.
+  'WEB_BRIDGE_DEVICE_INFO',
+  'WEB_BRIDGE_DELIVER_KEY',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -133,7 +140,14 @@ export function validateMessage(
   }
 
   // Reject external web calls requesting internal/privileged extension-only actions.
-  if (isExternalWebPage && type !== 'WEB_BRIDGE_LOGIN') {
+  // The bridge types are the ONLY things an externally_connectable web page
+  // (app.xorapass.com et al) may ever ask this extension to do.
+  const EXTERNAL_WEB_ALLOWED: ReadonlySet<string> = new Set([
+    'WEB_BRIDGE_LOGIN',
+    'WEB_BRIDGE_DEVICE_INFO',
+    'WEB_BRIDGE_DELIVER_KEY',
+  ]);
+  if (isExternalWebPage && !EXTERNAL_WEB_ALLOWED.has(type)) {
     return { ok: false, reason: 'unauthorized-external-type' };
   }
 
@@ -151,6 +165,27 @@ export function validateMessage(
         return { ok: false, reason: 'bad-payload' };
       }
       break;
+    case 'WEB_BRIDGE_DEVICE_INFO':
+      // No payload: this only ever asks "who are you", never carries data in.
+      break;
+    case 'WEB_BRIDGE_DELIVER_KEY': {
+      // sealedEncKey is the EncryptedPayload shape from utils/crypto
+      // (ciphertext/tag/nonce, all base64 strings) -- not a bare string.
+      const sealed = payload && isPlainObject(payload.sealedEncKey) ? payload.sealedEncKey : undefined;
+      if (
+        !payload ||
+        typeof payload.token !== 'string' ||
+        typeof payload.email !== 'string' ||
+        !isPlainObject(payload.ephemeralPublicKey) ||
+        !sealed ||
+        typeof sealed.ciphertext !== 'string' ||
+        typeof sealed.tag !== 'string' ||
+        typeof sealed.nonce !== 'string'
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    }
     case 'UNLOCK_VAULT':
       if (!payload || !Array.isArray(payload.decryptedItems) || typeof payload.email !== 'string') {
         return { ok: false, reason: 'bad-payload' };

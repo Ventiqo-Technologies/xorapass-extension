@@ -2,7 +2,15 @@
 import browser from 'webextension-polyfill';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
 import { validateMessage } from '../utils/messageGuard';
-import { encryptPayload, decryptPayload, hexToBytes } from '../utils/crypto';
+import {
+  encryptPayload,
+  decryptPayload,
+  hexToBytes,
+  bytesToHex,
+  generateSharingKeyPair,
+  deriveSharedSecret,
+  type EncryptedPayload,
+} from '../utils/crypto';
 import { API_BASE_URL } from '../utils/config';
 import {
   CLIPBOARD_PLACEHOLDER,
@@ -1099,6 +1107,131 @@ if (browser.storage && browser.storage.session && (browser.storage.session as an
 // ── Secure Web Bridge: External Messages Listener ────────────────────────────
 // Listens for external calls from trusted externally_connectable origins (e.g. app.xorapass.com)
 // to securely receive login payloads containing JWTs and derived master encryption keys.
+
+/**
+ * Fetches the vault with `token`, decrypts every item with `encKeyBytes`, and
+ * stores the resulting session exactly like a normal popup login would.
+ * Shared by every bridge path (WEB_BRIDGE_LOGIN and WEB_BRIDGE_DELIVER_KEY)
+ * so there is exactly one place that turns "a token and a key" into an
+ * unlocked session, instead of two copies drifting apart.
+ */
+async function applyBridgedSession(
+  token: string,
+  encKeyBytes: Uint8Array,
+  email: string,
+  refreshToken?: string
+): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/vault`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Vault API error ${res.status}`);
+  const vaultData = await res.json();
+
+  const decryptedItems = vaultData.map((entry: any) => {
+    try {
+      const rawCiphertext = entry.encrypted_payload;
+      const opened = decryptPayload({ ...rawCiphertext, nonce: entry.nonce }, encKeyBytes);
+      const parsed = JSON.parse(opened);
+      return {
+        id: entry.id,
+        label: parsed.label || 'Unnamed Entry',
+        username: parsed.username || '',
+        value: parsed.value || '',
+        notes: parsed.notes || '',
+        category: parsed.category || 'login',
+        organization: parsed.organization || '',
+        url: parsed.url || '',
+        cardholderName: parsed.cardholderName || '',
+        cardNumber: parsed.cardNumber || '',
+        expiryDate: parsed.expiryDate || '',
+        cvv: parsed.cvv || '',
+        privateKey: parsed.privateKey || '',
+        publicKey: parsed.publicKey || '',
+        passphrase: parsed.passphrase || '',
+        accountId: parsed.accountId || '',
+      };
+    } catch {
+      return { id: entry.id, label: "Couldn't decrypt", username: '', value: '', category: 'login', url: '' };
+    }
+  });
+
+  // NOTE: encKey must be stored as hex (matching bytesToHex from the popup
+  // login path) so that refreshVault can correctly recover it with hexToBytes.
+  const sessionData: Record<string, unknown> = {
+    unlocked: true,
+    email,
+    token,
+    jwt: token,
+    encKey: bytesToHex(encKeyBytes),
+    vaultItems: decryptedItems,
+    offline: false,
+  };
+  if (refreshToken) sessionData.refreshToken = refreshToken;
+  await browser.storage.session.set(sessionData);
+
+  void scheduleAutoLock();
+  void scheduleAiHeartbeat();
+}
+
+// ── Companion-device identity ────────────────────────────────────────────────
+// A persistent ECDH P-256 keypair identifying THIS extension install, kept in
+// storage.local (unlike everything session-related, this must survive both
+// service-worker restarts AND browser restarts -- it is what makes the
+// extension recognizable as "the same device" across logins, not just within
+// one browser session). Reuses the exact sharing-key primitives already used
+// for shared-vault key exchange (generateSharingKeyPair/deriveSharedSecret),
+// rather than inventing a second asymmetric scheme.
+//
+// The private half is never sent anywhere, in any form -- only its public
+// half ever leaves this function, to be published to the server (once,
+// on approval) and to whichever web-app tab asks WEB_BRIDGE_DEVICE_INFO.
+const DEVICE_LINK_ID_KEY = 'deviceLinkId';
+const DEVICE_LINK_KEYPAIR_KEY = 'deviceLinkKeyPair';
+
+interface DeviceIdentity {
+  deviceId: string;
+  publicKey: JsonWebKey;
+  privateKey: JsonWebKey;
+}
+
+// Two near-simultaneous callers (WEB_BRIDGE_DEVICE_INFO and
+// WEB_BRIDGE_DELIVER_KEY typically fire back-to-back from the same web-app
+// login, and two tabs logging in around the same time is not exotic either)
+// could otherwise both see "nothing in storage.local yet" before either has
+// written, each generate a DIFFERENT keypair, and the second write silently
+// clobbers the first -- leaving a device the server just approved, or a key
+// that was just encrypted to it, undecryptable forever. Same shape as
+// refreshInFlight above: every concurrent caller awaits the one in-flight
+// attempt instead of racing through their own read-then-write.
+let deviceIdentityInFlight: Promise<DeviceIdentity> | null = null;
+
+async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
+  if (deviceIdentityInFlight) return deviceIdentityInFlight;
+  deviceIdentityInFlight = loadOrCreateDeviceIdentity().finally(() => {
+    deviceIdentityInFlight = null;
+  });
+  return deviceIdentityInFlight;
+}
+
+async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
+  const stored = await browser.storage.local.get([DEVICE_LINK_ID_KEY, DEVICE_LINK_KEYPAIR_KEY]);
+  const existingId = (stored as Record<string, unknown>)[DEVICE_LINK_ID_KEY];
+  const existingPair = (stored as Record<string, unknown>)[DEVICE_LINK_KEYPAIR_KEY] as
+    | { publicKey: JsonWebKey; privateKey: JsonWebKey }
+    | undefined;
+  if (typeof existingId === 'string' && existingPair?.publicKey && existingPair?.privateKey) {
+    return { deviceId: existingId, publicKey: existingPair.publicKey, privateKey: existingPair.privateKey };
+  }
+
+  const deviceId = crypto.randomUUID();
+  const pair = await generateSharingKeyPair();
+  await browser.storage.local.set({
+    [DEVICE_LINK_ID_KEY]: deviceId,
+    [DEVICE_LINK_KEYPAIR_KEY]: pair,
+  });
+  return { deviceId, publicKey: pair.publicKey, privateKey: pair.privateKey };
+}
+
 const api = (globalThis as any).chrome;
 if (api?.runtime?.onMessageExternal) {
   api.runtime.onMessageExternal.addListener((message: any, sender: any, sendResponse: (r: any) => void) => {
@@ -1114,9 +1247,7 @@ if (api?.runtime?.onMessageExternal) {
       const { token, encKey, email } = message.payload;
       console.debug('[XoraPass Bridge] Received login bridge for:', email);
 
-      // Perform secure unlocking
-      // 1. Convert encKey base64 string to bytes
-      let derivedEncBytes;
+      let derivedEncBytes: Uint8Array;
       try {
         derivedEncBytes = base64ToBytes(encKey);
       } catch (e) {
@@ -1124,70 +1255,59 @@ if (api?.runtime?.onMessageExternal) {
         return;
       }
 
-      // 2. Fetch vault items from server using the bridge token
-      fetch(`${API_BASE_URL}/api/vault`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-      .then(res => {
-        if (!res.ok) throw new Error(`Vault API error ${res.status}`);
-        return res.json();
-      })
-      .then(async (vaultData) => {
-        // 3. Store the decrypted session context
-        const decryptedItems = vaultData.map((entry: any) => {
-          try {
-            const rawCiphertext = entry.encrypted_payload;
-            const opened = decryptPayload({ ...rawCiphertext, nonce: entry.nonce }, derivedEncBytes);
-            const parsed = JSON.parse(opened);
-            return {
-              id: entry.id,
-              label: parsed.label || "Unnamed Entry",
-              username: parsed.username || "",
-              value: parsed.value || "",
-              notes: parsed.notes || "",
-              category: parsed.category || "login",
-              organization: parsed.organization || "",
-              url: parsed.url || "",
-              cardholderName: parsed.cardholderName || "",
-              cardNumber: parsed.cardNumber || "",
-              expiryDate: parsed.expiryDate || "",
-              cvv: parsed.cvv || "",
-              privateKey: parsed.privateKey || "",
-              publicKey: parsed.publicKey || "",
-              passphrase: parsed.passphrase || "",
-              accountId: parsed.accountId || ""
-            };
-          } catch {
-            return { id: entry.id, label: "Couldn't decrypt", username: "", value: "", category: "login", url: "" };
-          }
+      applyBridgedSession(token, derivedEncBytes, email)
+        .then(() => {
+          console.debug('[XoraPass Bridge] Bridge unlock complete');
+          sendResponse({ success: true });
+        })
+        .catch((err) => {
+          console.error('[XoraPass Bridge] Bridge sync failed:', err);
+          sendResponse({ error: 'sync_failed', detail: String(err) });
         });
-
-        // 4. Save session context
-        // NOTE: encKey must be stored as hex (matching bytesToHex from the popup login path)
-        // so that refreshVault can correctly recover it with hexToBytes.
-        const encKeyHex = Array.from(derivedEncBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-        await browser.storage.session.set({
-          unlocked: true,
-          email,
-          token,
-          jwt: token,
-          encKey: encKeyHex, // stored as hex to match popup storeSession convention
-          vaultItems: decryptedItems,
-          offline: false,
-        });
-
-        void scheduleAutoLock();
-        void scheduleAiHeartbeat();
-
-        console.debug('[XoraPass Bridge] Bridge unlock complete');
-        sendResponse({ success: true });
-      })
-      .catch(err => {
-        console.error('[XoraPass Bridge] Bridge sync failed:', err);
-        sendResponse({ error: 'sync_failed', detail: String(err) });
-      });
 
       return true; // Keep message channel open for async response
+    }
+
+    if (guard.type === 'WEB_BRIDGE_DEVICE_INFO') {
+      // Never touches anything secret: the public key is, by definition, safe
+      // to hand to any page that can reach this listener at all.
+      getOrCreateDeviceIdentity()
+        .then(({ deviceId, publicKey }) => sendResponse({ deviceId, publicKey }))
+        .catch((err) => {
+          console.error('[XoraPass Bridge] device identity failed:', err);
+          sendResponse({ error: 'device_identity_failed' });
+        });
+      return true;
+    }
+
+    if (guard.type === 'WEB_BRIDGE_DELIVER_KEY') {
+      const { token, refreshToken, email, ephemeralPublicKey, sealedEncKey } = message.payload as {
+        token: string;
+        refreshToken?: string;
+        email: string;
+        ephemeralPublicKey: JsonWebKey;
+        sealedEncKey: EncryptedPayload;
+      };
+      console.debug('[XoraPass Bridge] Received key delivery for:', email);
+
+      getOrCreateDeviceIdentity()
+        .then(async ({ privateKey }) => {
+          // The vault key was encrypted specifically to THIS device's public
+          // key by the delivering web session -- only this private key,
+          // which has never left storage.local, can recover it.
+          const sharedSecret = await deriveSharedSecret(privateKey, ephemeralPublicKey);
+          const encKeyHex = decryptPayload(sealedEncKey, sharedSecret);
+          const encKeyBytes = hexToBytes(encKeyHex);
+          await applyBridgedSession(token, encKeyBytes, email, refreshToken);
+          console.debug('[XoraPass Bridge] Key delivery unlock complete');
+          sendResponse({ success: true });
+        })
+        .catch((err) => {
+          console.error('[XoraPass Bridge] Key delivery failed:', err);
+          sendResponse({ error: 'delivery_failed', detail: String(err) });
+        });
+
+      return true;
     }
   });
 }
