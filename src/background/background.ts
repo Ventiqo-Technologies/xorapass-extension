@@ -259,6 +259,13 @@ browser.alarms.onAlarm.addListener((alarm) => {
   // When the idle timer fires, purge the decrypted vault from session storage.
   if (alarm.name === AUTO_LOCK_ALARM) {
     console.debug('[XoraPass] auto-lock fired -> clearing session');
+    void clearAiHeartbeat();
+    // Otherwise this alarm keeps firing every 20 minutes after an idle lock,
+    // calling apiRefresh() against a session storage.session.clear() below is
+    // about to wipe -- harmless (doTokenRefresh checks `unlocked` and
+    // no-ops), but a stray wakeup for nothing, and inconsistent with the
+    // explicit LOCK_VAULT path, which already clears this.
+    void clearTokenRefresh();
     // Locking must not leave a password sitting in the clipboard, so clear it
     // first — storage.session.clear() would otherwise drop the pending marker
     // and make the clear a no-op.
