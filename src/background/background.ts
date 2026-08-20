@@ -366,11 +366,6 @@ async function notifyIfNoMatchingActiveTab(
   aiToolName: string,
 ): Promise<void> {
   if (!domain || notifiedSessionIds.has(sessionId)) return;
-  notifiedSessionIds.add(sessionId);
-  // Bounded for the same reason every other per-request map in this file is:
-  // the key space is a server-issued id, but nothing should grow unboundedly
-  // across a long-running service worker.
-  if (notifiedSessionIds.size > 500) notifiedSessionIds.clear();
 
   try {
     // "Active" tab per window is exactly what the user is looking at, and is
@@ -380,10 +375,25 @@ async function notifyIfNoMatchingActiveTab(
     const alreadyVisible = activeTabs.some(
       (t) => t.url && isDomainMatch(extractHostname(t.url), domain),
     );
+    // Deliberately NOT marked notified here: a tab being visible right now is
+    // not evidence the user will still be on it a moment from now, or that
+    // the fill actually happened. This function runs again on every
+    // heartbeat tick while the session stays active, so a user who switches
+    // away right after approving still gets the fallback notification on the
+    // next tick, instead of this session being silently skipped forever
+    // because it happened to look "handled" the first time it was checked.
     if (alreadyVisible) return;
 
     const api = (globalThis as any).chrome;
     if (!api?.notifications?.create) return; // e.g. Firefox without the API
+
+    // Only a REAL notification earns the mark -- this is what actually
+    // prevents re-notifying for the same session on the next tick.
+    notifiedSessionIds.add(sessionId);
+    // Bounded for the same reason every other per-request map in this file is:
+    // the key space is a server-issued id, but nothing should grow unboundedly
+    // across a long-running service worker.
+    if (notifiedSessionIds.size > 500) notifiedSessionIds.clear();
 
     const notificationId = `xorapass-ai-${sessionId}`;
     notificationDomains.set(notificationId, domain);
