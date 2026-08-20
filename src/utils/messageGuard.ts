@@ -41,6 +41,11 @@ export const KNOWN_MESSAGE_TYPES = [
   'AI_DECIDE_REQUEST',
   'AI_LIST_SESSIONS',
   'AI_REVOKE_SESSION',
+  // Label-only metadata (id/label/username/category, never a secret value) to
+  // populate the "which saved item did the AI mean?" picker in the in-page
+  // AI-request dialog. Same sensitivity tier as GET_MATCHING_CREDENTIALS,
+  // which already exposes this same shape of data content-script-reachable.
+  'AI_LIST_VAULT_ITEMS',
   // Secret paste guard: fetch the effective policy, report a secret-FREE
   // warning event for auditing, and save a detected secret into the vault.
   'AI_PASTE_POLICY',
@@ -62,14 +67,20 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'GET_STATUS',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
-  // Account-wide AI actions (every pending request / every session) --
-  // reserved for the popup, same tier as the vault-lifecycle messages above.
-  // The page-scoped ones (AI_CHECK_TAB, AI_FILL_CONFIRM, AI_FILL_HANDLED,
-  // AI_REVOKE_SESSION) stay content-script-reachable, same trust tier as
-  // GET_MATCHING_CREDENTIALS: our own injected UI is the only thing that ever
-  // triggers them, exactly like the existing autofill button.
+  // Listing every pending request / every session account-wide is reserved
+  // for the popup, same tier as the vault-lifecycle messages above -- these
+  // return more than "is there anything for THIS page", which is what the
+  // page-scoped ones below settle for.
+  //
+  // AI_DECIDE_REQUEST (deciding ONE named request, not listing all of them)
+  // is deliberately NOT here, alongside AI_CHECK_TAB, AI_FILL_CONFIRM,
+  // AI_FILL_HANDLED, and AI_REVOKE_SESSION: all five are content-script-
+  // reachable at the same trust tier as GET_MATCHING_CREDENTIALS, because our
+  // own injected UI (the in-page AI-request dialog, the AI-fill banner) is
+  // the only thing that ever triggers them, exactly like the existing
+  // autofill button. A page script cannot reach a closed shadow root to
+  // synthesize that click.
   'AI_LIST_REQUESTS',
-  'AI_DECIDE_REQUEST',
   'AI_LIST_SESSIONS',
   'SET_CLIPBOARD_CLEAR',
   // A page has no business arming (or re-arming, and so postponing) the

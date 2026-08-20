@@ -227,6 +227,10 @@ browser.alarms.onAlarm.addListener((alarm) => {
     // the only path this extension has to learn about it at all, since nothing
     // pushes to a browser extension from outside itself.
     void notifyForNewActiveSessions();
+    // A brand-new pending request also needs an active nudge, same reasoning
+    // as the session one above -- it can arrive (or be approved from the web
+    // app, or seen for the first time) with no popup open to show it.
+    void pushNewAiRequestsToActiveTab();
   }
 });
 
@@ -359,13 +363,24 @@ const dismissedByTab = new Map<number, Set<string>>();
 const notifiedSessionIds = new Set<string>();
 // Notification id -> the domain to focus/open when it is clicked.
 const notificationDomains = new Map<string, string>();
+// In-flight guard, separate from notifiedSessionIds: this function is called
+// from two places (the immediate post-approve nudge and the once-a-minute
+// heartbeat) that can land within milliseconds of each other. Both would see
+// notifiedSessionIds as empty and race each other through the async tab
+// query below, both then calling notifications.create() for the same
+// session -- which Chrome treats as re-triggering the same notification,
+// not a no-op, so it can visibly flash/duplicate. Marking synchronously here,
+// before the first await, closes that window; notifiedSessionIds (below)
+// still only gets marked once a notification actually shows.
+const checkingSessionIds = new Set<string>();
 
 async function notifyIfNoMatchingActiveTab(
   sessionId: string,
   domain: string,
   aiToolName: string,
 ): Promise<void> {
-  if (!domain || notifiedSessionIds.has(sessionId)) return;
+  if (!domain || notifiedSessionIds.has(sessionId) || checkingSessionIds.has(sessionId)) return;
+  checkingSessionIds.add(sessionId);
 
   try {
     // "Active" tab per window is exactly what the user is looking at, and is
@@ -406,6 +421,8 @@ async function notifyIfNoMatchingActiveTab(
     });
   } catch (err) {
     console.warn('[XoraPass] AI session notification failed:', err);
+  } finally {
+    checkingSessionIds.delete(sessionId);
   }
 }
 
@@ -803,6 +820,79 @@ async function pushAiFillToActiveTabs() {
   for (const tab of tabs) {
     if (tab.id !== undefined) void pushAiFillCheck(tab.id, tab.url);
   }
+}
+
+// Tracks pending AI request ids the in-page prompt has already been shown
+// for, so the heartbeat doesn't re-open the same dialog on every tick while
+// it's still awaiting a decision. Bounded like every other per-request set in
+// this file, for the same reason: request ids are server-issued and open-ended.
+const seenAiRequestIds = new Set<string>();
+
+interface AiRequestOffer {
+  id: string;
+  aiToolName: string;
+  action: string;
+  domain: string;
+  credentialLabel: string;
+  riskLevel: string;
+  reason: string;
+  requestedScopes: string[];
+  requestedDurationSeconds: number;
+  credentialType: string;
+  vaultEntryId?: string;
+  requestKind?: string;
+}
+
+/**
+ * Pushes an in-page Approve/Deny/Reduce-scope prompt to one active tab for
+ * any pending AI request the user hasn't been shown yet -- the same "does the
+ * user need to look at this" moment the toolbar badge already covers
+ * passively, made active so a new request doesn't sit unnoticed until someone
+ * happens to open the popup. Uses the same showConfirmDialog-style shadow-DOM
+ * UI the secret-paste warning already uses, so a security-relevant prompt
+ * looks consistent regardless of which one is showing.
+ *
+ * Only the first fresh request goes out, and only to one tab: stacking
+ * several dialogs across windows (or several at once in one tab) for
+ * requests that arrived together would be worse than the badge it
+ * supplements. Anything left over stays covered by the badge until this one
+ * is decided and the next heartbeat tick offers the next.
+ */
+async function pushNewAiRequestsToActiveTab(): Promise<void> {
+  const jwt = await getJwt();
+  if (!jwt) return;
+
+  const { ok, data } = await apiJwt('GET', '/ai/access-requests');
+  if (!ok || !Array.isArray(data)) return;
+
+  const fresh = (data as any[]).find((r) => r.status === 'pending' && !seenAiRequestIds.has(r.id));
+  if (!fresh) return;
+
+  const tabs = await browser.tabs.query({ active: true });
+  const target = tabs.find((t) => t.id !== undefined);
+  if (target?.id === undefined) return; // no window open at all -- badge is the fallback
+
+  seenAiRequestIds.add(fresh.id);
+  if (seenAiRequestIds.size > 500) seenAiRequestIds.clear();
+
+  const offer: AiRequestOffer = {
+    id: fresh.id,
+    aiToolName: fresh.ai_tool_name || 'An AI tool',
+    action: fresh.action,
+    domain: fresh.domain,
+    credentialLabel: fresh.credential_label,
+    riskLevel: fresh.risk_level,
+    reason: fresh.reason,
+    requestedScopes: fresh.requested_scopes || [],
+    requestedDurationSeconds: fresh.requested_duration_seconds || 300,
+    credentialType: fresh.credential_type,
+    vaultEntryId: fresh.vault_entry_id,
+    requestKind: fresh.request_kind,
+  };
+  browser.tabs.sendMessage(target.id, { type: 'AI_REQUEST_AVAILABLE', payload: offer }).catch(() => {
+    /* content script not present on this page (e.g. chrome:// tab) -- the
+       badge is still there as a fallback, so this is not marked un-seen. */
+  });
 }
 
 // Re-check on tab switch (fast, cheap) and on navigation completing. A fresh
@@ -1239,13 +1329,33 @@ browser.runtime.onMessage.addListener((message, sender) => {
     );
   }
 
+  if (type === 'AI_LIST_VAULT_ITEMS') {
+    // Label-only, for the in-page dialog's "which saved item did the AI
+    // mean?" picker -- never the value. storage.session already holds the
+    // fully decrypted vault for the popup's own picker; this strips it down
+    // to what a content script is allowed to see, same as
+    // GET_MATCHING_CREDENTIALS does for the credential-picker menu.
+    return browser.storage.session.get(['vaultItems']).then((res) => {
+      const items = ((res as Record<string, unknown>).vaultItems as VaultItem[] | undefined) || [];
+      return {
+        items: items.map((i) => ({ id: i.id, label: i.label, username: i.username, category: i.category })),
+      };
+    });
+  }
+
   if (type === 'AI_DECIDE_REQUEST') {
-    const { requestId, decision, grantedScopes, durationSeconds, maxUses } = msg.payload as {
+    const { requestId, decision, grantedScopes, durationSeconds, maxUses, vaultEntryId } = msg.payload as {
       requestId: string;
       decision: 'approve' | 'deny';
       grantedScopes?: string[];
       durationSeconds?: number;
       maxUses?: number;
+      // Which credential a label-only ("unbound") personal request actually
+      // means. The server requires this and refuses the approval without it
+      // (400 "vault_entry_id is required") -- the AI names a credential the
+      // way a person would ("GitHub Dev Token") and never learns which real
+      // entry was chosen, so the popup has to ask before approving one.
+      vaultEntryId?: string;
     };
     const path = `/ai/access-requests/${requestId}/${decision}`;
     const body =
@@ -1254,6 +1364,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
             ...(grantedScopes && grantedScopes.length ? { granted_scopes: grantedScopes } : {}),
             ...(durationSeconds ? { duration_seconds: durationSeconds } : {}),
             ...(maxUses ? { max_uses: maxUses } : {}),
+            ...(vaultEntryId ? { vault_entry_id: vaultEntryId } : {}),
           }
         : undefined;
     return apiJwt('POST', path, body).then(({ ok, status, data }) => {

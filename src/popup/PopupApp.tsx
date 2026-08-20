@@ -121,9 +121,38 @@ interface AiRequest {
   risk_level: string;
   reason: string;
   requested_scopes: string[];
+  requested_duration_seconds: number;
   credential_label: string;
   status: string;
+  credential_type: string;
+  // "" or "credential_access" grants a scoped session (the normal case this
+  // whole card is designed around). Anything else (e.g. "setup_cli") is a
+  // workflow the user just says yes/no to -- no credential, no scopes, no
+  // vault entry to bind, so the binding picker and Reduce-scope option must
+  // not appear for one of these, the same way xorapass-go's own web app
+  // (isWorkflowRequest) hides them.
+  request_kind?: string;
+  // Absent on a "label-only" personal request -- the AI named the credential
+  // the way a person would (credential_label, e.g. "GitHub Dev Token")
+  // instead of an id, because it has no way to look one up in a
+  // zero-knowledge vault. The server refuses to approve one of these without
+  // vault_entry_id (400 "vault_entry_id is required"), so the user has to
+  // pick which real entry was meant before Approve can succeed.
+  vault_entry_id?: string;
 }
+
+// Mirrors xorapass-go/apps/web/src/store/aiAccessStore.ts's ALL_SCOPES /
+// SCOPE_LABELS / TTL_PRESET_MINUTES exactly, so the "reduce scope" options
+// offered here are the same ones the web app offers -- this repo has no
+// shared package with that one, so these are kept in sync by hand.
+const ALL_SCOPES = ['autofill', 'submit', 'read'] as const;
+type Scope = (typeof ALL_SCOPES)[number];
+const SCOPE_LABELS: Record<Scope, string> = {
+  autofill: 'Autofill credential',
+  submit: 'Submit / execute',
+  read: 'Read status',
+};
+const TTL_PRESET_MINUTES = [5, 10, 15, 60] as const;
 
 interface AiSession {
   id: string;
@@ -202,6 +231,241 @@ const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; siz
       style={{ backgroundColor: color }}
     >
       {initial}
+    </div>
+  );
+};
+
+interface AiDecideOptions {
+  vaultEntryId?: string;
+  grantedScopes?: string[];
+  durationSeconds?: number;
+  maxUses?: number;
+}
+
+interface AiRequestCardProps {
+  r: AiRequest;
+  vaultItems: DecryptedItem[];
+  busy: boolean;
+  pickedVaultEntry: string;
+  onPickVaultEntry: (id: string) => void;
+  onApprove: (opts?: AiDecideOptions) => void;
+  onDeny: () => void;
+}
+
+// Mirrors xorapass-go/apps/web's PendingCard: the same three actions (Approve,
+// Deny, Reduce scope), and the same reduced-grant fields (scope checkboxes,
+// duration, max uses) once "Reduce scope" is open. Kept as a separate
+// component, same as the web app, so each pending request's in-progress edit
+// (which scopes are checked, what duration is typed) is its own local state
+// and does not leak into a sibling card's.
+const AiRequestCard: React.FC<AiRequestCardProps> = ({
+  r,
+  vaultItems,
+  busy,
+  pickedVaultEntry,
+  onPickVaultEntry,
+  onApprove,
+  onDeny,
+}) => {
+  const [reduceOpen, setReduceOpen] = useState(false);
+  const [scopes, setScopes] = useState<Scope[]>(r.requested_scopes as Scope[]);
+  const [durationMin, setDurationMin] = useState(Math.max(1, Math.round((r.requested_duration_seconds || 300) / 60)));
+  const [maxUses, setMaxUses] = useState(0);
+
+  const isWorkflow = !!r.request_kind && r.request_kind !== 'credential_access';
+  const needsBinding = !isWorkflow && r.credential_type === 'personal' && !r.vault_entry_id;
+  const bindingReady = !needsBinding || !!pickedVaultEntry;
+
+  const toggleScope = (s: Scope) => {
+    setScopes((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+  };
+
+  const bindingOpt: AiDecideOptions = needsBinding ? { vaultEntryId: pickedVaultEntry } : {};
+  const approveFull = () => onApprove(needsBinding ? bindingOpt : undefined);
+  const approveReduced = () =>
+    onApprove({
+      ...bindingOpt,
+      grantedScopes: scopes,
+      durationSeconds: durationMin * 60,
+      maxUses: maxUses > 0 ? maxUses : undefined,
+    });
+
+  return (
+    <div className="p-3 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Bot className="w-4 h-4 text-brand-cyan shrink-0" />
+          <span className="text-xs font-extrabold text-slate-900 truncate">{r.ai_tool_name}</span>
+        </div>
+        <span
+          className="text-[8px] font-black uppercase px-2 py-0.5 rounded-md"
+          style={{
+            color: RISK_COLORS[r.risk_level] || '#94a3b8',
+            background: `${RISK_COLORS[r.risk_level] || '#94a3b8'}15`,
+            border: `1px solid ${RISK_COLORS[r.risk_level] || '#94a3b8'}30`,
+          }}
+        >
+          {r.risk_level} risk
+        </span>
+      </div>
+
+      <p className="text-[10px] text-slate-600 leading-snug">
+        Requests to <b className="text-slate-900 font-bold">{r.action}</b> for{' '}
+        <b className="text-slate-900 font-bold">{r.domain || r.credential_label}</b>
+      </p>
+
+      {r.requested_scopes && r.requested_scopes.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {r.requested_scopes.map((s) => (
+            <span key={s} className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-900/8 text-[9px] font-mono font-semibold text-slate-600">
+              {s}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {r.reason && <p className="text-[9px] text-slate-500 italic truncate">"{r.reason}"</p>}
+
+      {needsBinding && (
+        <div className="space-y-1">
+          <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">
+            Which saved item is "{r.credential_label}"?
+          </label>
+          <select
+            value={pickedVaultEntry}
+            onChange={(e) => onPickVaultEntry(e.target.value)}
+            className="w-full text-[10px] px-2 py-1.5 rounded-lg border border-slate-900/10 bg-white text-slate-800"
+          >
+            <option value="">Select a vault item…</option>
+            {vaultItems.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}{item.username ? ` (${item.username})` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {reduceOpen && (
+        <div className="rounded-lg border border-slate-900/10 bg-slate-50 p-2.5 space-y-2">
+          <div className="text-[9px] font-bold uppercase tracking-wide text-slate-500">Grant a reduced scope</div>
+          <div className="flex flex-wrap gap-1">
+            {ALL_SCOPES.filter((s) => (r.requested_scopes as Scope[]).includes(s)).map((s) => {
+              const on = scopes.includes(s);
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => toggleScope(s)}
+                  className={`rounded-md border px-2 py-0.5 text-[9px] font-semibold transition ${
+                    on
+                      ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
+                      : 'border-slate-900/10 text-slate-400'
+                  }`}
+                >
+                  {on ? <Check className="w-2.5 h-2.5 inline mr-0.5" /> : null}
+                  {SCOPE_LABELS[s]}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-[9px] text-slate-500">Expires after</span>
+            {TTL_PRESET_MINUTES.map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setDurationMin(m)}
+                className={`rounded-md border px-2 py-0.5 text-[9px] font-semibold transition ${
+                  durationMin === m
+                    ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
+                    : 'border-slate-900/10 text-slate-400'
+                }`}
+              >
+                {m} min
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-[9px] text-slate-500 flex items-center justify-between gap-1">
+              Duration (min)
+              <input
+                type="number"
+                min={1}
+                max={1440}
+                value={durationMin}
+                onChange={(e) => setDurationMin(Math.max(1, parseInt(e.target.value || '1', 10)))}
+                className="w-14 rounded border border-slate-900/10 bg-white px-1.5 py-1 text-slate-800"
+              />
+            </label>
+            <label className="text-[9px] text-slate-500 flex items-center justify-between gap-1">
+              Max uses (0=∞)
+              <input
+                type="number"
+                min={0}
+                max={9999}
+                value={maxUses}
+                onChange={(e) => setMaxUses(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                className="w-14 rounded border border-slate-900/10 bg-white px-1.5 py-1 text-slate-800"
+              />
+            </label>
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-2 pt-0.5">
+        {!reduceOpen ? (
+          <>
+            <button
+              disabled={busy || !bindingReady}
+              onClick={approveFull}
+              className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold transition shadow-xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
+            >
+              {busy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              <span>Approve</span>
+            </button>
+            <button
+              disabled={busy}
+              onClick={onDeny}
+              className="flex-1 py-1.5 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 border border-slate-900/10 text-slate-700 rounded-lg text-[10px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
+            >
+              <Ban className="w-3.5 h-3.5" />
+              <span>Deny</span>
+            </button>
+            {!isWorkflow && (
+              <button
+                disabled={busy}
+                onClick={() => setReduceOpen(true)}
+                title="Reduce scope"
+                className="px-2.5 py-1.5 bg-white hover:bg-slate-50 border border-slate-900/10 text-slate-500 rounded-lg text-[10px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center justify-center"
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <button
+              disabled={busy || scopes.length === 0 || !bindingReady}
+              onClick={approveReduced}
+              className="flex-1 py-1.5 bg-brand-cyan hover:opacity-90 text-white rounded-lg text-[10px] font-bold transition shadow-xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
+            >
+              {busy ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              <span>Approve reduced</span>
+            </button>
+            <button
+              disabled={busy}
+              onClick={() => {
+                setReduceOpen(false);
+                setScopes(r.requested_scopes as Scope[]);
+              }}
+              className="flex-1 py-1.5 bg-slate-100 border border-slate-900/10 text-slate-600 rounded-lg text-[10px] font-bold transition cursor-pointer disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 };
@@ -383,10 +647,15 @@ export const PopupApp: React.FC = () => {
     if (unlocked && tab === 'ai') fetchAiData();
   }, [unlocked, tab]);
 
-  const decideAiRequest = (requestId: string, decision: 'approve' | 'deny') => {
+  // requestId -> the vault entry chosen for a label-only personal request.
+  // Cleared once the request leaves the pending list (approved/denied), via
+  // fetchAiData's re-render simply no longer including that id.
+  const [pickedVaultEntry, setPickedVaultEntry] = useState<Record<string, string>>({});
+
+  const decideAiRequest = (requestId: string, decision: 'approve' | 'deny', opts?: AiDecideOptions) => {
     setAiBusyId(requestId);
     browser.runtime
-      .sendMessage({ type: 'AI_DECIDE_REQUEST', payload: { requestId, decision } })
+      .sendMessage({ type: 'AI_DECIDE_REQUEST', payload: { requestId, decision, ...opts } })
       .then((res: any) => {
         if (res?.error) setAiError(res.error);
         fetchAiData();
@@ -1859,59 +2128,16 @@ export const PopupApp: React.FC = () => {
                     </div>
                   ) : (
                     aiRequests.map((r) => (
-                      <div key={r.id} className="p-3 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <Bot className="w-4 h-4 text-brand-cyan shrink-0" />
-                            <span className="text-xs font-extrabold text-slate-900 truncate">{r.ai_tool_name}</span>
-                          </div>
-                          <span
-                            className="text-[8px] font-black uppercase px-2 py-0.5 rounded-md"
-                            style={{
-                              color: RISK_COLORS[r.risk_level] || '#94a3b8',
-                              background: `${RISK_COLORS[r.risk_level] || '#94a3b8'}15`,
-                              border: `1px solid ${RISK_COLORS[r.risk_level] || '#94a3b8'}30`,
-                            }}
-                          >
-                            {r.risk_level} risk
-                          </span>
-                        </div>
-
-                        <p className="text-[10px] text-slate-600 leading-snug">
-                          Requests to <b className="text-slate-900 font-bold">{r.action}</b> for <b className="text-slate-900 font-bold">{r.domain || r.credential_label}</b>
-                        </p>
-
-                        {r.requested_scopes && r.requested_scopes.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {r.requested_scopes.map((s) => (
-                              <span key={s} className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-900/8 text-[9px] font-mono font-semibold text-slate-600">
-                                {s}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-
-                        {r.reason && <p className="text-[9px] text-slate-500 italic truncate">"{r.reason}"</p>}
-
-                        <div className="flex gap-2 pt-0.5">
-                          <button
-                            disabled={aiBusyId === r.id}
-                            onClick={() => decideAiRequest(r.id, 'approve')}
-                            className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold transition shadow-xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
-                          >
-                            {aiBusyId === r.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                            <span>Approve</span>
-                          </button>
-                          <button
-                            disabled={aiBusyId === r.id}
-                            onClick={() => decideAiRequest(r.id, 'deny')}
-                            className="flex-1 py-1.5 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 border border-slate-900/10 text-slate-700 rounded-lg text-[10px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
-                          >
-                            <Ban className="w-3.5 h-3.5" />
-                            <span>Deny</span>
-                          </button>
-                        </div>
-                      </div>
+                      <AiRequestCard
+                        key={r.id}
+                        r={r}
+                        vaultItems={vaultItems}
+                        busy={aiBusyId === r.id}
+                        pickedVaultEntry={pickedVaultEntry[r.id] || ''}
+                        onPickVaultEntry={(id) => setPickedVaultEntry((prev) => ({ ...prev, [r.id]: id }))}
+                        onApprove={(opts) => decideAiRequest(r.id, 'approve', opts)}
+                        onDeny={() => decideAiRequest(r.id, 'deny')}
+                      />
                     ))
                   )}
                 </div>

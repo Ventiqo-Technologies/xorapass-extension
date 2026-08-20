@@ -78,6 +78,28 @@ describe('validateMessage — privileged operations', () => {
   it('rejects GET_STATUS originating from a web page', () => {
     expect(validateMessage({ type: 'GET_STATUS' }, contentSender()).reason).toBe('privileged-from-content');
   });
+
+  // AI_DECIDE_REQUEST and AI_LIST_VAULT_ITEMS back the in-page AI-request
+  // dialog (a closed shadow root only our own injected UI can trigger), same
+  // trust tier as the pre-existing AI_REVOKE_SESSION -- unlike AI_LIST_REQUESTS
+  // and AI_LIST_SESSIONS, which enumerate account-wide state and stay
+  // reserved for the popup.
+  it('allows AI_DECIDE_REQUEST and AI_LIST_VAULT_ITEMS from a content script', () => {
+    expect(
+      validateMessage({ type: 'AI_DECIDE_REQUEST', payload: { requestId: 'r1', decision: 'approve' } }, contentSender()).ok
+    ).toBe(true);
+    expect(validateMessage({ type: 'AI_LIST_VAULT_ITEMS' }, contentSender()).ok).toBe(true);
+  });
+  it('allows AI_REVOKE_SESSION from a content script but rejects AI_LIST_REQUESTS / AI_LIST_SESSIONS', () => {
+    expect(validateMessage({ type: 'AI_REVOKE_SESSION', payload: { sessionId: 's1' } }, contentSender()).ok).toBe(true);
+    expect(validateMessage({ type: 'AI_LIST_REQUESTS' }, contentSender()).reason).toBe('privileged-from-content');
+    expect(validateMessage({ type: 'AI_LIST_SESSIONS' }, contentSender()).reason).toBe('privileged-from-content');
+  });
+  it('rejects AI_DECIDE_REQUEST with an invalid decision value', () => {
+    expect(
+      validateMessage({ type: 'AI_DECIDE_REQUEST', payload: { requestId: 'r1', decision: 'maybe' } }, contentSender()).reason
+    ).toBe('bad-payload');
+  });
 });
 
 describe('validateMessage — payload validation', () => {

@@ -33,7 +33,9 @@ import {
   isSavePromptOpen,
   clearAll,
   SHIELD_SVG,
+  showAiRequestPrompt,
   type OverlayCredential,
+  type AiRequestPromptOffer,
 } from './overlay';
 
 let activeCredentials: OverlayCredential[] = [];
@@ -251,8 +253,37 @@ browser.runtime.onMessage.addListener((message: any) => {
     pendingAiOffer = message.payload as AiFillOffer;
     tryShowAiBanner();
   }
+  if (message.type === 'AI_REQUEST_AVAILABLE') {
+    void handleNewAiRequest(message.payload as AiRequestPromptOffer);
+  }
   return undefined;
 });
+
+// Shows the in-page Approve/Deny/Adjust dialog background pushed here for a
+// brand-new pending AI request, and carries out whatever the user decides.
+// Label-only vault-item metadata is fetched fresh each time rather than
+// cached, since the vault can change between one request and the next.
+async function handleNewAiRequest(offer: AiRequestPromptOffer): Promise<void> {
+  const isWorkflow = !!offer.requestKind && offer.requestKind !== 'credential_access';
+  const needsBinding = !isWorkflow && offer.credentialType === 'personal' && !offer.vaultEntryId;
+  let vaultItems: { id: string; label: string; username: string }[] = [];
+  if (needsBinding) {
+    const res: any = await browser.runtime.sendMessage({ type: 'AI_LIST_VAULT_ITEMS' }).catch(() => null);
+    vaultItems = res?.items || [];
+  }
+
+  const decision = await showAiRequestPrompt(offer, vaultItems);
+  if (!decision) return; // dismissed -- the badge still covers it
+
+  const payload: Record<string, unknown> = { requestId: offer.id, decision: decision.action };
+  if (decision.action === 'approve') {
+    if (decision.vaultEntryId) payload.vaultEntryId = decision.vaultEntryId;
+    if (decision.grantedScopes) payload.grantedScopes = decision.grantedScopes;
+    if (decision.durationSeconds) payload.durationSeconds = decision.durationSeconds;
+    if (decision.maxUses) payload.maxUses = decision.maxUses;
+  }
+  void browser.runtime.sendMessage({ type: 'AI_DECIDE_REQUEST', payload }).catch(() => {});
+}
 
 // ---------------------------------------------------------------------------
 // Field detection

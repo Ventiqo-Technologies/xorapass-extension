@@ -644,6 +644,118 @@ const STYLES = `
 .btn-confirm:active {
   transform: translateY(0);
 }
+
+/* ── AI-request in-page dialog: pieces beyond the base modal above ────────── */
+.ai-req-risk-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.ai-req-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0;
+}
+.ai-req-scope-tag {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  font-size: 10px;
+  font-weight: 600;
+  color: #475569;
+  font-family: ui-monospace, monospace;
+}
+.ai-req-select {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12.5px;
+  font-family: inherit;
+}
+.ai-req-reduce-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+.ai-req-reduce-label {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+.ai-req-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.ai-req-chip {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.ai-req-chip.is-on {
+  background: rgba(13, 148, 136, 0.1);
+  border-color: rgba(13, 148, 136, 0.35);
+  color: #0d9488;
+}
+.ai-req-field-row {
+  display: flex;
+  gap: 10px;
+}
+.ai-req-field {
+  flex: 1;
+  font-size: 11px;
+  color: #64748b;
+}
+.ai-req-field input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  color: #0f172a;
+  font-family: inherit;
+  font-size: 12px;
+}
+.btn-deny {
+  color: #e11d48;
+  background: rgba(225, 29, 72, 0.08);
+  border: 1px solid rgba(225, 29, 72, 0.25);
+  font-weight: 700;
+}
+.btn-deny:hover {
+  background: rgba(225, 29, 72, 0.14);
+}
+.btn-adjust {
+  color: #64748b;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+}
+.btn-adjust:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
 `;
 
 export const SHIELD_SVG =
@@ -1072,6 +1184,325 @@ export function showConfirmDialog(opts: {
 
     root.appendChild(backdrop);
     confirmBtn.focus();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// AI-request dialog
+// ---------------------------------------------------------------------------
+//
+// The active-nudge counterpart to the toolbar badge: when a new AI credential
+// request arrives, the background worker pushes it to whichever tab is
+// currently active and this renders the Approve/Deny/Adjust decision right
+// there, reusing the same modal chrome as showConfirmDialog above so a
+// security-relevant prompt looks consistent regardless of which one is
+// showing. Mirrors xorapass-go/apps/web's PendingCard: same three actions,
+// same reduced-grant fields once "Adjust" is open.
+
+export interface AiRequestPromptOffer {
+  id: string;
+  aiToolName: string;
+  action: string;
+  domain: string;
+  credentialLabel: string;
+  riskLevel: string;
+  reason: string;
+  requestedScopes: string[];
+  requestedDurationSeconds: number;
+  credentialType: string;
+  vaultEntryId?: string;
+  // "" or "credential_access" grants a scoped session -- the normal case this
+  // dialog is built around. Anything else (e.g. "setup_cli") is a workflow
+  // the user just says yes/no to: no credential, no scopes, no vault entry to
+  // bind, so the binding picker and Adjust button must not appear.
+  requestKind?: string;
+}
+
+export interface AiRequestPromptVaultItem {
+  id: string;
+  label: string;
+  username: string;
+}
+
+export type AiRequestDecision =
+  | { action: 'deny' }
+  | { action: 'approve'; vaultEntryId?: string; grantedScopes?: string[]; durationSeconds?: number; maxUses?: number }
+  | null; // dismissed (Escape, backdrop click, the × button) without deciding
+
+const AI_SCOPE_LABELS: Record<string, string> = {
+  autofill: 'Autofill credential',
+  submit: 'Submit / execute',
+  read: 'Read status',
+};
+const AI_TTL_PRESETS = [5, 10, 15, 60];
+const AI_RISK_COLORS: Record<string, string> = {
+  low: '#2dd4bf',
+  medium: '#f59e0b',
+  high: '#f97316',
+  critical: '#f43f5e',
+};
+
+export function showAiRequestPrompt(
+  offer: AiRequestPromptOffer,
+  vaultItems: AiRequestPromptVaultItem[],
+): Promise<AiRequestDecision> {
+  const root = ensureHost();
+
+  return new Promise((resolve) => {
+    const isWorkflow = !!offer.requestKind && offer.requestKind !== 'credential_access';
+    const needsBinding = !isWorkflow && offer.credentialType === 'personal' && !offer.vaultEntryId;
+    let pickedVaultEntry = '';
+    let reduceOpen = false;
+    let scopes = [...offer.requestedScopes];
+    let durationMin = Math.max(1, Math.round((offer.requestedDurationSeconds || 300) / 60));
+    let maxUses = 0;
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'backdrop';
+
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.setAttribute('role', 'alertdialog');
+    modal.setAttribute('aria-modal', 'true');
+
+    const head = document.createElement('div');
+    head.className = 'modal-head';
+    const iconWrap = document.createElement('div');
+    iconWrap.className = 'modal-head-icon';
+    iconWrap.innerHTML = SHIELD_SVG;
+    head.appendChild(iconWrap);
+    const title = document.createElement('div');
+    title.className = 'modal-title';
+    title.textContent = `${offer.aiToolName} wants to ${offer.action}`;
+    head.appendChild(title);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'modal-close';
+    closeBtn.innerHTML = '×';
+    closeBtn.title = 'Dismiss';
+    closeBtn.addEventListener('click', () => cleanup(null));
+    head.appendChild(closeBtn);
+    modal.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+
+    const targetRow = document.createElement('div');
+    targetRow.className = 'modal-body-line';
+    const targetText = document.createElement('span');
+    targetText.textContent = offer.domain || offer.credentialLabel || 'a credential';
+    targetRow.appendChild(targetText);
+    const riskBadge = document.createElement('span');
+    riskBadge.className = 'ai-req-risk-badge';
+    const riskColor = AI_RISK_COLORS[offer.riskLevel] || '#94a3b8';
+    riskBadge.style.color = riskColor;
+    riskBadge.style.background = `${riskColor}15`;
+    riskBadge.style.border = `1px solid ${riskColor}30`;
+    riskBadge.textContent = `${offer.riskLevel} risk`;
+    targetRow.appendChild(riskBadge);
+    body.appendChild(targetRow);
+
+    if (offer.reason) {
+      const reasonLine = document.createElement('div');
+      reasonLine.className = 'modal-body-line';
+      reasonLine.style.fontStyle = 'italic';
+      reasonLine.style.color = '#94a3b8';
+      reasonLine.textContent = `"${offer.reason}"`;
+      body.appendChild(reasonLine);
+    }
+
+    if (offer.requestedScopes.length > 0) {
+      const scopesRow = document.createElement('div');
+      scopesRow.className = 'ai-req-scopes';
+      for (const s of offer.requestedScopes) {
+        const tag = document.createElement('span');
+        tag.className = 'ai-req-scope-tag';
+        tag.textContent = s;
+        scopesRow.appendChild(tag);
+      }
+      body.appendChild(scopesRow);
+    }
+
+    let vaultSelect: HTMLSelectElement | null = null;
+    if (needsBinding) {
+      const label = document.createElement('div');
+      label.className = 'modal-body-line';
+      label.style.fontWeight = '700';
+      label.textContent = `Which saved item is "${offer.credentialLabel}"?`;
+      body.appendChild(label);
+
+      vaultSelect = document.createElement('select');
+      vaultSelect.className = 'ai-req-select';
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = 'Select a vault item…';
+      vaultSelect.appendChild(emptyOpt);
+      for (const item of vaultItems) {
+        const opt = document.createElement('option');
+        opt.value = item.id;
+        opt.textContent = item.username ? `${item.label} (${item.username})` : item.label;
+        vaultSelect.appendChild(opt);
+      }
+      vaultSelect.addEventListener('change', () => {
+        pickedVaultEntry = vaultSelect!.value;
+        updateApproveState();
+      });
+      body.appendChild(vaultSelect);
+    }
+
+    const reducePanel = document.createElement('div');
+    reducePanel.className = 'ai-req-reduce-panel';
+    reducePanel.style.display = 'none';
+    body.appendChild(reducePanel);
+
+    modal.appendChild(body);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+
+    const cleanup = (result: AiRequestDecision) => {
+      backdrop.classList.add('is-closing');
+      setTimeout(() => backdrop.remove(), 150);
+      document.removeEventListener('keydown', onKey, true);
+      resolve(result);
+    };
+
+    const denyBtn = document.createElement('button');
+    denyBtn.type = 'button';
+    denyBtn.className = 'btn btn-deny';
+    denyBtn.textContent = 'Deny';
+    denyBtn.addEventListener('click', () => cleanup({ action: 'deny' }));
+
+    const approveBtn = document.createElement('button');
+    approveBtn.type = 'button';
+    approveBtn.className = 'btn btn-confirm';
+    approveBtn.textContent = 'Approve';
+
+    function updateApproveState() {
+      approveBtn.disabled = (needsBinding && !pickedVaultEntry) || (reduceOpen && scopes.length === 0);
+    }
+
+    const adjustBtn = document.createElement('button');
+    adjustBtn.type = 'button';
+    adjustBtn.className = 'btn btn-adjust';
+    adjustBtn.textContent = 'Adjust';
+    adjustBtn.addEventListener('click', () => {
+      reduceOpen = !reduceOpen;
+      reducePanel.style.display = reduceOpen ? 'block' : 'none';
+      approveBtn.textContent = reduceOpen ? 'Approve reduced' : 'Approve';
+      updateApproveState();
+    });
+
+    approveBtn.addEventListener('click', () => {
+      if (needsBinding && !pickedVaultEntry) return;
+      if (reduceOpen) {
+        if (scopes.length === 0) return;
+        cleanup({
+          action: 'approve',
+          vaultEntryId: needsBinding ? pickedVaultEntry : undefined,
+          grantedScopes: scopes,
+          durationSeconds: durationMin * 60,
+          maxUses: maxUses > 0 ? maxUses : undefined,
+        });
+      } else {
+        cleanup({ action: 'approve', vaultEntryId: needsBinding ? pickedVaultEntry : undefined });
+      }
+    });
+    updateApproveState();
+
+    // Reduce-scope panel contents -- built after approveBtn/updateApproveState
+    // exist above, since the chip handlers below call back into them.
+    const reduceLabel = document.createElement('div');
+    reduceLabel.className = 'ai-req-reduce-label';
+    reduceLabel.textContent = 'Grant a reduced scope';
+    reducePanel.appendChild(reduceLabel);
+
+    const chipRow = document.createElement('div');
+    chipRow.className = 'ai-req-chip-row';
+    for (const s of offer.requestedScopes) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `ai-req-chip${scopes.includes(s) ? ' is-on' : ''}`;
+      chip.textContent = AI_SCOPE_LABELS[s] || s;
+      chip.addEventListener('click', () => {
+        scopes = scopes.includes(s) ? scopes.filter((x) => x !== s) : [...scopes, s];
+        chip.classList.toggle('is-on', scopes.includes(s));
+        updateApproveState();
+      });
+      chipRow.appendChild(chip);
+    }
+    reducePanel.appendChild(chipRow);
+
+    const ttlRow = document.createElement('div');
+    ttlRow.className = 'ai-req-chip-row';
+    for (const m of AI_TTL_PRESETS) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `ai-req-chip${durationMin === m ? ' is-on' : ''}`;
+      chip.textContent = `${m} min`;
+      chip.addEventListener('click', () => {
+        durationMin = m;
+        durationInput.value = String(m);
+        for (const el of Array.from(ttlRow.children)) el.classList.remove('is-on');
+        chip.classList.add('is-on');
+      });
+      ttlRow.appendChild(chip);
+    }
+    reducePanel.appendChild(ttlRow);
+
+    const fieldRow = document.createElement('div');
+    fieldRow.className = 'ai-req-field-row';
+
+    const durationField = document.createElement('label');
+    durationField.className = 'ai-req-field';
+    durationField.textContent = 'Duration (min)';
+    const durationInput = document.createElement('input');
+    durationInput.type = 'number';
+    durationInput.min = '1';
+    durationInput.max = '1440';
+    durationInput.value = String(durationMin);
+    durationInput.addEventListener('input', () => {
+      durationMin = Math.max(1, parseInt(durationInput.value || '1', 10));
+    });
+    durationField.appendChild(durationInput);
+    fieldRow.appendChild(durationField);
+
+    const maxUsesField = document.createElement('label');
+    maxUsesField.className = 'ai-req-field';
+    maxUsesField.textContent = 'Max uses (0=∞)';
+    const maxUsesInput = document.createElement('input');
+    maxUsesInput.type = 'number';
+    maxUsesInput.min = '0';
+    maxUsesInput.max = '9999';
+    maxUsesInput.value = '0';
+    maxUsesInput.addEventListener('input', () => {
+      maxUses = Math.max(0, parseInt(maxUsesInput.value || '0', 10));
+    });
+    maxUsesField.appendChild(maxUsesInput);
+    fieldRow.appendChild(maxUsesField);
+
+    reducePanel.appendChild(fieldRow);
+
+    actions.appendChild(denyBtn);
+    if (!isWorkflow) actions.appendChild(adjustBtn);
+    actions.appendChild(approveBtn);
+    modal.appendChild(actions);
+
+    backdrop.appendChild(modal);
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) cleanup(null);
+    });
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        cleanup(null);
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+
+    root.appendChild(backdrop);
+    approveBtn.focus();
   });
 }
 
