@@ -31,7 +31,6 @@ import {
   CheckCircle2,
   X,
   Bot,
-  Ban,
   ShieldAlert
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
@@ -60,6 +59,7 @@ import {
   type VaultCache,
 } from '../utils/vaultCache';
 import { isAuthError, isOfflineError } from '../utils/netErrors';
+import { isAiSite } from '../utils/pasteGuard';
 import { LogoIcon, LogoHorizontal } from './Logo';
 import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL, WEB_APP_URL } from '../utils/config';
 import browser from 'webextension-polyfill';
@@ -117,46 +117,12 @@ const AUTO_LOCK_OPTIONS = [
   { label: 'Never', value: 0 },
 ];
 
-interface AiRequest {
-  id: string;
-  ai_tool_name: string;
-  action: string;
-  domain: string;
-  environment: string;
-  risk_level: string;
-  reason: string;
-  requested_scopes: string[];
-  credential_label: string;
-  status: string;
-}
-
-interface AiSession {
-  id: string;
-  ai_tool_name: string;
-  action: string;
-  domain: string;
-  granted_scopes: string[];
-  max_uses: number;
-  use_count: number;
-  expires_at: string;
-  status: string;
-}
-
-const RISK_COLORS: Record<string, string> = {
-  low: '#2dd4bf',
-  medium: '#f59e0b',
-  high: '#f97316',
-  critical: '#f43f5e',
-};
-
-function fmtExpiresIn(iso: string): string {
-  const ms = new Date(iso).getTime() - Date.now();
-  if (ms <= 0) return 'expired';
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
+interface ActiveAiTab {
+  id?: number;
+  title?: string;
+  url?: string;
+  favIconUrl?: string;
+  windowId?: number;
 }
 
 interface DecryptedItem {
@@ -241,13 +207,9 @@ export const PopupApp: React.FC = () => {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
 
-  // AI Access: pending requests + active scoped sessions for this account.
-  // Every call here authenticates as the human's own login -- an AI bridge
-  // token is never accepted on these endpoints, by server-side design.
-  const [aiRequests, setAiRequests] = useState<AiRequest[]>([]);
-  const [aiSessions, setAiSessions] = useState<AiSession[]>([]);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [aiBusyId, setAiBusyId] = useState<string | null>(null);
+  // Active AI browser tab sessions
+  const [activeAiTabs, setActiveAiTabs] = useState<ActiveAiTab[]>([]);
+  const [scanningTabs, setScanningTabs] = useState(false);
 
   // Personal secret-paste-guard mode (stored locally; the background reads it as
   // the effective policy until a business/admin policy exists on the backend).
@@ -374,42 +336,45 @@ export const PopupApp: React.FC = () => {
     browser.runtime.sendMessage({ type: 'SET_CLIPBOARD_CLEAR', payload: { seconds } });
   };
 
-  const fetchAiData = () => {
-    setAiError(null);
-    Promise.all([
-      browser.runtime.sendMessage({ type: 'AI_LIST_REQUESTS' }),
-      browser.runtime.sendMessage({ type: 'AI_LIST_SESSIONS' }),
-    ]).then(([reqRes, sessRes]: any[]) => {
-      setAiRequests(((reqRes?.requests || []) as AiRequest[]).filter((r) => r.status === 'pending'));
-      setAiSessions(((sessRes?.sessions || []) as AiSession[]).filter((s) => s.status === 'active'));
-      if (reqRes?.error || sessRes?.error) setAiError(reqRes?.error || sessRes?.error);
+  const scanActiveAiTabs = () => {
+    setScanningTabs(true);
+    browser.tabs.query({}).then((tabs) => {
+      const filtered = tabs
+        .filter((t) => {
+          if (!t.url) return false;
+          try {
+            const hostname = new URL(t.url).hostname;
+            return isAiSite(hostname);
+          } catch {
+            return false;
+          }
+        })
+        .map((t) => ({
+          id: t.id,
+          title: t.title || 'AI Chat Portal',
+          url: t.url,
+          favIconUrl: t.favIconUrl,
+          windowId: t.windowId,
+        }));
+      setActiveAiTabs(filtered);
+    }).catch(e => {
+      console.error("Failed to query browser tabs", e);
+    }).finally(() => {
+      setScanningTabs(false);
     });
   };
 
   useEffect(() => {
-    if (unlocked && tab === 'ai') fetchAiData();
+    if (unlocked && tab === 'ai') scanActiveAiTabs();
   }, [unlocked, tab]);
 
-  const decideAiRequest = (requestId: string, decision: 'approve' | 'deny') => {
-    setAiBusyId(requestId);
-    browser.runtime
-      .sendMessage({ type: 'AI_DECIDE_REQUEST', payload: { requestId, decision } })
-      .then((res: any) => {
-        if (res?.error) setAiError(res.error);
-        fetchAiData();
-      })
-      .finally(() => setAiBusyId(null));
-  };
-
-  const revokeAiSession = (sessionId: string) => {
-    setAiBusyId(sessionId);
-    browser.runtime
-      .sendMessage({ type: 'AI_REVOKE_SESSION', payload: { sessionId } })
-      .then((res: any) => {
-        if (res?.error) setAiError(res.error);
-        fetchAiData();
-      })
-      .finally(() => setAiBusyId(null));
+  const focusTab = (tabId?: number, windowId?: number) => {
+    if (tabId !== undefined) {
+      browser.tabs.update(tabId, { active: true });
+    }
+    if (windowId !== undefined) {
+      browser.windows.update(windowId, { focused: true });
+    }
   };
 
   const fetchCachedCredentials = () => {
@@ -1874,15 +1839,15 @@ export const PopupApp: React.FC = () => {
                       <h3 className="text-xs font-black tracking-tight text-white">AI Access & Security Guard</h3>
                     </div>
                     <button
-                      onClick={fetchAiData}
+                      onClick={scanActiveAiTabs}
                       className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-                      title="Refresh AI requests & sessions"
+                      title="Scan for open AI tabs"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${aiBusyId ? 'animate-spin' : ''}`} />
+                      <RefreshCw className={`w-3.5 h-3.5 ${scanningTabs ? 'animate-spin' : ''}`} />
                     </button>
                   </div>
                   <p className="text-[10px] text-slate-300 leading-snug relative z-10">
-                    Zero-Knowledge Protection: Credentials remain encrypted in your vault. AI tools only receive scoped, time-limited tokens.
+                    Zero-Knowledge Protection: Credentials remain encrypted in your vault. Paste Guard monitors AI prompts to protect against accidental leaks.
                   </p>
                 </div>
 
@@ -1922,148 +1887,58 @@ export const PopupApp: React.FC = () => {
                   </div>
                 </div>
 
-                {aiError && (
-                  <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-xl text-[10px] font-medium leading-snug flex items-center gap-1.5">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                    <span>{aiError}</span>
-                  </div>
-                )}
-
-                {/* Pending Requests Section */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
-                      <ShieldAlert className="w-3.5 h-3.5 text-amber-500" /> Awaiting Decision
-                    </div>
-                    {aiRequests.length > 0 && (
-                      <span className="px-1.5 py-0.2 text-[9px] font-extrabold rounded-full bg-brand-ruby text-white">
-                        {aiRequests.length} pending
-                      </span>
-                    )}
-                  </div>
-
-                  {aiRequests.length === 0 ? (
-                    <div className="p-4 bg-white border border-slate-900/10 rounded-xl text-center space-y-1 shadow-xs">
-                      <div className="w-8 h-8 rounded-full bg-emerald-50 border border-emerald-200/80 flex items-center justify-center mx-auto text-emerald-600">
-                        <ShieldCheck className="w-4 h-4" />
-                      </div>
-                      <div className="text-xs font-bold text-slate-800">Vault Fully Secured</div>
-                      <p className="text-[10px] text-slate-400">No AI tools are currently requesting credential access.</p>
-                    </div>
-                  ) : (
-                    aiRequests.map((r) => (
-                      <div key={r.id} className="p-3 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <Bot className="w-4 h-4 text-brand-cyan shrink-0" />
-                            <span className="text-xs font-extrabold text-slate-900 truncate">{r.ai_tool_name}</span>
-                          </div>
-                          <span
-                            className="text-[8px] font-black uppercase px-2 py-0.5 rounded-md"
-                            style={{
-                              color: RISK_COLORS[r.risk_level] || '#94a3b8',
-                              background: `${RISK_COLORS[r.risk_level] || '#94a3b8'}15`,
-                              border: `1px solid ${RISK_COLORS[r.risk_level] || '#94a3b8'}30`,
-                            }}
-                          >
-                            {r.risk_level} risk
-                          </span>
-                        </div>
-
-                        <p className="text-[10px] text-slate-600 leading-snug">
-                          Requests to <b className="text-slate-900 font-bold">{r.action}</b> for <b className="text-slate-900 font-bold">{r.domain || r.credential_label}</b>
-                        </p>
-
-                        {r.requested_scopes && r.requested_scopes.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {r.requested_scopes.map((s) => (
-                              <span key={s} className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-900/8 text-[9px] font-mono font-semibold text-slate-600">
-                                {s}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-
-                        {r.reason && <p className="text-[9px] text-slate-500 italic truncate">"{r.reason}"</p>}
-
-                        <div className="flex gap-2 pt-0.5">
-                          <button
-                            disabled={aiBusyId === r.id}
-                            onClick={() => decideAiRequest(r.id, 'approve')}
-                            className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold transition shadow-xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
-                          >
-                            {aiBusyId === r.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                            <span>Approve</span>
-                          </button>
-                          <button
-                            disabled={aiBusyId === r.id}
-                            onClick={() => decideAiRequest(r.id, 'deny')}
-                            className="flex-1 py-1.5 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 border border-slate-900/10 text-slate-700 rounded-lg text-[10px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1"
-                          >
-                            <Ban className="w-3.5 h-3.5" />
-                            <span>Deny</span>
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
                 {/* Active Sessions Section */}
                 <div className="space-y-2 pt-1">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
-                      <Key className="w-3.5 h-3.5 text-slate-500" /> Active Sessions
+                      <Globe className="w-3.5 h-3.5 text-slate-500" /> Active AI Sessions
                     </div>
-                    {aiSessions.length > 1 && (
-                      <button
-                        onClick={() => aiSessions.forEach((s) => revokeAiSession(s.id))}
-                        className="text-[9px] font-bold text-rose-600 hover:underline cursor-pointer"
-                      >
-                        Revoke All
-                      </button>
+                    {activeAiTabs.length > 0 && (
+                      <span className="px-1.5 py-0.2 text-[9px] font-extrabold rounded-full bg-brand-cyan/20 text-brand-cyan">
+                        {activeAiTabs.length} active
+                      </span>
                     )}
                   </div>
 
-                  {aiSessions.length === 0 ? (
+                  {activeAiTabs.length === 0 ? (
                     <div className="p-4 bg-white border border-slate-900/10 rounded-xl text-center space-y-1 shadow-xs">
-                      <div className="w-8 h-8 rounded-full bg-slate-100 border border-slate-900/8 flex items-center justify-center mx-auto text-slate-500">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      <div className="w-8 h-8 rounded-full bg-slate-50 border border-slate-200/80 flex items-center justify-center mx-auto text-slate-400">
+                        <ShieldCheck className="w-4 h-4 text-emerald-600" />
                       </div>
-                      <div className="text-xs font-bold text-slate-800">No Active AI Sessions</div>
-                      <p className="text-[10px] text-slate-400">No background AI sessions currently hold active access tokens.</p>
+                      <div className="text-xs font-bold text-slate-800">No AI Portals Open</div>
+                      <p className="text-[10px] text-slate-400">Paste Guard is active. It will monitor inputs when you open any supported AI tab.</p>
                     </div>
                   ) : (
-                    aiSessions.map((s) => (
-                      <div key={s.id} className="p-3 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-extrabold text-slate-900 truncate">{s.ai_tool_name}</span>
-                          <span className="text-[9px] text-emerald-600 font-mono font-bold flex-shrink-0 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/80">
-                            {fmtExpiresIn(s.expires_at)} left
-                          </span>
-                        </div>
-                        
-                        <p className="text-[10px] text-slate-600 truncate">{s.action} · {s.domain}</p>
-
-                        {s.granted_scopes && s.granted_scopes.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {s.granted_scopes.map((g) => (
-                              <span key={g} className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200/80 text-[9px] font-mono text-emerald-700 font-semibold">
-                                {g}
-                              </span>
-                            ))}
+                    activeAiTabs.map((t, idx) => {
+                      const hostname = t.url ? new URL(t.url).hostname : '';
+                      return (
+                        <div key={t.id || idx} className="p-3 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              {t.favIconUrl ? (
+                                <img src={t.favIconUrl} alt="" className="w-4 h-4 object-contain shrink-0" onError={(e) => { (e.target as any).src = ''; }} />
+                              ) : (
+                                <Bot className="w-4 h-4 text-brand-cyan shrink-0" />
+                              )}
+                              <span className="text-xs font-extrabold text-slate-900 truncate">{t.title}</span>
+                            </div>
+                            <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-md text-emerald-600 bg-emerald-50 border border-emerald-250/20">
+                              Guarded
+                            </span>
                           </div>
-                        )}
-
-                        <button
-                          disabled={aiBusyId === s.id}
-                          onClick={() => revokeAiSession(s.id)}
-                          className="w-full flex items-center justify-center gap-1 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 rounded-lg text-[10px] font-bold transition cursor-pointer disabled:opacity-50"
-                        >
-                          <Ban className="w-3.5 h-3.5" /> Revoke Session
-                        </button>
-                      </div>
-                    ))
+                          
+                          <div className="flex items-center justify-between gap-2 pt-0.5">
+                            <p className="text-[9px] text-slate-500 font-mono truncate">{hostname}</p>
+                            <button
+                              onClick={() => focusTab(t.id, t.windowId)}
+                              className="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-md text-[9px] font-bold transition cursor-pointer"
+                            >
+                              Focus Tab
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -2118,9 +1993,9 @@ export const PopupApp: React.FC = () => {
             >
               <Bot className="w-4 h-4 mb-0.5 shrink-0" />
               <span className="text-[10px] leading-none tracking-tight">AI</span>
-              {aiRequests.length > 0 && (
-                <span className="absolute top-1 right-2 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-brand-ruby text-white text-[9px] font-bold shadow-xs animate-pulse">
-                  {aiRequests.length}
+              {activeAiTabs.length > 0 && (
+                <span className="absolute top-1 right-2 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-brand-cyan text-white text-[9px] font-bold shadow-xs animate-pulse">
+                  {activeAiTabs.length}
                 </span>
               )}
             </button>
