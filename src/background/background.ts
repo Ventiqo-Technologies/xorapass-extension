@@ -1238,7 +1238,21 @@ if (api?.runtime?.onMessageExternal) {
     // Validate message payload structure
     const guard = validateMessage(message, sender);
     if (!guard.ok) {
-      console.warn('[XoraPass Bridge] Rejected external message:', guard.reason);
+      // Logging the type and payload SHAPE (keys + typeof each value) is what
+      // makes a "bad-payload" verdict debuggable at all -- several message
+      // types can produce that same reason, and without this there is no way
+      // to tell which one fired or which specific field failed the check.
+      // Never logs values: a token or key material must not end up in a
+      // console transcript just because the payload around it was malformed.
+      const payloadShape = message && typeof message.payload === 'object' && message.payload
+        ? Object.fromEntries(Object.entries(message.payload).map(([k, v]) => [k, typeof v]))
+        : message?.payload;
+      console.warn(
+        '[XoraPass Bridge] Rejected external message:',
+        guard.reason,
+        'type:', message?.type,
+        'payload shape:', payloadShape
+      );
       sendResponse({ error: 'invalid_message', reason: guard.reason });
       return;
     }
@@ -1270,9 +1284,16 @@ if (api?.runtime?.onMessageExternal) {
 
     if (guard.type === 'WEB_BRIDGE_DEVICE_INFO') {
       // Never touches anything secret: the public key is, by definition, safe
-      // to hand to any page that can reach this listener at all.
-      getOrCreateDeviceIdentity()
-        .then(({ deviceId, publicKey }) => sendResponse({ deviceId, publicKey }))
+      // to hand to any page that can reach this listener at all. `unlocked`
+      // is what lets the caller decide whether to bother at all -- an
+      // already-unlocked extension has nothing to receive.
+      Promise.all([
+        getOrCreateDeviceIdentity(),
+        browser.storage.session.get(['unlocked']),
+      ])
+        .then(([{ deviceId, publicKey }, session]) => {
+          sendResponse({ deviceId, publicKey, unlocked: !!(session as Record<string, unknown>).unlocked });
+        })
         .catch((err) => {
           console.error('[XoraPass Bridge] device identity failed:', err);
           sendResponse({ error: 'device_identity_failed' });
