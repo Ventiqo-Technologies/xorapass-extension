@@ -1302,30 +1302,80 @@ if (api?.runtime?.onMessageExternal) {
     }
 
     if (guard.type === 'WEB_BRIDGE_DELIVER_KEY') {
-      const { token, refreshToken, email, ephemeralPublicKey, sealedEncKey } = message.payload as {
-        token: string;
-        refreshToken?: string;
-        email: string;
+      // token and email travel INSIDE the sealed envelope now, alongside the
+      // vault key -- not as separate plaintext fields next to it. Handing an
+      // access token across this boundary unencrypted is the same shape of
+      // risk as "extension sends its access token to the website" (a known
+      // anti-pattern), just mirrored; there is no reason to encrypt one
+      // secret in the payload and leave another one next to it in the clear.
+      const { ephemeralPublicKey, sealed } = message.payload as {
         ephemeralPublicKey: JsonWebKey;
-        sealedEncKey: EncryptedPayload;
+        sealed: EncryptedPayload;
       };
-      console.debug('[XoraPass Bridge] Received key delivery for:', email);
 
       getOrCreateDeviceIdentity()
         .then(async ({ privateKey }) => {
-          // The vault key was encrypted specifically to THIS device's public
+          // The envelope was encrypted specifically to THIS device's public
           // key by the delivering web session -- only this private key,
           // which has never left storage.local, can recover it.
           const sharedSecret = await deriveSharedSecret(privateKey, ephemeralPublicKey);
-          const encKeyHex = decryptPayload(sealedEncKey, sharedSecret);
-          const encKeyBytes = hexToBytes(encKeyHex);
-          await applyBridgedSession(token, encKeyBytes, email, refreshToken);
+          const inner = JSON.parse(decryptPayload(sealed, sharedSecret)) as {
+            encKeyHex: string;
+            token: string;
+            email: string;
+          };
+          console.debug('[XoraPass Bridge] Received key delivery for:', inner.email);
+          const encKeyBytes = hexToBytes(inner.encKeyHex);
+          await applyBridgedSession(inner.token, encKeyBytes, inner.email);
           console.debug('[XoraPass Bridge] Key delivery unlock complete');
           sendResponse({ success: true });
         })
         .catch((err) => {
           console.error('[XoraPass Bridge] Key delivery failed:', err);
           sendResponse({ error: 'delivery_failed', detail: String(err) });
+        });
+
+      return true;
+    }
+
+    if (guard.type === 'WEB_BRIDGE_REQUEST_SESSION') {
+      // The pull direction: a logged-out web app asking THIS already-unlocked
+      // extension for its current session, mirroring WEB_BRIDGE_DELIVER_KEY.
+      // Same envelope shape and the same persistent device keypair -- it's
+      // just used to encrypt here instead of decrypt. Nothing is returned
+      // unless the extension is genuinely unlocked right now; there is no
+      // separate approval step on this side because the actual consent
+      // happened earlier, when a human unlocked the extension itself.
+      const { ephemeralPublicKey } = message.payload as { ephemeralPublicKey: JsonWebKey };
+
+      Promise.all([
+        getOrCreateDeviceIdentity(),
+        browser.storage.session.get(['unlocked', 'token', 'encKey', 'email']),
+      ])
+        .then(async ([{ privateKey }, session]) => {
+          const s = session as Record<string, unknown>;
+          // `offline` unlocks (from the vault cache, no server round trip) have
+          // no access token to hand over -- nothing to pull in that case.
+          if (!s.unlocked || !s.token || !s.encKey || !s.email) {
+            sendResponse({ error: 'locked' });
+            return;
+          }
+          const sharedSecret = await deriveSharedSecret(privateKey, ephemeralPublicKey);
+          // storage.session.encKey is always hex here (popup login and
+          // applyBridgedSession both write it with bytesToHex, refreshVault
+          // reads it back with hexToBytes) -- already the exact shape the
+          // web app's decrypted inner payload expects, no conversion needed.
+          const inner = JSON.stringify({
+            encKeyHex: s.encKey as string,
+            token: s.token as string,
+            email: s.email as string,
+          });
+          const sealed = encryptPayload(inner, sharedSecret);
+          sendResponse({ success: true, sealed });
+        })
+        .catch((err) => {
+          console.error('[XoraPass Bridge] Session request failed:', err);
+          sendResponse({ error: 'request_failed', detail: String(err) });
         });
 
       return true;

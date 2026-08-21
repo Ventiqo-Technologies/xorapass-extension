@@ -162,7 +162,10 @@ describe('validateMessage — companion-device linking bridge', () => {
     expect(validateMessage({ type: 'WEB_BRIDGE_DEVICE_INFO' }, externalWebSender()).ok).toBe(true);
   });
 
-  const sealedEncKeyFixture = () => ({
+  // token/email travel INSIDE the sealed envelope now (see
+  // deviceLinkBridge.test.ts for the real-crypto round trip) -- the guard
+  // can only validate the envelope's shape, not its contents.
+  const sealedFixture = () => ({
     ciphertext: 'ciphertext-b64',
     tag: 'tag-b64',
     nonce: 'nonce-b64',
@@ -175,10 +178,8 @@ describe('validateMessage — companion-device linking bridge', () => {
       {
         type: 'WEB_BRIDGE_DELIVER_KEY',
         payload: {
-          token: 'jwt-token',
-          email: 'a@b.c',
           ephemeralPublicKey: ephemeralPublicKeyFixture(),
-          sealedEncKey: sealedEncKeyFixture(),
+          sealed: sealedFixture(),
         },
       },
       externalWebSender()
@@ -186,11 +187,11 @@ describe('validateMessage — companion-device linking bridge', () => {
     expect(res.ok).toBe(true);
   });
 
-  it('rejects WEB_BRIDGE_DELIVER_KEY missing the encrypted key', () => {
+  it('rejects WEB_BRIDGE_DELIVER_KEY missing the sealed envelope', () => {
     const res = validateMessage(
       {
         type: 'WEB_BRIDGE_DELIVER_KEY',
-        payload: { token: 'jwt-token', email: 'a@b.c', ephemeralPublicKey: ephemeralPublicKeyFixture() },
+        payload: { ephemeralPublicKey: ephemeralPublicKeyFixture() },
       },
       externalWebSender()
     );
@@ -201,22 +202,20 @@ describe('validateMessage — companion-device linking bridge', () => {
     const res = validateMessage(
       {
         type: 'WEB_BRIDGE_DELIVER_KEY',
-        payload: { token: 'jwt-token', email: 'a@b.c', sealedEncKey: sealedEncKeyFixture() },
+        payload: { sealed: sealedFixture() },
       },
       externalWebSender()
     );
     expect(res.reason).toBe('bad-payload');
   });
 
-  it('rejects WEB_BRIDGE_DELIVER_KEY with a malformed sealedEncKey', () => {
+  it('rejects WEB_BRIDGE_DELIVER_KEY with a malformed sealed envelope', () => {
     const res = validateMessage(
       {
         type: 'WEB_BRIDGE_DELIVER_KEY',
         payload: {
-          token: 'jwt-token',
-          email: 'a@b.c',
           ephemeralPublicKey: ephemeralPublicKeyFixture(),
-          sealedEncKey: { ciphertext: 'x' }, // missing tag/nonce
+          sealed: { ciphertext: 'x' }, // missing tag/nonce
         },
       },
       externalWebSender()
@@ -228,5 +227,18 @@ describe('validateMessage — companion-device linking bridge', () => {
     expect(validateMessage({ type: 'GET_STATUS' }, externalWebSender()).reason).toBe(
       'unauthorized-external-type'
     );
+  });
+
+  it('accepts a well-formed WEB_BRIDGE_REQUEST_SESSION from app.xorapass.com', () => {
+    const res = validateMessage(
+      { type: 'WEB_BRIDGE_REQUEST_SESSION', payload: { ephemeralPublicKey: ephemeralPublicKeyFixture() } },
+      externalWebSender()
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it('rejects WEB_BRIDGE_REQUEST_SESSION missing the ephemeral public key', () => {
+    const res = validateMessage({ type: 'WEB_BRIDGE_REQUEST_SESSION', payload: {} }, externalWebSender());
+    expect(res.reason).toBe('bad-payload');
   });
 });
