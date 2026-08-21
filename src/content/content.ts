@@ -17,7 +17,7 @@
 import browser from 'webextension-polyfill';
 import { looksLikeUsername, looksLikeNewPassword, looksLikeAwsAccountId } from './fieldHeuristics';
 import { generatePassword } from '../utils/passwordGenerator';
-import { scanForSecrets, redact, type ScanResult } from '../utils/secretScan';
+import { scanForSecrets, redact, type ScanResult, type SecretType } from '../utils/secretScan';
 import { coercePolicy, DEFAULT_POLICY, isAiSite, shouldGuard, type PastePolicy } from '../utils/pasteGuard';
 import {
   attachIcon,
