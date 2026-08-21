@@ -288,12 +288,13 @@ export function validateMessage(
       }
       break;
     case 'AI_PASTE_EVENT':
-      // Secret-free by contract: hostname, detected type NAMES, and the action.
+      // Secret-free by contract: hostname, detected type NAMES, the action, and optional vaultEntryId.
       if (
         !payload ||
         typeof payload.hostname !== 'string' ||
         !Array.isArray(payload.types) ||
-        typeof payload.action !== 'string'
+        typeof payload.action !== 'string' ||
+        (payload.vaultEntryId !== undefined && typeof payload.vaultEntryId !== 'string')
       ) {
         return { ok: false, reason: 'bad-payload' };
       }

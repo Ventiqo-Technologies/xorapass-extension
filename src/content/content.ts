@@ -1026,18 +1026,27 @@ function acknowledgeCurrent(el: HTMLElement) {
 async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): Promise<void> {
   const hostname = window.location.hostname;
   let currentScan = scan;
+  let matchedVaultEntryId: string | undefined = undefined;
 
   try {
     const copiedRes: any = await browser.runtime.sendMessage({ type: 'GET_COPIED_SECRET' });
     const copiedSecret = copiedRes?.secret;
+    const copiedId = copiedRes?.id;
+    const copiedField = copiedRes?.field;
     if (copiedSecret && text.includes(copiedSecret)) {
       const start = text.indexOf(copiedSecret);
       const end = start + copiedSecret.length;
       const alreadyMatched = currentScan.matches.some(m => m.start === start && m.end === end);
       if (!alreadyMatched) {
+        let typeVal: SecretType = 'generic_secret';
+        if (copiedField === 'password') typeVal = 'password';
+        else if (copiedField === 'privateKey') typeVal = 'private_key';
+
+        matchedVaultEntryId = copiedId || undefined;
+
         const copiedMatch = {
-          type: 'generic_secret' as const,
-          label: 'Copied vault credential',
+          type: typeVal,
+          label: copiedField === 'password' ? 'Password' : copiedField === 'privateKey' ? 'Private key' : 'Copied vault credential',
           start,
           end,
           value: copiedSecret,
@@ -1045,7 +1054,7 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
         };
         currentScan = {
           matches: [...currentScan.matches, copiedMatch],
-          types: Array.from(new Set([...currentScan.types, 'generic_secret' as const])),
+          types: Array.from(new Set([...currentScan.types, typeVal])),
         };
       }
     }
@@ -1097,6 +1106,7 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
           types: currentScan.types,
           action: 'type',
           isAiSite: isAiSite(hostname),
+          vaultEntryId: matchedVaultEntryId,
         },
       })
       .catch(() => {});
@@ -1156,18 +1166,27 @@ async function handleSecretPaste(
 ): Promise<void> {
   const hostname = window.location.hostname;
   let currentScan = scanForSecrets(text);
+  let matchedVaultEntryId: string | undefined = undefined;
 
   try {
     const copiedRes: any = await browser.runtime.sendMessage({ type: 'GET_COPIED_SECRET' });
     const copiedSecret = copiedRes?.secret;
+    const copiedId = copiedRes?.id;
+    const copiedField = copiedRes?.field;
     if (copiedSecret && text.includes(copiedSecret)) {
       const start = text.indexOf(copiedSecret);
       const end = start + copiedSecret.length;
       const alreadyMatched = currentScan.matches.some(m => m.start === start && m.end === end);
       if (!alreadyMatched) {
+        let typeVal: SecretType = 'generic_secret';
+        if (copiedField === 'password') typeVal = 'password';
+        else if (copiedField === 'privateKey') typeVal = 'private_key';
+
+        matchedVaultEntryId = copiedId || undefined;
+
         const copiedMatch = {
-          type: 'generic_secret' as const,
-          label: 'Copied vault credential',
+          type: typeVal,
+          label: copiedField === 'password' ? 'Password' : copiedField === 'privateKey' ? 'Private key' : 'Copied vault credential',
           start,
           end,
           value: copiedSecret,
@@ -1175,7 +1194,7 @@ async function handleSecretPaste(
         };
         currentScan = {
           matches: [...currentScan.matches, copiedMatch],
-          types: Array.from(new Set([...currentScan.types, 'generic_secret' as const])),
+          types: Array.from(new Set([...currentScan.types, typeVal])),
         };
       }
     }
@@ -1227,6 +1246,7 @@ async function handleSecretPaste(
           types: currentScan.types,
           action,
           isAiSite: isAiSite(hostname),
+          vaultEntryId: matchedVaultEntryId,
         },
       })
       .catch(() => {});
