@@ -1413,6 +1413,12 @@ async function applyBridgedSession(
 
   void scheduleAutoLock();
   void scheduleAiHeartbeat();
+  // Without this, a bridged session with a refresh token now correctly
+  // stored would still never proactively renew -- only the reactive 401
+  // backstop in apiJwt() would eventually catch it, and only once something
+  // actually tries to use the API. A refreshToken-less bridge (WEB_BRIDGE_LOGIN,
+  // or an older web app build) makes this a no-op, same as it's always been.
+  void scheduleTokenRefresh();
 }
 
 // ── Companion-device identity ────────────────────────────────────────────────
@@ -1563,9 +1569,10 @@ if (api?.runtime?.onMessageExternal) {
             encKeyHex: string;
             token: string;
             email: string;
+            refreshToken?: string;
           };
           const encKeyBytes = hexToBytes(inner.encKeyHex);
-          await applyBridgedSession(inner.token, encKeyBytes, inner.email);
+          await applyBridgedSession(inner.token, encKeyBytes, inner.email, inner.refreshToken);
           sendResponse({ success: true });
         })
         .catch((err) => {

@@ -637,7 +637,7 @@ export const PopupApp: React.FC = () => {
         mfa_token: mfaToken,
         code: mfaCode
       });
-      
+
       await processVault(verifyRes.data.access_token, tempEncKey, tempSalt, verifyRes.data.refresh_token);
     } catch (err: any) {
       console.error(err);
