@@ -161,7 +161,6 @@ async function clearAiHeartbeat() {
 // common case not depend on that retry ever firing.
 async function scheduleTokenRefresh() {
   await browser.alarms.create(TOKEN_REFRESH_ALARM, { periodInMinutes: 20 });
-  console.log('[XoraPass][refresh] alarm scheduled: every 20 minutes');
 }
 async function clearTokenRefresh() {
   await browser.alarms.clear(TOKEN_REFRESH_ALARM);
@@ -282,7 +281,6 @@ browser.alarms.onAlarm.addListener((alarm) => {
     void pushAiFillToActiveTabs();
   }
   if (alarm.name === TOKEN_REFRESH_ALARM) {
-    console.log('[XoraPass][refresh] alarm fired at', new Date().toISOString());
     void apiRefresh();
   }
 });
@@ -472,29 +470,17 @@ let refreshInFlight: Promise<string> | null = null;
  * never anything worse than what happens today without this at all.
  */
 async function apiRefresh(): Promise<string> {
-  if (refreshInFlight) {
-    console.log('[XoraPass][refresh] already in flight, joining existing attempt');
-    return refreshInFlight;
-  }
+  if (refreshInFlight) return refreshInFlight;
   refreshInFlight = doTokenRefresh().finally(() => {
     refreshInFlight = null;
   });
   return refreshInFlight;
 }
 
-// A short, non-secret fingerprint for correlating log lines across attempts
-// without ever printing the actual token value.
-const fingerprint = (s: string) => (s ? `${s.slice(0, 6)}…(${s.length})` : '(none)');
-
 async function doTokenRefresh(): Promise<string> {
   const res = await browser.storage.session.get(['refreshToken', 'unlocked']);
   const refreshToken = (res as Record<string, unknown>).refreshToken;
-  if (!res.unlocked || typeof refreshToken !== 'string' || !refreshToken) {
-    console.log('[XoraPass][refresh] skipped -- unlocked:', !!res.unlocked, 'hasToken:', typeof refreshToken === 'string' && !!refreshToken);
-    return '';
-  }
-
-  console.log('[XoraPass][refresh] attempting with token', fingerprint(refreshToken));
+  if (!res.unlocked || typeof refreshToken !== 'string' || !refreshToken) return '';
 
   try {
     const resp = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
@@ -503,40 +489,20 @@ async function doTokenRefresh(): Promise<string> {
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
     if (!resp.ok) {
-      let detail = '';
-      try {
-        detail = (await resp.json())?.detail || '';
-      } catch { /* no body */ }
-      console.log('[XoraPass][refresh] FAILED — status:', resp.status, 'detail:', detail, 'tokenUsed:', fingerprint(refreshToken));
+      console.debug('[XoraPass] token refresh failed:', resp.status);
       return '';
     }
     const data = await resp.json();
-    if (typeof data.access_token !== 'string' || typeof data.refresh_token !== 'string') {
-      console.log('[XoraPass][refresh] FAILED — 200 response but malformed body:', Object.keys(data || {}));
-      return '';
-    }
+    if (typeof data.access_token !== 'string' || typeof data.refresh_token !== 'string') return '';
 
-    console.log(
-      '[XoraPass][refresh] SUCCESS — rotated',
-      fingerprint(refreshToken), '->', fingerprint(data.refresh_token)
-    );
     await browser.storage.session.set({
       jwt: data.access_token,
       token: data.access_token,
       refreshToken: data.refresh_token,
     });
-    // Read the value back rather than trusting the write resolved cleanly --
-    // this is exactly the step a killed service worker could interrupt, and
-    // if it did, the NEXT read here would show the old token still in place.
-    const verify = await browser.storage.session.get(['refreshToken']);
-    const stored = (verify as Record<string, unknown>).refreshToken;
-    console.log(
-      '[XoraPass][refresh] storage write verified:',
-      stored === data.refresh_token ? 'OK' : `MISMATCH (storage has ${fingerprint(String(stored))})`
-    );
     return data.access_token;
   } catch (e) {
-    console.warn('[XoraPass][refresh] network error:', e);
+    console.warn('[XoraPass] token refresh network error:', e);
     return '';
   }
 }
