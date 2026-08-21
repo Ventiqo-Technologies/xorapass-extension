@@ -53,7 +53,7 @@ const focusActivators = new WeakMap<HTMLInputElement, HTMLInputElement>();
 
 let pastePolicy: PastePolicy = DEFAULT_POLICY;
 let pasteGuardInitialized = false;
-let pasteGuardBypassed = false;
+const bypassedSecrets = new Set<string>();
 
 interface CaretSnapshot {
   kind: 'text' | 'contenteditable';
@@ -1028,6 +1028,10 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
   let currentScan = scan;
   let matchedVaultEntryId: string | undefined = undefined;
 
+  // Check if all matched secrets in this typing sequence have already been bypassed
+  const allAlreadyBypassed = currentScan.matches.every(m => bypassedSecrets.has(m.value));
+  if (allAlreadyBypassed) return;
+
   try {
     const copiedRes: any = await browser.runtime.sendMessage({ type: 'GET_COPIED_SECRET' });
     const copiedSecret = copiedRes?.secret;
@@ -1097,7 +1101,9 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
   if (!proceed) {
     setEditableText(el, redact(text, currentScan.matches));
   } else {
-    pasteGuardBypassed = true;
+    for (const m of currentScan.matches) {
+      bypassedSecrets.add(m.value);
+    }
     void browser.runtime
       .sendMessage({
         type: 'AI_PASTE_EVENT',
@@ -1123,7 +1129,6 @@ function deepActiveElement(): Element | null {
 }
 
 function pollActiveEditable() {
-  if (pasteGuardBypassed) return;
   const hostname = window.location.hostname;
   if (!shouldGuard(pastePolicy, hostname)) return;
   const active = deepActiveElement();
@@ -1137,11 +1142,12 @@ function pollActiveEditable() {
   if (acknowledgedText.get(el) === text) return;
   const scan = scanForSecrets(text);
   if (scan.matches.length === 0) return;
+  const allBypassed = scan.matches.every(m => bypassedSecrets.has(m.value));
+  if (allBypassed) return;
   void runTypingGuard(el, text, scan);
 }
 
 function onInput(e: Event) {
-  if (pasteGuardBypassed) return;
   const hostname = window.location.hostname;
   if (!shouldGuard(pastePolicy, hostname)) return;
   const rawTarget = (e.composedPath && e.composedPath()[0]) || e.target;
@@ -1154,6 +1160,8 @@ function onInput(e: Event) {
     if (acknowledgedText.get(target) === text) return;
     const scan = scanForSecrets(text);
     if (scan.matches.length === 0) return;
+    const allBypassed = scan.matches.every(m => bypassedSecrets.has(m.value));
+    if (allBypassed) return;
     void runTypingGuard(target, text, scan);
   }, TYPING_DEBOUNCE_MS);
 }
@@ -1202,6 +1210,13 @@ async function handleSecretPaste(
     console.debug("Failed to get copied secret", e);
   }
 
+  // Check if all matched secrets in this pasted string have already been bypassed
+  const allAlreadyBypassed = currentScan.matches.every(m => bypassedSecrets.has(m.value));
+  if (allAlreadyBypassed && currentScan.matches.length > 0) {
+    if (target) insertTextAtCaret(target, text, caret);
+    return;
+  }
+
   // If no secrets detected at all, proceed with the paste silently and instantly!
   if (currentScan.matches.length === 0) {
     if (target) insertTextAtCaret(target, text, caret);
@@ -1237,7 +1252,9 @@ async function handleSecretPaste(
   });
 
   if (proceed && target) {
-    pasteGuardBypassed = true;
+    for (const m of currentScan.matches) {
+      bypassedSecrets.add(m.value);
+    }
     void browser.runtime
       .sendMessage({
         type: 'AI_PASTE_EVENT',
@@ -1269,7 +1286,6 @@ function initPasteGuard(): void {
     document.addEventListener(
     'paste',
     (e) => {
-      if (pasteGuardBypassed) return;
       const text = e.clipboardData?.getData('text/plain') || e.clipboardData?.getData('text') || '';
       if (!text) return;
 
@@ -1289,7 +1305,6 @@ function initPasteGuard(): void {
   document.addEventListener(
     'drop',
     (e) => {
-      if (pasteGuardBypassed) return;
       const text = e.dataTransfer?.getData('text/plain') || e.dataTransfer?.getData('text') || '';
       if (!text) return;
 
