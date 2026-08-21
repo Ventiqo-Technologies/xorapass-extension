@@ -620,7 +620,7 @@ export const PopupApp: React.FC = () => {
     setCopiedField({ id, field });
     setTimeout(() => setCopiedField(null), 2000);
     if (field === 'password' || field === 'privateKey' || field === 'cvv') {
-      void browser.runtime.sendMessage({ type: 'CLIPBOARD_COPIED' }).catch(() => undefined);
+      void browser.runtime.sendMessage({ type: 'CLIPBOARD_COPIED', payload: { secret: text } }).catch(() => undefined);
     }
   };
 

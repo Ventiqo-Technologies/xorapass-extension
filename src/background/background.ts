@@ -29,6 +29,7 @@ const DISABLED_SITES_KEY = 'disabledSites';
 const AUTO_LOCK_KEY = 'autoLockMinutes';
 const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
 const DEFAULT_AUTO_LOCK_MINUTES = 15;
+let lastCopiedSecret = '';
 
 // AI Access heartbeat: chrome.alarms cannot fire faster than once a minute in
 // MV3, so this is a backstop only -- the primary triggers for noticing a
@@ -116,6 +117,7 @@ async function clearClipboard(): Promise<void> {
   await browser.alarms.clear(CLIPBOARD_ALARM);
   const pending = await browser.storage.session.get([CLIPBOARD_PENDING_KEY]);
   if (!pending[CLIPBOARD_PENDING_KEY]) return;
+  lastCopiedSecret = '';
   await browser.storage.session.remove(CLIPBOARD_PENDING_KEY);
 
   if (!(await ensureOffscreenDocument())) return;
@@ -678,11 +680,15 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'CLIPBOARD_COPIED') {
-    // No secret in the payload — this is only the signal to start the timer.
+    lastCopiedSecret = msg.payload?.secret || '';
     return scheduleClipboardClear().then((clipboardClearSeconds) => ({
       success: true,
       clipboardClearSeconds,
     }));
+  }
+
+  if (type === 'GET_COPIED_SECRET') {
+    return Promise.resolve({ secret: lastCopiedSecret });
   }
 
   if (type === 'SET_AUTO_LOCK') {

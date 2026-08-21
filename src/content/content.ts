@@ -1025,20 +1025,49 @@ function acknowledgeCurrent(el: HTMLElement) {
 
 async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): Promise<void> {
   const hostname = window.location.hostname;
+  let currentScan = scan;
+
+  try {
+    const copiedRes: any = await browser.runtime.sendMessage({ type: 'GET_COPIED_SECRET' });
+    const copiedSecret = copiedRes?.secret;
+    if (copiedSecret && text.includes(copiedSecret)) {
+      const start = text.indexOf(copiedSecret);
+      const end = start + copiedSecret.length;
+      const alreadyMatched = currentScan.matches.some(m => m.start === start && m.end === end);
+      if (!alreadyMatched) {
+        const copiedMatch = {
+          type: 'generic_secret' as const,
+          label: 'Copied vault credential',
+          start,
+          end,
+          value: copiedSecret,
+          preview: '••••••••',
+        };
+        currentScan = {
+          matches: [...currentScan.matches, copiedMatch],
+          types: Array.from(new Set([...currentScan.types, 'generic_secret' as const])),
+        };
+      }
+    }
+  } catch (e) {
+    console.debug("Failed to get copied secret", e);
+  }
+
+  if (currentScan.matches.length === 0) return;
 
   void browser.runtime
     .sendMessage({
       type: 'AI_PASTE_EVENT',
       payload: {
         hostname,
-        types: scan.types,
+        types: currentScan.types,
         action: 'type',
         isAiSite: isAiSite(hostname),
       },
     })
     .catch(() => {});
 
-  const labels = Array.from(new Set(scan.matches.map((m) => m.label)));
+  const labels = Array.from(new Set(currentScan.matches.map((m) => m.label)));
   const isBlock = pastePolicy.mode === 'block' || !pastePolicy.allowDismiss;
 
   if (isBlock) {
@@ -1062,14 +1091,14 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
     body: [
       `XoraPass detected ${labels.join(', ')} in what you entered.`,
       'This text is kept on-device. You can remove it, or keep it if you really want to.',
-      `Preview: ${redact(text, scan.matches).slice(0, 120)}`,
+      `Preview: ${redact(text, currentScan.matches).slice(0, 120)}`,
     ],
     confirmLabel: 'Keep anyway',
     cancelLabel: 'Remove secret',
   });
 
   if (!proceed) {
-    setEditableText(el, redact(text, scan.matches));
+    setEditableText(el, redact(text, currentScan.matches));
   } else {
     pasteGuardBypassed = true;
   }
@@ -1124,24 +1153,56 @@ async function handleSecretPaste(
   target: HTMLElement | null,
   text: string,
   caret: CaretSnapshot | null,
-  action: 'paste' | 'drop',
-  scan: ScanResult
+  action: 'paste' | 'drop'
 ): Promise<void> {
   const hostname = window.location.hostname;
+  let currentScan = scanForSecrets(text);
+
+  try {
+    const copiedRes: any = await browser.runtime.sendMessage({ type: 'GET_COPIED_SECRET' });
+    const copiedSecret = copiedRes?.secret;
+    if (copiedSecret && text.includes(copiedSecret)) {
+      const start = text.indexOf(copiedSecret);
+      const end = start + copiedSecret.length;
+      const alreadyMatched = currentScan.matches.some(m => m.start === start && m.end === end);
+      if (!alreadyMatched) {
+        const copiedMatch = {
+          type: 'generic_secret' as const,
+          label: 'Copied vault credential',
+          start,
+          end,
+          value: copiedSecret,
+          preview: '••••••••',
+        };
+        currentScan = {
+          matches: [...currentScan.matches, copiedMatch],
+          types: Array.from(new Set([...currentScan.types, 'generic_secret' as const])),
+        };
+      }
+    }
+  } catch (e) {
+    console.debug("Failed to get copied secret", e);
+  }
+
+  // If no secrets detected at all, proceed with the paste silently and instantly!
+  if (currentScan.matches.length === 0) {
+    if (target) insertTextAtCaret(target, text, caret);
+    return;
+  }
 
   void browser.runtime
     .sendMessage({
       type: 'AI_PASTE_EVENT',
       payload: {
         hostname,
-        types: scan.types,
+        types: currentScan.types,
         action,
         isAiSite: isAiSite(hostname),
       },
     })
     .catch(() => {});
 
-  const labels = Array.from(new Set(scan.matches.map((m) => m.label)));
+  const labels = Array.from(new Set(currentScan.matches.map((m) => m.label)));
   const isBlock = pastePolicy.mode === 'block' || !pastePolicy.allowDismiss;
 
   if (isBlock) {
@@ -1150,7 +1211,7 @@ async function handleSecretPaste(
       body: [
         `XoraPass detected ${labels.join(', ')} in what you tried to paste.`,
         'Pasting secrets into AI tools is blocked by policy.',
-        `Preview: ${redact(text, scan.matches).slice(0, 120)}`,
+        `Preview: ${redact(text, currentScan.matches).slice(0, 120)}`,
       ],
       confirmLabel: 'OK',
       cancelLabel: '',
@@ -1163,7 +1224,7 @@ async function handleSecretPaste(
     body: [
       `XoraPass detected ${labels.join(', ')} in what you pasted.`,
       'This text is kept on-device. You can cancel, or continue if you really want to paste it here.',
-      `Preview: ${redact(text, scan.matches).slice(0, 120)}`,
+      `Preview: ${redact(text, currentScan.matches).slice(0, 120)}`,
     ],
     confirmLabel: 'Paste anyway',
     cancelLabel: 'Cancel',
@@ -1197,15 +1258,12 @@ function initPasteGuard(): void {
       const hostname = window.location.hostname;
       if (!shouldGuard(pastePolicy, hostname)) return;
 
-      const scan = scanForSecrets(text);
-      if (scan.matches.length === 0) return;
-
       e.preventDefault();
       e.stopPropagation();
 
       const target = getPasteTarget(e);
       const caret = target ? captureCaret(target) : null;
-      void handleSecretPaste(target, text, caret, 'paste', scan);
+      void handleSecretPaste(target, text, caret, 'paste');
     },
     true
   );
@@ -1220,15 +1278,12 @@ function initPasteGuard(): void {
       const hostname = window.location.hostname;
       if (!shouldGuard(pastePolicy, hostname)) return;
 
-      const scan = scanForSecrets(text);
-      if (scan.matches.length === 0) return;
-
       e.preventDefault();
       e.stopPropagation();
 
       const target = getPasteTarget(e);
       const caret = target ? captureCaret(target) : null;
-      void handleSecretPaste(target, text, caret, 'drop', scan);
+      void handleSecretPaste(target, text, caret, 'drop');
     },
     true
   );
