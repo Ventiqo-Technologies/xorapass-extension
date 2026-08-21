@@ -53,6 +53,7 @@ const focusActivators = new WeakMap<HTMLInputElement, HTMLInputElement>();
 
 let pastePolicy: PastePolicy = DEFAULT_POLICY;
 let pasteGuardInitialized = false;
+let pasteGuardBypassed = false;
 
 interface CaretSnapshot {
   kind: 'text' | 'contenteditable';
@@ -1069,6 +1070,8 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
 
   if (!proceed) {
     setEditableText(el, redact(text, scan.matches));
+  } else {
+    pasteGuardBypassed = true;
   }
   acknowledgeCurrent(el);
 }
@@ -1082,6 +1085,7 @@ function deepActiveElement(): Element | null {
 }
 
 function pollActiveEditable() {
+  if (pasteGuardBypassed) return;
   const hostname = window.location.hostname;
   if (!shouldGuard(pastePolicy, hostname)) return;
   const active = deepActiveElement();
@@ -1099,6 +1103,7 @@ function pollActiveEditable() {
 }
 
 function onInput(e: Event) {
+  if (pasteGuardBypassed) return;
   const hostname = window.location.hostname;
   if (!shouldGuard(pastePolicy, hostname)) return;
   const rawTarget = (e.composedPath && e.composedPath()[0]) || e.target;
@@ -1165,6 +1170,7 @@ async function handleSecretPaste(
   });
 
   if (proceed && target) {
+    pasteGuardBypassed = true;
     insertTextAtCaret(target, text, caret);
   }
 }
@@ -1181,9 +1187,10 @@ function initPasteGuard(): void {
     }
   });
 
-  document.addEventListener(
+    document.addEventListener(
     'paste',
     (e) => {
+      if (pasteGuardBypassed) return;
       const text = e.clipboardData?.getData('text/plain') || e.clipboardData?.getData('text') || '';
       if (!text) return;
 
@@ -1206,6 +1213,7 @@ function initPasteGuard(): void {
   document.addEventListener(
     'drop',
     (e) => {
+      if (pasteGuardBypassed) return;
       const text = e.dataTransfer?.getData('text/plain') || e.dataTransfer?.getData('text') || '';
       if (!text) return;
 
