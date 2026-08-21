@@ -20,7 +20,8 @@ export type SecretType =
   | 'llm_api_key'
   | 'database_url'
   | 'env_secret'
-  | 'generic_secret';
+  | 'generic_secret'
+  | 'password';
 
 export interface SecretMatch {
   type: SecretType;
@@ -54,6 +55,7 @@ const LABELS: Record<SecretType, string> = {
   database_url: 'Database connection string',
   env_secret: 'Secret in .env / assignment',
   generic_secret: 'High-entropy secret',
+  password: 'Password',
 };
 
 // Higher wins when two matches overlap (more specific patterns beat generic).
@@ -70,6 +72,7 @@ const PRIORITY: Record<SecretType, number> = {
   database_url: 80,
   env_secret: 40,
   generic_secret: 10,
+  password: 15,
 };
 
 /** Regex-based detectors for high-confidence, structured secret formats. */

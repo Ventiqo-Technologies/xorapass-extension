@@ -29,6 +29,9 @@ const DISABLED_SITES_KEY = 'disabledSites';
 const AUTO_LOCK_KEY = 'autoLockMinutes';
 const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
 const DEFAULT_AUTO_LOCK_MINUTES = 15;
+let lastCopiedSecret = '';
+let lastCopiedId = '';
+let lastCopiedField = '';
 
 // AI Access heartbeat: chrome.alarms cannot fire faster than once a minute in
 // MV3, so this is a backstop only -- the primary triggers for noticing a
@@ -116,6 +119,9 @@ async function clearClipboard(): Promise<void> {
   await browser.alarms.clear(CLIPBOARD_ALARM);
   const pending = await browser.storage.session.get([CLIPBOARD_PENDING_KEY]);
   if (!pending[CLIPBOARD_PENDING_KEY]) return;
+  lastCopiedSecret = '';
+  lastCopiedId = '';
+  lastCopiedField = '';
   await browser.storage.session.remove(CLIPBOARD_PENDING_KEY);
 
   if (!(await ensureOffscreenDocument())) return;
@@ -390,6 +396,7 @@ async function recordPasteEvent(evt: {
   types: string[];
   action: string;
   isAiSite?: boolean;
+  vaultEntryId?: string;
 }) {
   const entry = { ...evt, ts: new Date().toISOString() };
 
@@ -399,6 +406,7 @@ async function recordPasteEvent(evt: {
     types: evt.types,
     action: evt.action,
     is_ai_site: !!evt.isAiSite,
+    vault_entry_id: evt.vaultEntryId,
   });
 
   try {
@@ -678,11 +686,17 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'CLIPBOARD_COPIED') {
-    // No secret in the payload — this is only the signal to start the timer.
+    lastCopiedSecret = msg.payload?.secret || '';
+    lastCopiedId = msg.payload?.id || '';
+    lastCopiedField = msg.payload?.field || '';
     return scheduleClipboardClear().then((clipboardClearSeconds) => ({
       success: true,
       clipboardClearSeconds,
     }));
+  }
+
+  if (type === 'GET_COPIED_SECRET') {
+    return Promise.resolve({ secret: lastCopiedSecret, id: lastCopiedId, field: lastCopiedField });
   }
 
   if (type === 'SET_AUTO_LOCK') {
@@ -966,11 +980,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'AI_PASTE_EVENT') {
-    const { hostname, types, action, isAiSite } = msg.payload as {
+    const { hostname, types, action, isAiSite, vaultEntryId } = msg.payload as {
       hostname: string;
       types: string[];
       action: string;
       isAiSite?: boolean;
+      vaultEntryId?: string;
     };
     // Defensive: only ever forward the type NAMES, never any value the caller
     // might have mistakenly attached.
@@ -979,6 +994,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       types: types.map(String).slice(0, 20),
       action,
       isAiSite: !!isAiSite,
+      vaultEntryId,
     });
     return Promise.resolve({ success: true });
   }

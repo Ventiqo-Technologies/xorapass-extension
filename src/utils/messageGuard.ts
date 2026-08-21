@@ -58,6 +58,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // extension is genuinely unlocked; there is no separate approval step here
   // because the real consent already happened when a human unlocked it.
   'WEB_BRIDGE_REQUEST_SESSION',
+  'GET_COPIED_SECRET',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -287,12 +288,13 @@ export function validateMessage(
       }
       break;
     case 'AI_PASTE_EVENT':
-      // Secret-free by contract: hostname, detected type NAMES, and the action.
+      // Secret-free by contract: hostname, detected type NAMES, the action, and optional vaultEntryId.
       if (
         !payload ||
         typeof payload.hostname !== 'string' ||
         !Array.isArray(payload.types) ||
-        typeof payload.action !== 'string'
+        typeof payload.action !== 'string' ||
+        (payload.vaultEntryId !== undefined && typeof payload.vaultEntryId !== 'string')
       ) {
         return { ok: false, reason: 'bad-payload' };
       }
