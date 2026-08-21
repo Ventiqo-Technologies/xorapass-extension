@@ -7,11 +7,20 @@ describe('isAiSite', () => {
     expect(isAiSite('chat.openai.com')).toBe(true);
     expect(isAiSite('claude.ai')).toBe(true);
     expect(isAiSite('www.perplexity.ai')).toBe(true);
+    expect(isAiSite('v0.dev')).toBe(true);
+    expect(isAiSite('cursor.com')).toBe(true);
+    expect(isAiSite('bolt.new')).toBe(true);
+    expect(isAiSite('chat.lmsys.org')).toBe(true);
+    expect(isAiSite('kimi.ai')).toBe(true);
+    expect(isAiSite('doubao.com')).toBe(true);
   });
 
   it('matches specific AI hosts on shared providers', () => {
     expect(isAiSite('gemini.google.com')).toBe(true);
     expect(isAiSite('copilot.microsoft.com')).toBe(true);
+    expect(isAiSite('yiyan.baidu.com')).toBe(true);
+    expect(isAiSite('tongyi.aliyun.com')).toBe(true);
+    expect(isAiSite('xinghuo.xfyun.cn')).toBe(true);
   });
 
   it('does not match non-AI hosts on those shared providers', () => {

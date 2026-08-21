@@ -25,6 +25,26 @@ const AI_REGISTRABLE_DOMAINS = new Set<string>([
   'replicate.com',
   'together.ai',
   'pi.ai',
+  // Playgrounds, local runners & developer AI
+  'cursor.com',
+  'cursor.sh',
+  'v0.dev',
+  'bolt.new',
+  'lovable.dev',
+  'lmstudio.ai',
+  'ollama.com',
+  'replit.com',
+  'lmsys.org',
+  // Chinese AI providers
+  'kimi.ai',
+  'moonshot.cn',
+  'doubao.com',
+  'chatglm.cn',
+  'zhipuai.cn',
+  'baichuan-ai.com',
+  'baichuan-api.com',
+  'hailuoai.com',
+  'ababgroup.com',
 ]);
 
 // Specific hosts on shared providers where only that subdomain is an AI tool
@@ -38,6 +58,12 @@ const AI_EXACT_HOSTS = new Set<string>([
   'copilot.cloud.microsoft',
   'm365.cloud.microsoft',
   'duckduckgo.com', // hosts duck.ai chat
+  // Chinese provider specific subdomains
+  'yiyan.baidu.com',
+  'tongyi.aliyun.com',
+  'qianwen.alibabacloud.com',
+  'hunyuan.tencent.com',
+  'xinghuo.xfyun.cn',
 ]);
 
 /** True when the hostname belongs to a known AI tool / chat site. */
