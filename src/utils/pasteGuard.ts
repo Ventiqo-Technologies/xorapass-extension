@@ -45,6 +45,7 @@ const AI_REGISTRABLE_DOMAINS = new Set<string>([
   'baichuan-api.com',
   'hailuoai.com',
   'ababgroup.com',
+  'qwen.ai',
 ]);
 
 // Specific hosts on shared providers where only that subdomain is an AI tool

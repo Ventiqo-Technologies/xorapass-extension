@@ -13,6 +13,7 @@ describe('isAiSite', () => {
     expect(isAiSite('chat.lmsys.org')).toBe(true);
     expect(isAiSite('kimi.ai')).toBe(true);
     expect(isAiSite('doubao.com')).toBe(true);
+    expect(isAiSite('chat.qwen.ai')).toBe(true);
   });
 
   it('matches specific AI hosts on shared providers', () => {
