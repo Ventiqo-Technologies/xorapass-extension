@@ -1259,7 +1259,6 @@ if (api?.runtime?.onMessageExternal) {
 
     if (guard.type === 'WEB_BRIDGE_LOGIN') {
       const { token, encKey, email } = message.payload;
-      console.debug('[XoraPass Bridge] Received login bridge for:', email);
 
       let derivedEncBytes: Uint8Array;
       try {
@@ -1271,7 +1270,6 @@ if (api?.runtime?.onMessageExternal) {
 
       applyBridgedSession(token, derivedEncBytes, email)
         .then(() => {
-          console.debug('[XoraPass Bridge] Bridge unlock complete');
           sendResponse({ success: true });
         })
         .catch((err) => {
@@ -1324,10 +1322,8 @@ if (api?.runtime?.onMessageExternal) {
             token: string;
             email: string;
           };
-          console.debug('[XoraPass Bridge] Received key delivery for:', inner.email);
           const encKeyBytes = hexToBytes(inner.encKeyHex);
           await applyBridgedSession(inner.token, encKeyBytes, inner.email);
-          console.debug('[XoraPass Bridge] Key delivery unlock complete');
           sendResponse({ success: true });
         })
         .catch((err) => {

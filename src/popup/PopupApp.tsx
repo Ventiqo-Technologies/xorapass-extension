@@ -554,8 +554,8 @@ export const PopupApp: React.FC = () => {
   const login = (clientAuthHash: string) =>
     axios.post(`${API_BASE_URL}/api/auth/login`, { email, client_auth_hash: clientAuthHash });
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleLogin = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (!email || !password) return;
 
     setLoading(true);
@@ -759,7 +759,13 @@ export const PopupApp: React.FC = () => {
 
       {/* Main Content Area */}
       {!unlocked && step === 'login' ? (
-        <form onSubmit={handleLogin} className="flex-1 flex flex-col justify-between p-6 z-10 animate-fade-in bg-gradient-to-b from-white via-slate-50/90 to-slate-100/70">
+        // Not a real <form onSubmit>: a native form submission is exactly what
+        // makes Chrome offer to save the master password into its own,
+        // separate password store -- which XoraPass never wants, since the
+        // master password must only ever be checked against XoraPass's own
+        // Argon2id verification, not duplicated into a second, weaker store.
+        // Enter-to-submit is replicated manually below instead.
+        <div className="flex-1 flex flex-col justify-between p-6 z-10 animate-fade-in bg-gradient-to-b from-white via-slate-50/90 to-slate-100/70">
           <div className="text-center pt-2 space-y-2.5">
             <div className="relative w-16 h-16 mx-auto flex items-center justify-center">
               <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-brand-cyan/25 to-brand-teal/20 blur-md" />
@@ -811,6 +817,7 @@ export const PopupApp: React.FC = () => {
                   placeholder="Email address"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !loading) handleLogin(); }}
                   className="auth-input w-full pl-10 pr-3 py-3 rounded-xl text-xs text-slate-900 placeholder-slate-400 font-sans shadow-xs"
                 />
               </div>
@@ -827,7 +834,10 @@ export const PopupApp: React.FC = () => {
                 placeholder="Master password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => setCapsLockOn(e.getModifierState('CapsLock'))}
+                onKeyDown={(e) => {
+                  setCapsLockOn(e.getModifierState('CapsLock'));
+                  if (e.key === 'Enter' && !loading) handleLogin();
+                }}
                 onKeyUp={(e) => setCapsLockOn(e.getModifierState('CapsLock'))}
                 className="auth-input w-full pl-10 pr-10 py-3 rounded-xl text-xs text-slate-900 placeholder-slate-400 font-sans shadow-xs"
               />
@@ -848,7 +858,8 @@ export const PopupApp: React.FC = () => {
             )}
 
             <button
-              type="submit"
+              type="button"
+              onClick={() => handleLogin()}
               disabled={loading}
               className="btn-primary group w-full py-3 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-md hover:shadow-lg transition"
             >
@@ -904,7 +915,7 @@ export const PopupApp: React.FC = () => {
               <span>Zero-Knowledge Encrypted</span>
             </div>
           </div>
-        </form>
+        </div>
       ) : !unlocked && step === 'mfa' ? (
         <form onSubmit={handleMfaSubmit} className="flex-1 flex flex-col justify-center space-y-4 max-w-[310px] mx-auto w-full p-6 animate-fade-in">
           <div className="auth-card rounded-2xl p-5 space-y-4 text-center shadow-xl">
