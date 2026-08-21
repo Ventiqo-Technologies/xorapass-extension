@@ -1038,16 +1038,23 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
     const copiedId = copiedRes?.id;
     const copiedField = copiedRes?.field;
     if (copiedSecret && text.includes(copiedSecret)) {
+      matchedVaultEntryId = copiedId || undefined;
       const start = text.indexOf(copiedSecret);
       const end = start + copiedSecret.length;
+      
+      let typeVal: SecretType = 'generic_secret';
+      if (copiedField === 'password') typeVal = 'password';
+      else if (copiedField === 'privateKey') typeVal = 'private_key';
+
       const alreadyMatched = currentScan.matches.some(m => m.start === start && m.end === end);
-      if (!alreadyMatched) {
-        let typeVal: SecretType = 'generic_secret';
-        if (copiedField === 'password') typeVal = 'password';
-        else if (copiedField === 'privateKey') typeVal = 'private_key';
-
-        matchedVaultEntryId = copiedId || undefined;
-
+      if (alreadyMatched) {
+        for (const m of currentScan.matches) {
+          if (m.start === start && m.end === end) {
+            m.type = typeVal;
+            m.label = copiedField === 'password' ? 'Password' : copiedField === 'privateKey' ? 'Private key' : 'Copied vault credential';
+          }
+        }
+      } else {
         const copiedMatch = {
           type: typeVal,
           label: copiedField === 'password' ? 'Password' : copiedField === 'privateKey' ? 'Private key' : 'Copied vault credential',
@@ -1061,6 +1068,7 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
           types: Array.from(new Set([...currentScan.types, typeVal])),
         };
       }
+      currentScan.types = Array.from(new Set(currentScan.matches.map(m => m.type)));
     }
   } catch (e) {
     console.debug("Failed to get copied secret", e);
@@ -1182,16 +1190,23 @@ async function handleSecretPaste(
     const copiedId = copiedRes?.id;
     const copiedField = copiedRes?.field;
     if (copiedSecret && text.includes(copiedSecret)) {
+      matchedVaultEntryId = copiedId || undefined;
       const start = text.indexOf(copiedSecret);
       const end = start + copiedSecret.length;
+      
+      let typeVal: SecretType = 'generic_secret';
+      if (copiedField === 'password') typeVal = 'password';
+      else if (copiedField === 'privateKey') typeVal = 'private_key';
+
       const alreadyMatched = currentScan.matches.some(m => m.start === start && m.end === end);
-      if (!alreadyMatched) {
-        let typeVal: SecretType = 'generic_secret';
-        if (copiedField === 'password') typeVal = 'password';
-        else if (copiedField === 'privateKey') typeVal = 'private_key';
-
-        matchedVaultEntryId = copiedId || undefined;
-
+      if (alreadyMatched) {
+        for (const m of currentScan.matches) {
+          if (m.start === start && m.end === end) {
+            m.type = typeVal;
+            m.label = copiedField === 'password' ? 'Password' : copiedField === 'privateKey' ? 'Private key' : 'Copied vault credential';
+          }
+        }
+      } else {
         const copiedMatch = {
           type: typeVal,
           label: copiedField === 'password' ? 'Password' : copiedField === 'privateKey' ? 'Private key' : 'Copied vault credential',
@@ -1205,6 +1220,7 @@ async function handleSecretPaste(
           types: Array.from(new Set([...currentScan.types, typeVal])),
         };
       }
+      currentScan.types = Array.from(new Set(currentScan.matches.map(m => m.type)));
     }
   } catch (e) {
     console.debug("Failed to get copied secret", e);
