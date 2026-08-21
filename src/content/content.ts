@@ -1055,18 +1055,6 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
 
   if (currentScan.matches.length === 0) return;
 
-  void browser.runtime
-    .sendMessage({
-      type: 'AI_PASTE_EVENT',
-      payload: {
-        hostname,
-        types: currentScan.types,
-        action: 'type',
-        isAiSite: isAiSite(hostname),
-      },
-    })
-    .catch(() => {});
-
   const labels = Array.from(new Set(currentScan.matches.map((m) => m.label)));
   const isBlock = pastePolicy.mode === 'block' || !pastePolicy.allowDismiss;
 
@@ -1101,6 +1089,17 @@ async function runTypingGuard(el: HTMLElement, text: string, scan: ScanResult): 
     setEditableText(el, redact(text, currentScan.matches));
   } else {
     pasteGuardBypassed = true;
+    void browser.runtime
+      .sendMessage({
+        type: 'AI_PASTE_EVENT',
+        payload: {
+          hostname,
+          types: currentScan.types,
+          action: 'type',
+          isAiSite: isAiSite(hostname),
+        },
+      })
+      .catch(() => {});
   }
   acknowledgeCurrent(el);
 }
@@ -1190,18 +1189,6 @@ async function handleSecretPaste(
     return;
   }
 
-  void browser.runtime
-    .sendMessage({
-      type: 'AI_PASTE_EVENT',
-      payload: {
-        hostname,
-        types: currentScan.types,
-        action,
-        isAiSite: isAiSite(hostname),
-      },
-    })
-    .catch(() => {});
-
   const labels = Array.from(new Set(currentScan.matches.map((m) => m.label)));
   const isBlock = pastePolicy.mode === 'block' || !pastePolicy.allowDismiss;
 
@@ -1232,6 +1219,17 @@ async function handleSecretPaste(
 
   if (proceed && target) {
     pasteGuardBypassed = true;
+    void browser.runtime
+      .sendMessage({
+        type: 'AI_PASTE_EVENT',
+        payload: {
+          hostname,
+          types: currentScan.types,
+          action,
+          isAiSite: isAiSite(hostname),
+        },
+      })
+      .catch(() => {});
     insertTextAtCaret(target, text, caret);
   }
 }
