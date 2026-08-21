@@ -58,6 +58,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // extension is genuinely unlocked; there is no separate approval step here
   // because the real consent already happened when a human unlocked it.
   'WEB_BRIDGE_REQUEST_SESSION',
+  'GET_COPIED_SECRET',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
