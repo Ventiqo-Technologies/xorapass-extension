@@ -1,6 +1,7 @@
 // XoraPass Background Service Worker (Manifest V3)
 import browser from 'webextension-polyfill';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
+import { isFillableCategory } from '../utils/fillPolicy';
 import { validateMessage } from '../utils/messageGuard';
 import {
   encryptPayload,
@@ -20,15 +21,37 @@ import {
 import { coercePolicy, DEFAULT_POLICY, PastePolicy } from '../utils/pasteGuard';
 import { base64ToBytes } from '../utils/crypto';
 
-// Logged on every service-worker (cold) start. If the session were cleared by a
-// mere page refresh you would NOT see this line on refresh — it only prints when
-// the worker itself restarts, which is what actually resets storage.session.
+// Logged on every service-worker (cold) start.
+//
+// Note for anyone debugging "the vault locked itself": a worker restart does
+// NOT clear storage.session. That API exists precisely because MV3 workers are
+// killed after ~30s idle, and it holds its contents for the whole BROWSER
+// session — surviving any number of worker restarts. Chrome only drops it when
+// the browser itself shuts down.
+//
+// So a mid-session lock is never the worker respawning. It is one of exactly
+// two things, and both are ours: the auto-lock alarm, or an explicit
+// LOCK_VAULT. Those are the only callers of storage.session.clear().
 console.debug('[XoraPass] service worker started at', new Date().toISOString());
 
 const DISABLED_SITES_KEY = 'disabledSites';
 const AUTO_LOCK_KEY = 'autoLockMinutes';
 const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
-const DEFAULT_AUTO_LOCK_MINUTES = 15;
+
+/**
+ * 0 = no idle timer: the vault stays unlocked until the BROWSER restarts.
+ *
+ * This is not "never lock". Everything sensitive — the vault key, the decrypted
+ * items, the access token — lives in storage.session, which the browser clears
+ * when its session ends. So zero means "locked on restart", which is the same
+ * default the mainstream password-manager extensions ship.
+ *
+ * It replaces a 15-minute idle lock that was the single biggest source of
+ * re-authentication: it fired before the 30-minute access token had even
+ * expired, so the extension was locking users out more often than the API was.
+ * The shorter intervals remain available for anyone who wants them.
+ */
+const DEFAULT_AUTO_LOCK_MINUTES = 0;
 let lastCopiedSecret = '';
 let lastCopiedId = '';
 let lastCopiedField = '';
@@ -39,18 +62,80 @@ let lastCopiedField = '';
 // (AI_CHECK_TAB) and tab activation/navigation (see below), both of which are
 // much faster in practice.
 const AI_HEARTBEAT_ALARM = 'xorapass-ai-heartbeat';
+const TOKEN_REFRESH_ALARM = 'xorapass-token-refresh';
 const CLIPBOARD_KEY = 'clipboardClearSeconds';
 const CLIPBOARD_ALARM = 'xorapass-clipboard-clear';
 const CLIPBOARD_PENDING_KEY = 'clipboardPending';
 const OFFSCREEN_TARGET = 'xorapass-offscreen';
 const OFFSCREEN_URL = 'offscreen.html';
 
-/** Idle-timeout (minutes) after which the vault auto-locks. 0 = never. */
+/** Idle-timeout (minutes) after which the vault auto-locks. 0 = no idle timer,
+ *  i.e. locked on browser restart — not "never". */
 async function getAutoLockMinutes(): Promise<number> {
   const res = await browser.storage.local.get([AUTO_LOCK_KEY]);
   const v = (res as Record<string, unknown>)[AUTO_LOCK_KEY];
   return typeof v === 'number' && v >= 0 ? v : DEFAULT_AUTO_LOCK_MINUTES;
 }
+
+// ── Lock on screen lock / sleep ──────────────────────────────────────────────
+//
+// This is what makes "locked on browser restart" a safe default rather than
+// merely a convenient one. Without it, dropping the idle timer means an
+// unlocked vault sits in memory for the whole browser session, and anyone who
+// reaches the running machine can read every credential — which is precisely
+// what the old 15-minute timer was defending against.
+//
+// Keying on the OS instead of a clock is a better defence anyway: it locks when
+// the user actually leaves (screen lock, suspend) rather than punishing someone
+// who is sitting right there reading a long document. It is deliberately
+// INDEPENDENT of the idle timer — both can be on, and the strictest wins.
+const SCREEN_LOCK_KEY = 'lockOnScreenLock';
+
+/**
+ * Default OFF, opt-in.
+ *
+ * It shipped default-on as a compensating control, which was the wrong call for
+ * two reasons. Practically: Chrome reports state "locked" for a screensaver as
+ * well as a real lock, so on a machine that dims after 15 minutes this silently
+ * reinstated the 15-minute lock the no-idle-timer default exists to remove.
+ *
+ * And on the merits it buys less than it first appears: while the screen is
+ * locked nobody can reach the browser at all, because the OS password already
+ * gates it. Locking the vault too only helps against someone who knows that
+ * password, or against unlocking the machine and walking away again — real, but
+ * niche enough that it belongs to the user's judgement rather than ours. That is
+ * why the mainstream managers offer it as a choice instead of a default.
+ */
+async function getLockOnScreenLock(): Promise<boolean> {
+  const res = await browser.storage.local.get([SCREEN_LOCK_KEY]);
+  const v = (res as Record<string, unknown>)[SCREEN_LOCK_KEY];
+  return typeof v === 'boolean' ? v : false;
+}
+
+async function lockVaultNow(reason: string): Promise<void> {
+  const session = await browser.storage.session.get(['unlocked']);
+  if (!session.unlocked) return; // already locked — nothing to clear or log
+  console.debug('[XoraPass] locking vault:', reason);
+  await browser.alarms.clear(AUTO_LOCK_ALARM);
+  await clearAiHeartbeat();
+  await clearTokenRefresh();
+  dismissedByTab.clear();
+  // Same ordering as the auto-lock alarm: drain the clipboard before the
+  // pending marker is wiped along with the rest of the session.
+  await clearClipboard().catch(() => undefined);
+  await browser.storage.session.clear();
+}
+
+// "locked" fires when the OS screen locks or the machine suspends. "idle" is
+// deliberately NOT treated as a lock: it means no input for the detection
+// interval, which happens while reading, and locking then would recreate the
+// interruption this whole change set out to remove.
+browser.idle.onStateChanged.addListener((state) => {
+  if (state !== 'locked') return;
+  void getLockOnScreenLock().then((enabled) => {
+    if (enabled) return lockVaultNow('screen locked');
+  });
+});
 
 // (Re)arm the idle auto-lock. Called on unlock and on any popup interaction, so
 // the countdown restarts each time the user actively uses the extension.
@@ -67,6 +152,18 @@ async function scheduleAiHeartbeat() {
 }
 async function clearAiHeartbeat() {
   await browser.alarms.clear(AI_HEARTBEAT_ALARM);
+}
+
+// Renews the access token proactively, well before its ~30-minute server
+// lifetime, so ordinary use never hits a 401 in the first place. apiJwt()
+// below also refreshes reactively on a 401 as a backstop (a missed alarm
+// tick, a worker that was asleep, clock drift) -- this alarm just makes the
+// common case not depend on that retry ever firing.
+async function scheduleTokenRefresh() {
+  await browser.alarms.create(TOKEN_REFRESH_ALARM, { periodInMinutes: 20 });
+}
+async function clearTokenRefresh() {
+  await browser.alarms.clear(TOKEN_REFRESH_ALARM);
 }
 
 // ── Clipboard auto-clear ────────────────────────────────────────────────────
@@ -162,6 +259,13 @@ browser.alarms.onAlarm.addListener((alarm) => {
   // When the idle timer fires, purge the decrypted vault from session storage.
   if (alarm.name === AUTO_LOCK_ALARM) {
     console.debug('[XoraPass] auto-lock fired -> clearing session');
+    void clearAiHeartbeat();
+    // Otherwise this alarm keeps firing every 20 minutes after an idle lock,
+    // calling apiRefresh() against a session storage.session.clear() below is
+    // about to wipe -- harmless (doTokenRefresh checks `unlocked` and
+    // no-ops), but a stray wakeup for nothing, and inconsistent with the
+    // explicit LOCK_VAULT path, which already clears this.
+    void clearTokenRefresh();
     // Locking must not leave a password sitting in the clipboard, so clear it
     // first — storage.session.clear() would otherwise drop the pending marker
     // and make the clear a no-op.
@@ -175,6 +279,9 @@ browser.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name === AI_HEARTBEAT_ALARM) {
     void pushAiFillToActiveTabs();
+  }
+  if (alarm.name === TOKEN_REFRESH_ALARM) {
+    void apiRefresh();
   }
 });
 
@@ -299,14 +406,12 @@ async function getJwt(): Promise<string> {
   return typeof jwt === 'string' ? jwt : '';
 }
 
-/** Calls core-api authenticated as the logged-in human -- never a bridge token. */
-async function apiJwt(
+async function callApiJwt(
   method: string,
   path: string,
-  body?: unknown
+  body: unknown,
+  jwt: string
 ): Promise<{ ok: boolean; status: number; data: any }> {
-  const jwt = await getJwt();
-  if (!jwt) return { ok: false, status: 0, data: { detail: 'locked' } };
   try {
     const res = await fetch(`${API_BASE_URL}/api${path}`, {
       method,
@@ -323,6 +428,82 @@ async function apiJwt(
   } catch (e) {
     console.warn('[XoraPass] AI Access API call failed:', e);
     return { ok: false, status: 0, data: { detail: 'network error' } };
+  }
+}
+
+/** Calls core-api authenticated as the logged-in human -- never a bridge token. */
+async function apiJwt(
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<{ ok: boolean; status: number; data: any }> {
+  const jwt = await getJwt();
+  if (!jwt) return { ok: false, status: 0, data: { detail: 'locked' } };
+
+  const first = await callApiJwt(method, path, body, jwt);
+  if (first.status !== 401) return first;
+
+  // The access token may simply have expired (the proactive refresh alarm
+  // missed a tick, the worker was asleep, clock drift) -- try once to renew
+  // it before giving up. A failed renewal (no refresh token stored, already
+  // redeemed, expired) just returns the original 401 unchanged, so this can
+  // only help and never turn a working call into a failing one.
+  const renewed = await apiRefresh();
+  if (!renewed) return first;
+  return callApiJwt(method, path, body, renewed);
+}
+
+// A proactive alarm tick and a reactive 401 retry can land at nearly the same
+// moment. Only one refresh should ever be in flight -- the server-side
+// rotation makes a refresh token single-use, so a second, overlapping call
+// would race the first and one of them would fail and clobber the good
+// result. Concurrent callers instead await the same in-flight attempt.
+let refreshInFlight: Promise<string> | null = null;
+
+/**
+ * Exchanges the stored refresh token for a new access token, rotating both
+ * in storage.session (the server invalidates the old refresh token on every
+ * use, so the old one must be overwritten too). Returns the new access
+ * token, or '' if there was nothing to refresh with or the refresh itself
+ * failed -- callers fall back to their existing behavior in that case
+ * (apiJwt's normal 401 handling, or the popup's "Session expired" prompt),
+ * never anything worse than what happens today without this at all.
+ */
+async function apiRefresh(): Promise<string> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = doTokenRefresh().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
+async function doTokenRefresh(): Promise<string> {
+  const res = await browser.storage.session.get(['refreshToken', 'unlocked']);
+  const refreshToken = (res as Record<string, unknown>).refreshToken;
+  if (!res.unlocked || typeof refreshToken !== 'string' || !refreshToken) return '';
+
+  try {
+    const resp = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!resp.ok) {
+      console.debug('[XoraPass] token refresh failed:', resp.status);
+      return '';
+    }
+    const data = await resp.json();
+    if (typeof data.access_token !== 'string' || typeof data.refresh_token !== 'string') return '';
+
+    await browser.storage.session.set({
+      jwt: data.access_token,
+      token: data.access_token,
+      refreshToken: data.refresh_token,
+    });
+    return data.access_token;
+  } catch (e) {
+    console.warn('[XoraPass] token refresh network error:', e);
+    return '';
   }
 }
 
@@ -632,13 +813,14 @@ browser.runtime.onMessage.addListener((message, sender) => {
       encKey?: string; // base64 -- needed only so "save to vault" can encrypt new entries
       token?: string;
       offline?: boolean;
+      refreshToken?: string;
     };
-    const { decryptedItems, email, jwt, encKey, token, offline } = payload;
+    const { decryptedItems, email, jwt, encKey, token, offline, refreshToken } = payload;
     // token and encKey are held so the popup can re-fetch and decrypt the vault
     // without a full re-authentication. They live in storage.session, which is
     // memory-only, cleared on browser restart, and already restricted to
     // TRUSTED_CONTEXTS — the same place the decrypted vault itself sits.
-    const sessionData = {
+    const sessionData: Record<string, unknown> = {
       unlocked: true,
       email,
       vaultItems: decryptedItems,
@@ -649,11 +831,22 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // writes have to wait for a connection.
       offline: !!offline,
     };
+    // Deliberately omitted rather than defaulted to '' when absent:
+    // refreshVault() (a routine vault-data sync, not a real unlock) also
+    // sends UNLOCK_VAULT to update vaultItems/token, but never carries a
+    // refresh token of its own -- storage.session.set() only merges the keys
+    // given, so leaving this one out here preserves whatever apiRefresh()
+    // already rotated it to, instead of clobbering a live token back to ''
+    // on every sync. An old popup build or an offline unlock similarly just
+    // never has one to begin with, and everything falls back to today's
+    // behavior: the access token dies at its own natural expiry.
+    if (refreshToken) sessionData.refreshToken = refreshToken;
     return browser.storage.session
       .set(sessionData)
       .then(() => {
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
+        void scheduleTokenRefresh();
         console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', (decryptedItems as unknown[]).length, 'items )');
         return { success: true };
       });
@@ -663,6 +856,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     console.debug('[XoraPass] LOCK_VAULT -> clearing session');
     void browser.alarms.clear(AUTO_LOCK_ALARM);
     void clearAiHeartbeat();
+    void clearTokenRefresh();
     dismissedByTab.clear();
     // Same ordering as auto-lock: drain the clipboard before the pending
     // marker is wiped along with the rest of the session.
@@ -672,10 +866,27 @@ browser.runtime.onMessage.addListener((message, sender) => {
       .then(() => ({ success: true }));
   }
 
+  if (type === 'REFRESH_TOKEN') {
+    return apiRefresh().then((accessToken) => ({ accessToken: accessToken || null }));
+  }
+
   if (type === 'GET_SETTINGS') {
-    return Promise.all([getAutoLockMinutes(), getClipboardClearSeconds()]).then(
-      ([autoLockMinutes, clipboardClearSeconds]) => ({ autoLockMinutes, clipboardClearSeconds })
-    );
+    return Promise.all([
+      getAutoLockMinutes(),
+      getClipboardClearSeconds(),
+      getLockOnScreenLock(),
+    ]).then(([autoLockMinutes, clipboardClearSeconds, lockOnScreenLock]) => ({
+      autoLockMinutes,
+      clipboardClearSeconds,
+      lockOnScreenLock,
+    }));
+  }
+
+  if (type === 'SET_LOCK_ON_SCREEN_LOCK') {
+    const enabled = !!msg.payload.enabled;
+    return browser.storage.local
+      .set({ [SCREEN_LOCK_KEY]: enabled })
+      .then(() => ({ success: true, lockOnScreenLock: enabled }));
   }
 
   if (type === 'SET_CLIPBOARD_CLEAR') {
@@ -740,7 +951,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const items = res.vaultItems as VaultItem[];
 
       // Safe, exact/subdomain/registrable-domain matching (no substring hacks).
-      const matching = items.filter((item) => !!item.url && isDomainMatch(hostname, item.url!));
+      // The category check is part of the match, not a nicety: a card entry's
+      // username/value are the CARD NUMBER and CVV, and a note's value is the
+      // literal sentinel "SECURE_NOTE" — see utils/fillPolicy.
+      const matching = items.filter(
+        (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)
+      );
 
       // Warn if the current page looks like a deceptive variant of a site the
       // user actually has credentials for, but did not itself match.
@@ -788,6 +1004,16 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
       const item = (res.vaultItems as VaultItem[]).find((i) => i.id === id);
       if (!item || !item.url) return { error: 'not_found' };
+
+      // Re-authorize the category as well as the domain. The listing above
+      // already excludes non-login items, so reaching here means the id was
+      // chosen by something other than our own dropdown — exactly the case this
+      // endpoint re-checks everything for. Releasing a card's CVV to a page
+      // because it asked for that id by name is not a mistake worth allowing.
+      if (!isFillableCategory(item.category)) {
+        console.warn('[XoraPass] Refused non-login item for autofill:', item.category);
+        return { error: 'not_fillable' };
+      }
 
       // Re-authorize: the item must still match the tab's real hostname.
       if (!isDomainMatch(hostname, item.url)) {
@@ -1187,6 +1413,12 @@ async function applyBridgedSession(
 
   void scheduleAutoLock();
   void scheduleAiHeartbeat();
+  // Without this, a bridged session with a refresh token now correctly
+  // stored would still never proactively renew -- only the reactive 401
+  // backstop in apiJwt() would eventually catch it, and only once something
+  // actually tries to use the API. A refreshToken-less bridge (WEB_BRIDGE_LOGIN,
+  // or an older web app build) makes this a no-op, same as it's always been.
+  void scheduleTokenRefresh();
 }
 
 // ── Companion-device identity ────────────────────────────────────────────────
@@ -1337,9 +1569,10 @@ if (api?.runtime?.onMessageExternal) {
             encKeyHex: string;
             token: string;
             email: string;
+            refreshToken?: string;
           };
           const encKeyBytes = hexToBytes(inner.encKeyHex);
-          await applyBridgedSession(inner.token, encKeyBytes, inner.email);
+          await applyBridgedSession(inner.token, encKeyBytes, inner.email, inner.refreshToken);
           sendResponse({ success: true });
         })
         .catch((err) => {

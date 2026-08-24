@@ -31,6 +31,7 @@ import {
   CheckCircle2,
   X,
   Bot,
+  RotateCw,
   ShieldAlert
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
@@ -108,13 +109,21 @@ const VAULT_CATEGORIES = [
 
 type CategoryKey = (typeof VAULT_CATEGORIES)[number]['key'];
 
+// 0 is listed first because it is the default.
+//
+// It was labelled "Never", which was wrong in a way that mattered: the vault
+// key and decrypted items live in storage.session, so the browser closing
+// always locks the vault regardless of this setting. "Never" invited users to
+// believe they were choosing an indefinitely unlocked vault, and invited
+// reviewers to believe the extension offered one. It does not — the honest name
+// for 0 is the event that actually ends the session.
 const AUTO_LOCK_OPTIONS = [
+  { label: 'On restart', value: 0 },
   { label: '1 min', value: 1 },
   { label: '5 min', value: 5 },
   { label: '15 min', value: 15 },
   { label: '30 min', value: 30 },
   { label: '1 hour', value: 60 },
-  { label: 'Never', value: 0 },
 ];
 
 interface ActiveAiTab {
@@ -191,7 +200,10 @@ export const PopupApp: React.FC = () => {
   const [currentHostname, setCurrentHostname] = useState('');
   const [currentProtocol, setCurrentProtocol] = useState('');
   const [siteDisabled, setSiteDisabled] = useState(false);
-  const [autoLockMinutes, setAutoLockMinutes] = useState(15);
+  // Matches the background's default so the control doesn't flash a value the
+  // user never chose while GET_SETTINGS is in flight.
+  const [autoLockMinutes, setAutoLockMinutes] = useState(0);
+  const [lockOnScreenLock, setLockOnScreenLock] = useState(false);
   const [clipboardClearSeconds, setClipboardClearSeconds] = useState(
     DEFAULT_CLIPBOARD_CLEAR_SECONDS
   );
@@ -257,6 +269,9 @@ export const PopupApp: React.FC = () => {
               if (s && typeof s.autoLockMinutes === 'number') setAutoLockMinutes(s.autoLockMinutes);
               if (s && typeof s.clipboardClearSeconds === 'number') {
                 setClipboardClearSeconds(s.clipboardClearSeconds);
+              }
+              if (s && typeof s.lockOnScreenLock === 'boolean') {
+                setLockOnScreenLock(s.lockOnScreenLock);
               }
             });
           } else if (!res && attempt < 3) {
@@ -329,6 +344,11 @@ export const PopupApp: React.FC = () => {
   const changeAutoLock = (minutes: number) => {
     setAutoLockMinutes(minutes);
     browser.runtime.sendMessage({ type: 'SET_AUTO_LOCK', payload: { minutes } });
+  };
+
+  const changeLockOnScreenLock = (enabled: boolean) => {
+    setLockOnScreenLock(enabled);
+    browser.runtime.sendMessage({ type: 'SET_LOCK_ON_SCREEN_LOCK', payload: { enabled } });
   };
 
   const changeClipboardClear = (seconds: number) => {
@@ -431,7 +451,8 @@ export const PopupApp: React.FC = () => {
     token: string,
     encKey: Uint8Array,
     accountEmail: string,
-    isOffline = false
+    isOffline = false,
+    refreshToken = ''
   ) =>
     browser.runtime.sendMessage({
       type: 'UNLOCK_VAULT',
@@ -442,16 +463,22 @@ export const PopupApp: React.FC = () => {
         encKey: bytesToHex(encKey),
         jwt: token,
         offline: isOffline,
+        refreshToken,
       }
     });
 
-  const processVault = async (token: string, encKey: Uint8Array, masterSalt: string) => {
+  const processVault = async (
+    token: string,
+    encKey: Uint8Array,
+    masterSalt: string,
+    refreshToken = ''
+  ) => {
     const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
       headers: { Authorization: `Bearer ${token}` }
     });
 
     const decrypted = decryptEntries(vaultRes.data, encKey);
-    const res: any = await storeSession(decrypted, token, encKey, email);
+    const res: any = await storeSession(decrypted, token, encKey, email, false, refreshToken);
     if (res && res.success) {
       await writeVaultCache(email, masterSalt, vaultRes.data as RawVaultEntry[]);
       setUnlocked(true);
@@ -478,27 +505,52 @@ export const PopupApp: React.FC = () => {
     setStep('login');
   };
 
+  const fetchAndStoreVault = async (token: string, encKeyHex: string, accountEmail: string) => {
+    const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const encKey = hexToBytes(encKeyHex);
+    const decrypted = decryptEntries(vaultRes.data, encKey);
+    // No refreshToken passed through here on purpose -- background.ts's
+    // UNLOCK_VAULT handler leaves the stored one alone when this call omits
+    // it, so a routine sync can never clobber a token apiRefresh() rotated.
+    await storeSession(decrypted, token, encKey, accountEmail);
+    await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
+    setVaultItems(decrypted);
+  };
+
   const refreshVault = async (manual = false) => {
     const session = await browser.storage.session.get(['token', 'encKey', 'email']);
     const token = session.token as string | undefined;
     const encKeyHex = session.encKey as string | undefined;
     if (!token || !encKeyHex) return;
+    const accountEmail = (session.email as string) || email;
 
     setRefreshing(true);
     try {
-      const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const encKey = hexToBytes(encKeyHex);
-      const accountEmail = (session.email as string) || email;
-      const decrypted = decryptEntries(vaultRes.data, encKey);
-      await storeSession(decrypted, token, encKey, accountEmail);
-      await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
-      setVaultItems(decrypted);
+      await fetchAndStoreVault(token, encKeyHex, accountEmail);
       setSyncError(null);
     } catch (err: any) {
       if (isAuthError(err)) {
-        setSyncError('Session expired — lock and unlock to sync.');
+        // The access token may simply have expired -- ask the background
+        // worker to renew it (it owns the refresh token and the concurrency
+        // guard around using it) and retry once before telling the user
+        // their session is gone.
+        let renewed = false;
+        try {
+          const resp: any = await browser.runtime.sendMessage({ type: 'REFRESH_TOKEN' });
+          const newToken = resp?.accessToken as string | undefined;
+          if (newToken) {
+            await fetchAndStoreVault(newToken, encKeyHex, accountEmail);
+            setSyncError(null);
+            renewed = true;
+          }
+        } catch {
+          /* renewal or the retried fetch failed -- fall through below */
+        }
+        if (!renewed) {
+          setSyncError('Session expired — lock and unlock to sync.');
+        }
       } else if (manual) {
         setSyncError("Couldn't reach the server.");
       }
@@ -561,7 +613,7 @@ export const PopupApp: React.FC = () => {
         return;
       }
 
-      await processVault(loginRes.data.access_token, derived.encKey, salt);
+      await processVault(loginRes.data.access_token, derived.encKey, salt, loginRes.data.refresh_token);
 
     } catch (err: any) {
       console.error(err);
@@ -584,8 +636,8 @@ export const PopupApp: React.FC = () => {
         mfa_token: mfaToken,
         code: mfaCode
       });
-      
-      await processVault(verifyRes.data.access_token, tempEncKey, tempSalt);
+
+      await processVault(verifyRes.data.access_token, tempEncKey, tempSalt, verifyRes.data.refresh_token);
     } catch (err: any) {
       console.error(err);
       setError(err.response?.data?.detail || "Invalid MFA code.");
@@ -1787,7 +1839,11 @@ export const PopupApp: React.FC = () => {
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <div className="text-xs font-bold text-slate-800">Auto-lock Vault</div>
-                      <div className="text-[10px] text-slate-500">Lock vault after idle duration</div>
+                      <div className="text-[10px] text-slate-500">
+                        {autoLockMinutes === 0
+                          ? 'Locks when the browser restarts'
+                          : 'Locks after this much idle time'}
+                      </div>
                     </div>
                     <div className="relative inline-flex items-center">
                       <select value={autoLockMinutes} onChange={(e) => changeAutoLock(Number(e.target.value))} className="w-28 appearance-none bg-slate-50 border border-slate-900/12 rounded-lg text-xs font-semibold text-slate-800 pl-2.5 pr-7 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0 truncate">
@@ -1795,6 +1851,34 @@ export const PopupApp: React.FC = () => {
                       </select>
                       <ChevronDown className="w-3.5 h-3.5 absolute right-2 pointer-events-none text-slate-400 shrink-0" />
                     </div>
+                  </div>
+
+                  {/* The compensating control for an idle-timer-free default:
+                      leaving the machine is what locks the vault, rather than a
+                      clock that fires while you are sitting right there. */}
+                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
+                    <div className="min-w-0 pr-2">
+                      <div className="text-xs font-bold text-slate-800">Lock on Screen Lock</div>
+                      <div className="text-[10px] text-slate-500">
+                        Also lock when your computer locks, sleeps, or its
+                        screensaver starts
+                      </div>
+                    </div>
+                    <button
+                      role="switch"
+                      aria-checked={lockOnScreenLock}
+                      aria-label="Lock the vault when the computer locks or sleeps"
+                      onClick={() => changeLockOnScreenLock(!lockOnScreenLock)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan cursor-pointer ${
+                        lockOnScreenLock ? 'bg-brand-cyan' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transform transition-transform ${
+                          lockOnScreenLock ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
                   </div>
 
                   <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
@@ -1836,7 +1920,7 @@ export const PopupApp: React.FC = () => {
                       <div className="w-6 h-6 rounded-lg bg-brand-cyan/20 border border-brand-cyan/30 flex items-center justify-center text-brand-cyan">
                         <Bot className="w-3.5 h-3.5" />
                       </div>
-                      <h3 className="text-xs font-black tracking-tight text-white">AI Access & Security Guard</h3>
+                      <h3 className="text-xs font-black tracking-tight text-white">Secret Rotation</h3>
                     </div>
                     <button
                       onClick={scanActiveAiTabs}
@@ -1991,13 +2075,8 @@ export const PopupApp: React.FC = () => {
                   : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
               }`}
             >
-              <Bot className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">AI</span>
-              {activeAiTabs.length > 0 && (
-                <span className="absolute top-1 right-2 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-brand-cyan text-white text-[9px] font-bold shadow-xs animate-pulse">
-                  {activeAiTabs.length}
-                </span>
-              )}
+              <RotateCw className="w-4 h-4 mb-0.5 shrink-0" />
+              <span className="text-[10px] leading-none tracking-tight">Rotation</span>
             </button>
 
             <button

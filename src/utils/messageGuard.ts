@@ -16,6 +16,9 @@ export const KNOWN_MESSAGE_TYPES = [
   'GET_STATUS',
   'UNLOCK_VAULT',
   'LOCK_VAULT',
+  // Exchanges the stored refresh token for a fresh access token. Popup-only:
+  // it reads and rewrites the stored bearer credentials.
+  'REFRESH_TOKEN',
   'GET_MATCHING_CREDENTIALS',
   'GET_CREDENTIAL_SECRET',
   'REMEMBER_USERNAME',
@@ -27,6 +30,7 @@ export const KNOWN_MESSAGE_TYPES = [
   'SET_SITE_DISABLED',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  'SET_LOCK_ON_SCREEN_LOCK',
   'SET_CLIPBOARD_CLEAR',
   'CLIPBOARD_COPIED',
   // AI Access: the extension is a consumer of XoraPass's AI-access API, using
@@ -71,9 +75,14 @@ export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
 const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'UNLOCK_VAULT',
   'LOCK_VAULT',
+  'REFRESH_TOKEN',
   'GET_STATUS',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  // Turning the screen-lock guard OFF weakens the vault, so it belongs to the
+  // popup alone. A content script that could send this would be able to
+  // silently disable the control that protects an unattended machine.
+  'SET_LOCK_ON_SCREEN_LOCK',
   // Account-wide AI actions (every pending request / every session) --
   // reserved for the popup, same tier as the vault-lifecycle messages above.
   // The page-scoped ones (AI_CHECK_TAB, AI_FILL_CONFIRM, AI_FILL_HANDLED,
@@ -204,9 +213,16 @@ export function validateMessage(
       if (!payload || !Array.isArray(payload.decryptedItems) || typeof payload.email !== 'string') {
         return { ok: false, reason: 'bad-payload' };
       }
-      // token and encKey back the refresh path: re-fetching the vault needs a
-      // bearer token, and decrypting anything new needs the key.
+      // token and encKey back the vault-data refresh path: re-fetching the
+      // vault needs a bearer token, and decrypting anything new needs the key.
       if (typeof payload.token !== 'string' || typeof payload.encKey !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      // refreshToken (distinct from the above) backs renewing the ACCESS
+      // TOKEN itself once it expires, without asking for the master password
+      // again. Optional -- a client that doesn't send one just falls back to
+      // today's behavior (re-prompt on expiry) exactly as before.
+      if (payload.refreshToken !== undefined && typeof payload.refreshToken !== 'string') {
         return { ok: false, reason: 'bad-payload' };
       }
       break;
@@ -256,6 +272,11 @@ export function validateMessage(
       break;
     case 'SET_CLIPBOARD_CLEAR':
       if (!payload || typeof payload.seconds !== 'number' || !Number.isFinite(payload.seconds)) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'SET_LOCK_ON_SCREEN_LOCK':
+      if (!payload || typeof payload.enabled !== 'boolean') {
         return { ok: false, reason: 'bad-payload' };
       }
       break;

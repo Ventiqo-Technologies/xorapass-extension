@@ -45,7 +45,7 @@ const externalWebSender = (): any => ({ url: 'https://app.xorapass.com/', origin
 // between sender/handler/guard fails here immediately instead of silently
 // passing a fixture that happens to agree with itself.
 describe('device-link bridge: real protocol round trip', () => {
-  it('a WEB_BRIDGE_DELIVER_KEY payload built the way the web app really builds it passes validateMessage and decrypts to the token/email/key', async () => {
+  it('a WEB_BRIDGE_DELIVER_KEY payload built the way the web app really builds it passes validateMessage and decrypts to the token/email/key/refreshToken', async () => {
     // "Extension" side: its own persistent device keypair.
     const deviceKeyPair = await generateSharingKeyPair();
     // "Web app" side: a fresh ephemeral keypair for this one delivery.
@@ -54,12 +54,17 @@ describe('device-link bridge: real protocol round trip', () => {
     const encKeyHex = bytesToHex(webcrypto.getRandomValues(new Uint8Array(32)));
     const token = 'jwt-token';
     const email = 'a@b.c';
+    const refreshToken = 'refresh-secret';
 
     // Exactly what apps/web/src/utils/extensionLink.ts's deliverKeyToDevice
-    // does: bundle encKeyHex/token/email into one JSON plaintext, THEN
-    // encrypt that as a single envelope.
+    // does: bundle encKeyHex/token/email/refreshToken into one JSON
+    // plaintext, THEN encrypt that as a single envelope. refreshToken is
+    // included conditionally there (a web app session without one, e.g. an
+    // older build, just omits the field) -- covered here since it's the
+    // whole reason a bridged extension session can now self-renew instead
+    // of dying at its own natural expiry with nothing to rescue it.
     const sharedSecretSender = await deriveSharedSecret(ephemeralKeyPair.privateKey, deviceKeyPair.publicKey);
-    const inner = JSON.stringify({ encKeyHex, token, email });
+    const inner = JSON.stringify({ encKeyHex, token, email, refreshToken });
     const sealed = encryptPayload(inner, sharedSecretSender);
     const message = {
       type: 'WEB_BRIDGE_DELIVER_KEY',
@@ -78,6 +83,7 @@ describe('device-link bridge: real protocol round trip', () => {
     expect(hexToBytes(recovered.encKeyHex)).toEqual(hexToBytes(encKeyHex));
     expect(recovered.token).toBe(token);
     expect(recovered.email).toBe(email);
+    expect(recovered.refreshToken).toBe(refreshToken);
   });
 
   it('a payload from a device that was NOT the intended recipient fails to decrypt', async () => {
