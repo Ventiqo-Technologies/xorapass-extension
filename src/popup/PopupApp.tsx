@@ -1913,14 +1913,14 @@ export const PopupApp: React.FC = () => {
             {/* AI ACCESS TAB */}
             {tab === 'ai' && (
               <div className="space-y-3.5 animate-fade-in flex-1 overflow-y-auto custom-scrollbar">
-                {/* AI Security Banner Card */}
+                {/* AI Credential Firewall Banner Card */}
                 <div className="p-3 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden">
                   <div className="flex items-center justify-between relative z-10">
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 rounded-lg bg-brand-cyan/20 border border-brand-cyan/30 flex items-center justify-center text-brand-cyan">
-                        <Bot className="w-3.5 h-3.5" />
+                        <ShieldAlert className="w-3.5 h-3.5" />
                       </div>
-                      <h3 className="text-xs font-black tracking-tight text-white">Secret Rotation</h3>
+                      <h3 className="text-xs font-black tracking-tight text-white">AI Credential Firewall</h3>
                     </div>
                     <button
                       onClick={scanActiveAiTabs}
@@ -1931,7 +1931,7 @@ export const PopupApp: React.FC = () => {
                     </button>
                   </div>
                   <p className="text-[10px] text-slate-300 leading-snug relative z-10">
-                    Zero-Knowledge Protection: Credentials remain encrypted in your vault. Paste Guard monitors AI prompts to protect against accidental leaks.
+                    Zero-Knowledge Protection: Real-time paste guard and exposure scanning for AI tools and web portals.
                   </p>
                 </div>
 
@@ -2075,8 +2075,13 @@ export const PopupApp: React.FC = () => {
                   : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
               }`}
             >
-              <RotateCw className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">Rotation</span>
+              <ShieldAlert className="w-4 h-4 mb-0.5 shrink-0 text-brand-cyan" />
+              <span className="text-[10px] leading-none tracking-tight">Firewall</span>
+              {activeAiTabs.length > 0 && (
+                <span className="absolute top-1 right-2 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-brand-cyan text-white text-[9px] font-bold shadow-xs animate-pulse">
+                  {activeAiTabs.length}
+                </span>
+              )}
             </button>
 
             <button
