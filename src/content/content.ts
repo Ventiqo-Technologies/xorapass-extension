@@ -1302,6 +1302,13 @@ function initPasteGuard(): void {
     document.addEventListener(
     'paste',
     (e) => {
+      // If the paste payload contains files/images (e.g. image/png, image/jpeg),
+      // allow native browser image handling to proceed without interception.
+      const types = Array.from(e.clipboardData?.types || []);
+      if (types.includes('Files') || (e.clipboardData?.files && e.clipboardData.files.length > 0)) {
+        return;
+      }
+
       const text = e.clipboardData?.getData('text/plain') || e.clipboardData?.getData('text') || '';
       if (!text) return;
 
@@ -1321,6 +1328,12 @@ function initPasteGuard(): void {
   document.addEventListener(
     'drop',
     (e) => {
+      // If the dropped payload contains files/images, allow native drop handling.
+      const types = Array.from(e.dataTransfer?.types || []);
+      if (types.includes('Files') || (e.dataTransfer?.files && e.dataTransfer.files.length > 0)) {
+        return;
+      }
+
       const text = e.dataTransfer?.getData('text/plain') || e.dataTransfer?.getData('text') || '';
       if (!text) return;
 
