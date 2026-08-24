@@ -137,25 +137,6 @@ const ASSIGN_RE = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*
 // Key names that indicate the value is a secret.
 const SECRET_KEY_RE = /(pass|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|auth|credential|client[_-]?secret|conn(?:ection)?[_-]?str|db[_-]?url|database[_-]?url)/i;
 
-function shannonEntropy(s: string): number {
-  if (!s) return 0;
-  const freq: Record<string, number> = {};
-  for (const ch of s) freq[ch] = (freq[ch] || 0) + 1;
-  let e = 0;
-  for (const k in freq) {
-    const p = freq[k] / s.length;
-    e -= p * Math.log2(p);
-  }
-  return e;
-}
-
-/** True when the value has lower + upper + digit — the shape of real API keys
- *  and strong passwords, and a good filter against UUIDs, hex hashes, and
- *  single-case blobs. */
-function hasMixedCaseDigit(s: string): boolean {
-  return /[a-z]/.test(s) && /[A-Z]/.test(s) && /[0-9]/.test(s);
-}
-
 // Values that are clearly not secrets: booleans, ports/numbers, localhost,
 // variable references, and obvious placeholders.
 function isTrivialValue(v: string): boolean {
@@ -240,34 +221,12 @@ export function scanForSecrets(input: string): ScanResult {
       }
       if (value.length > 0 && !/\s/.test(value) && !isTrivialValue(value)) {
         const keyLooksSecret = SECRET_KEY_RE.test(key);
-        const looksHighValue =
-          value.length >= 16 &&
-          shannonEntropy(value) >= 3.5 &&
-          hasMixedCaseDigit(value) &&
-          !/^https?:\/\//i.test(value);
-        // A secret-looking key flags almost any non-trivial value (covers weak
-        // passwords like DB_PASSWORD=hunter2). A plain key needs a value that
-        // genuinely looks like a secret, so URLs/hosts aren't flagged.
-        if ((keyLooksSecret && value.length >= 6) || looksHighValue) {
+        // A secret-looking key flags non-trivial values (covers weak
+        // passwords like DB_PASSWORD=hunter2).
+        if (keyLooksSecret && value.length >= 6) {
           const start = offset + valStartInLine;
           pushMatch(raw, 'env_secret', start, start + value.length, value);
         }
-      }
-    } else {
-      // 3) Standalone high-entropy token on a line of its own (a pasted key or
-      //    password with no assignment context). Requires MIXED case + digits
-      //    so single-case hashes, hex, UUIDs, and prose are not flagged.
-      const t = line.trim();
-      if (
-        t.length >= 24 &&
-        !/\s/.test(t) &&
-        shannonEntropy(t) >= 3.7 &&
-        hasMixedCaseDigit(t) &&
-        !/^https?:\/\//i.test(t) &&
-        !/@/.test(t)
-      ) {
-        const start = offset + line.indexOf(t);
-        pushMatch(raw, 'generic_secret', start, start + t.length, t);
       }
     }
     offset += line.length + 1; // +1 for the split newline

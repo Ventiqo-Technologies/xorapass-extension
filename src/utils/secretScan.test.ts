@@ -77,10 +77,6 @@ describe('scanForSecrets — true positives', () => {
   it('detects a quoted .env value', () => {
     expect(typesOf('API_KEY="abcd1234EFGH5678ijkl"')).toContain('env_secret');
   });
-
-  it('detects a standalone high-entropy mixed-case token', () => {
-    expect(typesOf('Xk9pLm2Qr7Ts4Vw8Zy3Bc6Nf1Hj5Dg')).toContain('generic_secret');
-  });
 });
 
 describe('scanForSecrets — false-positive avoidance', () => {
