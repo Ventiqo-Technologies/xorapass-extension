@@ -32,7 +32,6 @@ import {
   X,
   Bot,
   RotateCw,
-  Ban,
   ShieldAlert
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
@@ -2078,11 +2077,6 @@ export const PopupApp: React.FC = () => {
             >
               <RotateCw className="w-4 h-4 mb-0.5 shrink-0" />
               <span className="text-[10px] leading-none tracking-tight">Rotation</span>
-              {aiRequests.length > 0 && (
-                <span className="absolute top-1 right-2 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-brand-ruby text-white text-[9px] font-bold shadow-xs animate-pulse">
-                  {aiRequests.length}
-                </span>
-              )}
             </button>
 
             <button
