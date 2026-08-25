@@ -937,22 +937,81 @@ function insertTextAtCaret(target: HTMLElement, text: string, caret: CaretSnapsh
       target.setRangeText(text, start, end, 'end');
     }
     target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
     return;
   }
 
+  target.focus();
   if (caret?.kind === 'contenteditable' && caret.range) {
-    target.focus();
-    const selection = window.getSelection();
-    if (selection) {
-      selection.removeAllRanges();
-      selection.addRange(caret.range);
-      document.execCommand('insertText', false, text);
-      return;
+    try {
+      const selection = window.getSelection();
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(caret.range);
+        const success = document.execCommand('insertText', false, text);
+        if (success) {
+          target.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+      }
+    } catch {
+      /* fallback below */
     }
   }
 
-  target.focus();
-  document.execCommand('insertText', false, text);
+  try {
+    const success = document.execCommand('insertText', false, text);
+    if (!success && target.isContentEditable) {
+      target.textContent = (target.textContent || '') + text;
+    }
+  } catch {
+    if (target.isContentEditable) {
+      target.textContent = (target.textContent || '') + text;
+    }
+  }
+  target.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function initWebBridge(): void {
+  const allowedOrigins = new Set([
+    'https://app.xorapass.com',
+    'http://localhost:3000',
+    'http://localhost:8000',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:8000',
+  ]);
+
+  if (!allowedOrigins.has(window.location.origin)) {
+    return;
+  }
+
+  window.addEventListener('message', async (event) => {
+    if (event.source !== window || event.origin !== window.location.origin) return;
+    const data = event.data;
+    if (!data || data.source !== 'xorapass-web-bridge' || typeof data.type !== 'string') return;
+
+    const { requestId, type, payload } = data;
+    try {
+      const response = await browser.runtime.sendMessage({ type, payload });
+      window.postMessage(
+        {
+          source: 'xorapass-extension-bridge',
+          requestId,
+          response,
+        },
+        window.location.origin
+      );
+    } catch (err) {
+      window.postMessage(
+        {
+          source: 'xorapass-extension-bridge',
+          requestId,
+          response: { error: 'bridge_transport_failed', detail: String(err) },
+        },
+        window.location.origin
+      );
+    }
+  });
 }
 
 function getPasteTarget(e: Event): HTMLElement | null {
@@ -1361,6 +1420,7 @@ const frame = assessFrame();
 if (frame.isTop || !frame.isCrossOriginFrame) {
   // Only run in the top frame or in a same-origin (first-party) sub-frame.
   initPasteGuard();
+  initWebBridge();
   loadCredentials();
   checkAiFill();
   watchForUsernameEntry();

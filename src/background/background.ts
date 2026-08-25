@@ -219,7 +219,7 @@ async function clearClipboard(): Promise<void> {
   lastCopiedSecret = '';
   lastCopiedId = '';
   lastCopiedField = '';
-  await browser.storage.session.remove(CLIPBOARD_PENDING_KEY);
+  await browser.storage.session.remove([CLIPBOARD_PENDING_KEY, 'lastCopiedSecret', 'lastCopiedId', 'lastCopiedField']).catch(() => {});
 
   if (!(await ensureOffscreenDocument())) return;
   try {
@@ -900,14 +900,29 @@ browser.runtime.onMessage.addListener((message, sender) => {
     lastCopiedSecret = msg.payload?.secret || '';
     lastCopiedId = msg.payload?.id || '';
     lastCopiedField = msg.payload?.field || '';
-    return scheduleClipboardClear().then((clipboardClearSeconds) => ({
-      success: true,
-      clipboardClearSeconds,
-    }));
+    return browser.storage.session
+      .set({
+        lastCopiedSecret,
+        lastCopiedId,
+        lastCopiedField,
+      })
+      .catch(() => {})
+      .then(() => scheduleClipboardClear())
+      .then((clipboardClearSeconds) => ({
+        success: true,
+        clipboardClearSeconds,
+      }));
   }
 
   if (type === 'GET_COPIED_SECRET') {
-    return Promise.resolve({ secret: lastCopiedSecret, id: lastCopiedId, field: lastCopiedField });
+    return browser.storage.session
+      .get(['lastCopiedSecret', 'lastCopiedId', 'lastCopiedField'])
+      .catch(() => ({}))
+      .then((sess: any) => ({
+        secret: sess?.lastCopiedSecret || lastCopiedSecret,
+        id: sess?.lastCopiedId || lastCopiedId,
+        field: sess?.lastCopiedField || lastCopiedField,
+      }));
   }
 
   if (type === 'SET_AUTO_LOCK') {
@@ -1237,6 +1252,16 @@ browser.runtime.onMessage.addListener((message, sender) => {
     );
   }
 
+  // ── Web Bridge messages from content script or internal pages ─────────
+  if (
+    type === 'WEB_BRIDGE_LOGIN' ||
+    type === 'WEB_BRIDGE_DEVICE_INFO' ||
+    type === 'WEB_BRIDGE_DELIVER_KEY' ||
+    type === 'WEB_BRIDGE_REQUEST_SESSION'
+  ) {
+    return handleWebBridgeMessage(type, msg.payload);
+  }
+
   // Should be unreachable because validateMessage allowlists types.
   return undefined;
 });
@@ -1480,18 +1505,94 @@ async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   return { deviceId, publicKey: pair.publicKey, privateKey: pair.privateKey };
 }
 
+async function handleWebBridgeMessage(type: string, payload: any): Promise<any> {
+  if (type === 'WEB_BRIDGE_LOGIN') {
+    const { token, encKey, email } = payload || {};
+    let derivedEncBytes: Uint8Array;
+    try {
+      derivedEncBytes = base64ToBytes(encKey);
+    } catch {
+      return { error: 'invalid_enc_key_base64' };
+    }
+    try {
+      await applyBridgedSession(token, derivedEncBytes, email);
+      return { success: true };
+    } catch (err) {
+      console.error('[XoraPass Bridge] Bridge sync failed:', err);
+      return { error: 'sync_failed', detail: String(err) };
+    }
+  }
+
+  if (type === 'WEB_BRIDGE_DEVICE_INFO') {
+    try {
+      const [{ deviceId, publicKey }, session] = await Promise.all([
+        getOrCreateDeviceIdentity(),
+        browser.storage.session.get(['unlocked']),
+      ]);
+      return { deviceId, publicKey, unlocked: !!(session as Record<string, unknown>).unlocked };
+    } catch (err) {
+      console.error('[XoraPass Bridge] device identity failed:', err);
+      return { error: 'device_identity_failed' };
+    }
+  }
+
+  if (type === 'WEB_BRIDGE_DELIVER_KEY') {
+    const { ephemeralPublicKey, sealed } = (payload || {}) as {
+      ephemeralPublicKey: JsonWebKey;
+      sealed: EncryptedPayload;
+    };
+    try {
+      const { privateKey } = await getOrCreateDeviceIdentity();
+      const sharedSecret = await deriveSharedSecret(privateKey, ephemeralPublicKey);
+      const inner = JSON.parse(decryptPayload(sealed, sharedSecret)) as {
+        encKeyHex: string;
+        token: string;
+        email: string;
+        refreshToken?: string;
+      };
+      const encKeyBytes = hexToBytes(inner.encKeyHex);
+      await applyBridgedSession(inner.token, encKeyBytes, inner.email, inner.refreshToken);
+      return { success: true };
+    } catch (err) {
+      console.error('[XoraPass Bridge] Key delivery failed:', err);
+      return { error: 'delivery_failed', detail: String(err) };
+    }
+  }
+
+  if (type === 'WEB_BRIDGE_REQUEST_SESSION') {
+    const { ephemeralPublicKey } = (payload || {}) as { ephemeralPublicKey: JsonWebKey };
+    try {
+      const [{ privateKey }, session] = await Promise.all([
+        getOrCreateDeviceIdentity(),
+        browser.storage.session.get(['unlocked', 'token', 'encKey', 'email']),
+      ]);
+      const s = session as Record<string, unknown>;
+      if (!s.unlocked || !s.token || !s.encKey || !s.email) {
+        return { error: 'locked' };
+      }
+      const sharedSecret = await deriveSharedSecret(privateKey, ephemeralPublicKey);
+      const inner = JSON.stringify({
+        encKeyHex: s.encKey as string,
+        token: s.token as string,
+        email: s.email as string,
+      });
+      const sealed = encryptPayload(inner, sharedSecret);
+      return { success: true, sealed };
+    } catch (err) {
+      console.error('[XoraPass Bridge] Session request failed:', err);
+      return { error: 'request_failed', detail: String(err) };
+    }
+  }
+
+  return { error: 'unsupported_bridge_type' };
+}
+
 const api = (globalThis as any).chrome;
 if (api?.runtime?.onMessageExternal) {
   api.runtime.onMessageExternal.addListener((message: any, sender: any, sendResponse: (r: any) => void) => {
     // Validate message payload structure
     const guard = validateMessage(message, sender);
     if (!guard.ok) {
-      // Logging the type and payload SHAPE (keys + typeof each value) is what
-      // makes a "bad-payload" verdict debuggable at all -- several message
-      // types can produce that same reason, and without this there is no way
-      // to tell which one fired or which specific field failed the check.
-      // Never logs values: a token or key material must not end up in a
-      // console transcript just because the payload around it was malformed.
       const payloadShape = message && typeof message.payload === 'object' && message.payload
         ? Object.fromEntries(Object.entries(message.payload).map(([k, v]) => [k, typeof v]))
         : message?.payload;
@@ -1505,126 +1606,11 @@ if (api?.runtime?.onMessageExternal) {
       return;
     }
 
-    if (guard.type === 'WEB_BRIDGE_LOGIN') {
-      const { token, encKey, email } = message.payload;
+    handleWebBridgeMessage(guard.type as string, message.payload)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ error: 'bridge_failed', detail: String(err) }));
 
-      let derivedEncBytes: Uint8Array;
-      try {
-        derivedEncBytes = base64ToBytes(encKey);
-      } catch (e) {
-        sendResponse({ error: 'invalid_enc_key_base64' });
-        return;
-      }
-
-      applyBridgedSession(token, derivedEncBytes, email)
-        .then(() => {
-          sendResponse({ success: true });
-        })
-        .catch((err) => {
-          console.error('[XoraPass Bridge] Bridge sync failed:', err);
-          sendResponse({ error: 'sync_failed', detail: String(err) });
-        });
-
-      return true; // Keep message channel open for async response
-    }
-
-    if (guard.type === 'WEB_BRIDGE_DEVICE_INFO') {
-      // Never touches anything secret: the public key is, by definition, safe
-      // to hand to any page that can reach this listener at all. `unlocked`
-      // is what lets the caller decide whether to bother at all -- an
-      // already-unlocked extension has nothing to receive.
-      Promise.all([
-        getOrCreateDeviceIdentity(),
-        browser.storage.session.get(['unlocked']),
-      ])
-        .then(([{ deviceId, publicKey }, session]) => {
-          sendResponse({ deviceId, publicKey, unlocked: !!(session as Record<string, unknown>).unlocked });
-        })
-        .catch((err) => {
-          console.error('[XoraPass Bridge] device identity failed:', err);
-          sendResponse({ error: 'device_identity_failed' });
-        });
-      return true;
-    }
-
-    if (guard.type === 'WEB_BRIDGE_DELIVER_KEY') {
-      // token and email travel INSIDE the sealed envelope now, alongside the
-      // vault key -- not as separate plaintext fields next to it. Handing an
-      // access token across this boundary unencrypted is the same shape of
-      // risk as "extension sends its access token to the website" (a known
-      // anti-pattern), just mirrored; there is no reason to encrypt one
-      // secret in the payload and leave another one next to it in the clear.
-      const { ephemeralPublicKey, sealed } = message.payload as {
-        ephemeralPublicKey: JsonWebKey;
-        sealed: EncryptedPayload;
-      };
-
-      getOrCreateDeviceIdentity()
-        .then(async ({ privateKey }) => {
-          // The envelope was encrypted specifically to THIS device's public
-          // key by the delivering web session -- only this private key,
-          // which has never left storage.local, can recover it.
-          const sharedSecret = await deriveSharedSecret(privateKey, ephemeralPublicKey);
-          const inner = JSON.parse(decryptPayload(sealed, sharedSecret)) as {
-            encKeyHex: string;
-            token: string;
-            email: string;
-            refreshToken?: string;
-          };
-          const encKeyBytes = hexToBytes(inner.encKeyHex);
-          await applyBridgedSession(inner.token, encKeyBytes, inner.email, inner.refreshToken);
-          sendResponse({ success: true });
-        })
-        .catch((err) => {
-          console.error('[XoraPass Bridge] Key delivery failed:', err);
-          sendResponse({ error: 'delivery_failed', detail: String(err) });
-        });
-
-      return true;
-    }
-
-    if (guard.type === 'WEB_BRIDGE_REQUEST_SESSION') {
-      // The pull direction: a logged-out web app asking THIS already-unlocked
-      // extension for its current session, mirroring WEB_BRIDGE_DELIVER_KEY.
-      // Same envelope shape and the same persistent device keypair -- it's
-      // just used to encrypt here instead of decrypt. Nothing is returned
-      // unless the extension is genuinely unlocked right now; there is no
-      // separate approval step on this side because the actual consent
-      // happened earlier, when a human unlocked the extension itself.
-      const { ephemeralPublicKey } = message.payload as { ephemeralPublicKey: JsonWebKey };
-
-      Promise.all([
-        getOrCreateDeviceIdentity(),
-        browser.storage.session.get(['unlocked', 'token', 'encKey', 'email']),
-      ])
-        .then(async ([{ privateKey }, session]) => {
-          const s = session as Record<string, unknown>;
-          // `offline` unlocks (from the vault cache, no server round trip) have
-          // no access token to hand over -- nothing to pull in that case.
-          if (!s.unlocked || !s.token || !s.encKey || !s.email) {
-            sendResponse({ error: 'locked' });
-            return;
-          }
-          const sharedSecret = await deriveSharedSecret(privateKey, ephemeralPublicKey);
-          // storage.session.encKey is always hex here (popup login and
-          // applyBridgedSession both write it with bytesToHex, refreshVault
-          // reads it back with hexToBytes) -- already the exact shape the
-          // web app's decrypted inner payload expects, no conversion needed.
-          const inner = JSON.stringify({
-            encKeyHex: s.encKey as string,
-            token: s.token as string,
-            email: s.email as string,
-          });
-          const sealed = encryptPayload(inner, sharedSecret);
-          sendResponse({ success: true, sealed });
-        })
-        .catch((err) => {
-          console.error('[XoraPass Bridge] Session request failed:', err);
-          sendResponse({ error: 'request_failed', detail: String(err) });
-        });
-
-      return true;
-    }
+    return true; // Keep message channel open for async response
   });
 }
 

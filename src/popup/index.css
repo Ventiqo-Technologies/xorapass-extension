@@ -84,6 +84,10 @@
     box-shadow: 0 8px 24px rgba(225, 29, 72, 0.18);
   }
 
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(15, 23, 42, 0.15) transparent;
+  }
   .custom-scrollbar::-webkit-scrollbar {
     width: 5px;
     height: 5px;

@@ -8,18 +8,25 @@
       /* Declared here as well as in index.css so the very first paint matches —
          the stylesheet loads a moment later and a flash of the wrong background
          shows without it. */
-      html {
-        color-scheme: light;
-        background-color: #f6f9f8;
-      }
-      /* Fix size of extension popup */
-      body {
+      html, body {
         width: 380px;
+        min-width: 380px;
+        max-width: 380px;
         height: 550px;
+        min-height: 550px;
+        max-height: 550px;
         margin: 0;
         padding: 0;
         overflow: hidden;
+        color-scheme: light;
         background-color: #f6f9f8; /* Cool teal-tinted canvas, matches web */
+      }
+      #root {
+        width: 380px;
+        height: 550px;
+        min-height: 550px;
+        max-height: 550px;
+        overflow: hidden;
       }
     </style>
   </head>
