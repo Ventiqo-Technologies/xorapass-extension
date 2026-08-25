@@ -31,7 +31,6 @@ import {
   CheckCircle2,
   X,
   Bot,
-  RotateCw,
   ShieldAlert
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
