@@ -55,3 +55,32 @@ jobs:
           AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
           AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: npx web-ext sign --source-dir dist --channel listed --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET"
+
+  release-chrome:
+    name: Submit & Publish to Chrome Web Store
+    needs: test-and-build
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Extension
+        run: npm run build
+      - name: Prepare Chrome zip package (strip key field)
+        run: |
+          sed -i '/key/d' dist/manifest.json
+          cd dist && zip -r ../xorapass-extension-chrome.zip *
+      - name: Upload & Publish to Chrome Web Store
+        uses: chrome-stats/chrome-extension-upload-action@v2
+        with:
+          extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
+          client-id: ${{ secrets.CHROME_CLIENT_ID }}
+          client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
+          refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          file-path: xorapass-extension-chrome.zip
+          publish: true
