@@ -32,7 +32,7 @@ import { base64ToBytes } from '../utils/crypto';
 // So a mid-session lock is never the worker respawning. It is one of exactly
 // two things, and both are ours: the auto-lock alarm, or an explicit
 // LOCK_VAULT. Those are the only callers of storage.session.clear().
-console.debug('[XoraPass] service worker started at', new Date().toISOString());
+// console.debug('[XoraPass] service worker started at', new Date().toISOString());
 
 const DISABLED_SITES_KEY = 'disabledSites';
 const AUTO_LOCK_KEY = 'autoLockMinutes';
@@ -112,10 +112,10 @@ async function getLockOnScreenLock(): Promise<boolean> {
   return typeof v === 'boolean' ? v : false;
 }
 
-async function lockVaultNow(reason: string): Promise<void> {
+async function lockVaultNow(): Promise<void> {
   const session = await browser.storage.session.get(['unlocked']);
   if (!session.unlocked) return; // already locked — nothing to clear or log
-  console.debug('[XoraPass] locking vault:', reason);
+  // console.debug('[XoraPass] locking vault:', reason);
   await browser.alarms.clear(AUTO_LOCK_ALARM);
   await clearAiHeartbeat();
   await clearTokenRefresh();
@@ -133,7 +133,7 @@ async function lockVaultNow(reason: string): Promise<void> {
 browser.idle.onStateChanged.addListener((state) => {
   if (state !== 'locked') return;
   void getLockOnScreenLock().then((enabled) => {
-    if (enabled) return lockVaultNow('screen locked');
+    if (enabled) return lockVaultNow();
   });
 });
 
@@ -228,7 +228,7 @@ async function clearClipboard(): Promise<void> {
       type: 'CLIPBOARD_WRITE',
       text: CLIPBOARD_PLACEHOLDER,
     });
-    console.debug('[XoraPass] clipboard cleared');
+    // console.debug('[XoraPass] clipboard cleared');
   } catch (err) {
     console.warn('[XoraPass] clipboard clear failed:', err);
   } finally {
@@ -258,7 +258,7 @@ async function scheduleClipboardClear(): Promise<number> {
 browser.alarms.onAlarm.addListener((alarm) => {
   // When the idle timer fires, purge the decrypted vault from session storage.
   if (alarm.name === AUTO_LOCK_ALARM) {
-    console.debug('[XoraPass] auto-lock fired -> clearing session');
+    // console.debug('[XoraPass] auto-lock fired -> clearing session');
     void clearAiHeartbeat();
     // Otherwise this alarm keeps firing every 20 minutes after an idle lock,
     // calling apiRefresh() against a session storage.session.clear() below is
@@ -797,7 +797,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return browser.storage.session.get(['unlocked', 'email', 'offline']).then((res) => {
       // The popup opening counts as activity: restart the idle auto-lock timer.
       if (res.unlocked) void scheduleAutoLock();
-      console.debug('[XoraPass] GET_STATUS -> unlocked =', !!res.unlocked);
+      // console.debug('[XoraPass] GET_STATUS -> unlocked =', !!res.unlocked);
       return { unlocked: !!res.unlocked, email: res.email || null, offline: !!res.offline };
     });
   }
@@ -847,13 +847,13 @@ browser.runtime.onMessage.addListener((message, sender) => {
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
         void scheduleTokenRefresh();
-        console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', (decryptedItems as unknown[]).length, 'items )');
+        // console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', (decryptedItems as unknown[]).length, 'items )');
         return { success: true };
       });
   }
 
   if (type === 'LOCK_VAULT') {
-    console.debug('[XoraPass] LOCK_VAULT -> clearing session');
+    // console.debug('[XoraPass] LOCK_VAULT -> clearing session');
     void browser.alarms.clear(AUTO_LOCK_ALARM);
     void clearAiHeartbeat();
     void clearTokenRefresh();
