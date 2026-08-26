@@ -2,15 +2,8 @@ name: Extension — Build & Test
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'package.json'
-      - '.github/workflows/extension.yml'
-  pull_request:
-    paths:
-      - 'src/**'
-      - 'package.json'
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
