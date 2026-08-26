@@ -1481,4 +1481,52 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   console.debug('[XoraPass] Autofill disabled inside third-party iframe.');
 }
 
+// ── Firefox postMessage bridge ─────────────────────────────────────────────
+// Firefox does not expose chrome.runtime.sendMessage to web pages, so the
+// web app falls back to window.postMessage({source:'xorapass-web-bridge',...}).
+// This content script listens for those messages, forwards them to the
+// background worker via browser.runtime.sendMessage, and posts the response
+// back as {source:'xorapass-extension-bridge', requestId, response}.
+//
+// Only WEB_BRIDGE_* message types are forwarded; all others are silently
+// ignored. Origin is validated against the allowed app hostnames.
+(function installWebBridge() {
+  const ALLOWED_ORIGINS = new Set([
+    'https://app.xorapass.com',
+    'https://dev-app.xorapass.com',
+  ]);
+
+  window.addEventListener('message', (event: MessageEvent) => {
+    // Must be same-window, correct source tag, and allowed origin.
+    if (event.source !== window) return;
+    if (!event.data || event.data.source !== 'xorapass-web-bridge') return;
+    if (!ALLOWED_ORIGINS.has(event.origin)) return;
+
+    const { requestId, type, payload } = event.data as {
+      requestId: string;
+      type: string;
+      payload?: unknown;
+    };
+
+    // Only bridge WEB_BRIDGE_* message types.
+    if (typeof type !== 'string' || !type.startsWith('WEB_BRIDGE_')) return;
+
+    void browser.runtime.sendMessage({ type, payload }).then(
+      (response: unknown) => {
+        window.postMessage(
+          { source: 'xorapass-extension-bridge', requestId, response },
+          event.origin,
+        );
+      },
+      () => {
+        // Background not reachable (extension disabled etc.) — send null so
+        // the web app's 1500 ms timeout resolves immediately instead of waiting.
+        window.postMessage(
+          { source: 'xorapass-extension-bridge', requestId, response: null },
+          event.origin,
+        );
+      },
+    );
+  });
+})();
 

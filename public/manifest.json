@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "XoraPass Zero-Knowledge Vault",
-  "version": "1.0.2",
+  "version": "1.0.4",
   "description": "Zero-knowledge autofill companion for XoraPass.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtsw0daIXZoqwMChIXy/ezL0+hMIhXLRqMavGlYdr0gX3JHVM9SxLX3uammaB8J3n7Ilz8wfDossQyG1bgz4L95ORm6DS9AOnIXlAMtpqW/p2zy/yUn93rOZQUW/v+OTugn701DTLsWUJLOo13mYg+rSjc8Ue9CtOzb4z3Dj6/sQ11Fk4AdEIBtEqpmiDqQ9x/pb8XmMpi04R7cPJmpGSU3/vt44zruNLO7f4qpE+g74TviNyzV6p1tIoCuj4DjvRZiewR37VXHwOo4tDQVNvvHcecGJxveObzYv/WClWxu00Tmr8uW2K7Tu4rdLPRYUDSqbIjfWZXHHWuafemqotdQIDAQAB",
   "permissions": [
