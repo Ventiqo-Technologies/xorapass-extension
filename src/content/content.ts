@@ -1498,7 +1498,9 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
 
   window.addEventListener('message', (event: MessageEvent) => {
     // Must be same-window, correct source tag, and allowed origin.
-    if (event.source !== window) return;
+    const isSameWindow = event.source === window || 
+      (typeof window !== 'undefined' && (window as any).wrappedJSObject && event.source === (window as any).wrappedJSObject);
+    if (!isSameWindow) return;
     if (!event.data || event.data.source !== 'xorapass-web-bridge') return;
     if (!ALLOWED_ORIGINS.has(event.origin)) return;
 
