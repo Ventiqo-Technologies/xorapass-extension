@@ -221,7 +221,16 @@ async function clearClipboard(): Promise<void> {
   lastCopiedField = '';
   await browser.storage.session.remove([CLIPBOARD_PENDING_KEY, 'lastCopiedSecret', 'lastCopiedId', 'lastCopiedField']).catch(() => {});
 
-  if (!(await ensureOffscreenDocument())) return;
+  if (!(await ensureOffscreenDocument())) {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(CLIPBOARD_PLACEHOLDER);
+      }
+    } catch {
+      /* clipboard write not permitted in background context */
+    }
+    return;
+  }
   try {
     await browser.runtime.sendMessage({
       target: OFFSCREEN_TARGET,
@@ -792,6 +801,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   const type = guard.type;
   const msg = message as { type: string; payload?: any };
+
+  if (typeof type === 'string' && type.startsWith('WEB_BRIDGE_')) {
+    return handleWebBridgeMessage(type, msg.payload);
+  }
 
   if (type === 'GET_STATUS') {
     return browser.storage.session.get(['unlocked', 'email', 'offline']).then((res) => {
