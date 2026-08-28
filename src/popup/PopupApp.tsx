@@ -733,7 +733,7 @@ export const PopupApp: React.FC = () => {
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
-    <div className="w-[380px] h-[560px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50/50 border border-slate-900/10 shadow-2xl">
+    <div className="w-full h-full text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50/50">
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
       {unlocked && (
@@ -1522,7 +1522,7 @@ export const PopupApp: React.FC = () => {
 
                   {/* Category Filter Chips */}
                   {vaultItems.length > 0 && (
-                    <div className="flex items-center gap-1 overflow-x-auto pb-1 custom-scrollbar shrink-0">
+                    <div className="flex items-center gap-1 overflow-x-auto pb-1 no-scrollbar shrink-0">
                       <button
                         onClick={() => setCategoryFilter('all')}
                         className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer shrink-0 border ${
