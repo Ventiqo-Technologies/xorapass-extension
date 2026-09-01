@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { 
+import {
   Shield,
   Search,
-  Key, 
-  Copy, 
-  Check, 
-  Globe, 
-  RefreshCw, 
-  LogOut, 
+  Key,
+  Copy,
+  Check,
+  Globe,
+  RefreshCw,
+  LogOut,
   AlertCircle,
   Mail,
   Lock,
@@ -625,10 +625,10 @@ export const PopupApp: React.FC = () => {
   const handleMfaSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!mfaCode || !mfaToken || !tempEncKey) return;
-    
+
     setLoading(true);
     setError(null);
-    
+
     try {
       const verifyRes = await axios.post(`${API_BASE_URL}/api/auth/mfa/verify`, {
         email,
@@ -733,7 +733,7 @@ export const PopupApp: React.FC = () => {
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
-    <div className="w-[380px] h-[560px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50/50 border border-slate-900/10 shadow-2xl">
+    <div className="w-[380px] h-[550px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50/50 border border-slate-900/10 shadow-2xl">
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
       {unlocked && (
@@ -969,26 +969,26 @@ export const PopupApp: React.FC = () => {
                     mfa_token: mfaToken,
                     code: val
                   })
-                  .then((verifyRes) => {
-                    return processVault(verifyRes.data.access_token, tempEncKey, tempSalt);
-                  })
-                  .catch((err: any) => {
-                    console.error(err);
-                    setError(err.response?.data?.detail || "Invalid MFA code.");
-                  })
-                  .finally(() => {
-                    setLoading(false);
-                  });
+                    .then((verifyRes) => {
+                      return processVault(verifyRes.data.access_token, tempEncKey, tempSalt);
+                    })
+                    .catch((err: any) => {
+                      console.error(err);
+                      setError(err.response?.data?.detail || "Invalid MFA code.");
+                    })
+                    .finally(() => {
+                      setLoading(false);
+                    });
                 }
               }}
               className="w-full px-3 py-2.5 text-center bg-white border border-slate-900/12 rounded-xl text-xl text-slate-900 placeholder-slate-300 focus:outline-none focus:border-brand-emerald font-mono tracking-[0.5em] shadow-xs"
             />
 
             <div className="flex gap-2">
-              <button 
-                type="button" 
-                onClick={() => { setStep('login'); setMfaCode(''); }} 
-                disabled={loading} 
+              <button
+                type="button"
+                onClick={() => { setStep('login'); setMfaCode(''); }}
+                disabled={loading}
                 className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
               >
                 Back
@@ -1052,7 +1052,7 @@ export const PopupApp: React.FC = () => {
                       )}
                     </div>
                   </div>
-                        {/* 1. CARD CATEGORY DETAIL LAYOUT */}
+                  {/* 1. CARD CATEGORY DETAIL LAYOUT */}
                   {selectedItem.category === 'card' && (
                     <div className="space-y-2">
                       {selectedItem.cardholderName && (
@@ -1425,11 +1425,10 @@ export const PopupApp: React.FC = () => {
                         </div>
                         <button
                           onClick={toggleSiteDisabled}
-                          className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider border transition cursor-pointer shrink-0 ${
-                            siteDisabled
+                          className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider border transition cursor-pointer shrink-0 ${siteDisabled
                               ? 'bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby hover:bg-brand-ruby/20'
                               : 'bg-brand-emerald/10 border-brand-emerald/25 text-brand-emerald hover:bg-brand-emerald/20'
-                          }`}
+                            }`}
                           title={siteDisabled ? 'Autofill is disabled on this site' : 'Disable autofill on this site'}
                         >
                           {siteDisabled ? <ShieldOff className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
@@ -1456,7 +1455,7 @@ export const PopupApp: React.FC = () => {
                       <div className="space-y-1.5">
                         <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-0.5">Matching Logins</div>
                         {matchingItems.map((item) => (
-                          <div 
+                          <div
                             key={item.id}
                             className="p-2.5 bg-white border border-brand-cyan/30 rounded-xl flex items-center justify-between gap-2.5 shadow-xs hover:border-brand-cyan/50 transition cursor-pointer"
                             onClick={() => setSelectedItem(item)}
@@ -1525,11 +1524,10 @@ export const PopupApp: React.FC = () => {
                     <div className="flex items-center gap-1 overflow-x-auto pb-1 custom-scrollbar shrink-0">
                       <button
                         onClick={() => setCategoryFilter('all')}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer shrink-0 border ${
-                          categoryFilter === 'all'
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer shrink-0 border ${categoryFilter === 'all'
                             ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
                             : 'bg-white/80 text-slate-600 border-slate-900/10 hover:bg-white'
-                        }`}
+                          }`}
                       >
                         All ({vaultItems.length})
                       </button>
@@ -1541,13 +1539,12 @@ export const PopupApp: React.FC = () => {
                             key={key}
                             onClick={() => !empty && setCategoryFilter(key)}
                             disabled={empty}
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition shrink-0 border ${
-                              categoryFilter === key
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition shrink-0 border ${categoryFilter === key
                                 ? 'bg-slate-900 text-white border-slate-900 cursor-pointer shadow-xs'
                                 : empty
                                   ? 'bg-transparent text-slate-300 border-slate-900/5 cursor-default'
                                   : 'bg-white/80 text-slate-600 border-slate-900/10 hover:bg-white cursor-pointer'
-                            }`}
+                              }`}
                           >
                             {label} ({count})
                           </button>
@@ -1570,7 +1567,7 @@ export const PopupApp: React.FC = () => {
                       </div>
                     ) : (
                       searchedItems.map((item) => (
-                        <div 
+                        <div
                           key={item.id}
                           onClick={() => setSelectedItem(item)}
                           className="p-2.5 bg-white hover:bg-slate-50/90 border border-slate-900/8 hover:border-slate-900/18 rounded-xl flex items-center justify-between gap-2.5 transition cursor-pointer shadow-xs group"
@@ -1581,7 +1578,7 @@ export const PopupApp: React.FC = () => {
                             <div className="text-xs font-bold text-slate-800 truncate leading-tight group-hover:text-brand-cyan transition">{item.label}</div>
                             <div className="text-[9px] text-slate-500 font-mono truncate mt-0.5">{getItemSubtitle(item)}</div>
                           </div>
-                          
+
                           <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                             {item.username && (
                               <button
@@ -1676,11 +1673,10 @@ export const PopupApp: React.FC = () => {
                       <button
                         key={len}
                         onClick={() => updateGenOptions({ length: len })}
-                        className={`flex-1 py-1 rounded-lg text-[10px] font-mono font-bold border transition cursor-pointer ${
-                          genOptions.length === len
+                        className={`flex-1 py-1 rounded-lg text-[10px] font-mono font-bold border transition cursor-pointer ${genOptions.length === len
                             ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
                             : 'bg-slate-50 text-slate-600 border-slate-900/10 hover:bg-slate-100'
-                        }`}
+                          }`}
                       >
                         {len}
                       </button>
@@ -1868,14 +1864,12 @@ export const PopupApp: React.FC = () => {
                       aria-checked={lockOnScreenLock}
                       aria-label="Lock the vault when the computer locks or sleeps"
                       onClick={() => changeLockOnScreenLock(!lockOnScreenLock)}
-                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan cursor-pointer ${
-                        lockOnScreenLock ? 'bg-brand-cyan' : 'bg-slate-300'
-                      }`}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan cursor-pointer ${lockOnScreenLock ? 'bg-brand-cyan' : 'bg-slate-300'
+                        }`}
                     >
                       <span
-                        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transform transition-transform ${
-                          lockOnScreenLock ? 'translate-x-5' : 'translate-x-1'
-                        }`}
+                        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transform transition-transform ${lockOnScreenLock ? 'translate-x-5' : 'translate-x-1'
+                          }`}
                       />
                     </button>
                   </div>
@@ -1905,6 +1899,12 @@ export const PopupApp: React.FC = () => {
                   <p className="text-[9px] text-slate-400 leading-relaxed pt-1">
                     Locking keeps local cached keys for offline access. Signing out removes your vault cache from this browser.
                   </p>
+                </div>
+                
+                <div className="flex justify-center pt-2">
+                  <span className="text-[10px] font-bold text-slate-400">
+                    Version {browser.runtime.getManifest().version}
+                  </span>
                 </div>
               </div>
             )}
@@ -1944,13 +1944,13 @@ export const PopupApp: React.FC = () => {
                       {pasteMode === 'warn' ? 'Warning Mode' : pasteMode === 'block' ? 'Strict Blocking' : 'Disabled'}
                     </span>
                   </div>
-                  
+
                   <p className="text-[10px] text-slate-500 leading-snug">
                     {pasteMode === 'warn'
                       ? 'Warns before pasting passwords or secret keys into AI prompts.'
                       : pasteMode === 'block'
-                      ? 'Automatically blocks pasting passwords or secret keys into AI prompts.'
-                      : 'Secret paste detection is turned off.'}
+                        ? 'Automatically blocks pasting passwords or secret keys into AI prompts.'
+                        : 'Secret paste detection is turned off.'}
                   </p>
 
                   <div className="flex gap-1 p-1 bg-slate-100 border border-slate-900/8 rounded-xl">
@@ -1958,11 +1958,10 @@ export const PopupApp: React.FC = () => {
                       <button
                         key={m}
                         onClick={() => changePasteMode(m)}
-                        className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold capitalize transition cursor-pointer ${
-                          pasteMode === m
+                        className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold capitalize transition cursor-pointer ${pasteMode === m
                             ? 'bg-slate-900 text-white shadow-xs'
                             : 'text-slate-600 hover:text-slate-900 font-medium'
-                        }`}
+                          }`}
                       >
                         {m}
                       </button>
@@ -2009,7 +2008,7 @@ export const PopupApp: React.FC = () => {
                               Guarded
                             </span>
                           </div>
-                          
+
                           <div className="flex items-center justify-between gap-2 pt-0.5">
                             <p className="text-[9px] text-slate-500 font-mono truncate">{hostname}</p>
                             <button
@@ -2032,11 +2031,10 @@ export const PopupApp: React.FC = () => {
           <nav className="shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-900/10 px-1 py-1.5 grid grid-cols-5 gap-1 shadow-lg z-20">
             <button
               onClick={() => { setTab('vault'); setSelectedItem(null); }}
-              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${
-                tab === 'vault'
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${tab === 'vault'
                   ? 'bg-slate-900 text-white shadow-xs font-bold'
                   : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
-              }`}
+                }`}
             >
               <LayoutGrid className="w-4 h-4 mb-0.5 shrink-0" />
               <span className="text-[10px] leading-none tracking-tight">Vault</span>
@@ -2044,11 +2042,10 @@ export const PopupApp: React.FC = () => {
 
             <button
               onClick={() => { setTab('generate'); setSelectedItem(null); }}
-              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${
-                tab === 'generate'
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${tab === 'generate'
                   ? 'bg-slate-900 text-white shadow-xs font-bold'
                   : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
-              }`}
+                }`}
             >
               <Wand2 className="w-4 h-4 mb-0.5 shrink-0" />
               <span className="text-[10px] leading-none tracking-tight">Generator</span>
@@ -2056,11 +2053,10 @@ export const PopupApp: React.FC = () => {
 
             <button
               onClick={() => { setTab('health'); setSelectedItem(null); }}
-              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${
-                tab === 'health'
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${tab === 'health'
                   ? 'bg-slate-900 text-white shadow-xs font-bold'
                   : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
-              }`}
+                }`}
             >
               <Activity className="w-4 h-4 mb-0.5 shrink-0" />
               <span className="text-[10px] leading-none tracking-tight">Health</span>
@@ -2068,11 +2064,10 @@ export const PopupApp: React.FC = () => {
 
             <button
               onClick={() => { setTab('ai'); setSelectedItem(null); }}
-              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer relative ${
-                tab === 'ai'
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer relative ${tab === 'ai'
                   ? 'bg-slate-900 text-white shadow-xs font-bold'
                   : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
-              }`}
+                }`}
             >
               <ShieldAlert className="w-4 h-4 mb-0.5 shrink-0 text-brand-cyan" />
               <span className="text-[10px] leading-none tracking-tight">Firewall</span>
@@ -2085,11 +2080,10 @@ export const PopupApp: React.FC = () => {
 
             <button
               onClick={() => { setTab('settings'); setSelectedItem(null); }}
-              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${
-                tab === 'settings'
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition cursor-pointer ${tab === 'settings'
                   ? 'bg-slate-900 text-white shadow-xs font-bold'
                   : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
-              }`}
+                }`}
             >
               <Settings className="w-4 h-4 mb-0.5 shrink-0" />
               <span className="text-[10px] leading-none tracking-tight">Settings</span>

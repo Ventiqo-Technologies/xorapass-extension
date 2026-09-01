@@ -17,8 +17,12 @@ interface HttpLikeError {
 export function isOfflineError(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
   const e = err as HttpLikeError;
-  if (e.response && typeof e.response.status === 'number') return false;
-  return true;
+  if (!e.response) return true;
+  if (typeof e.response.status === 'number') {
+    const status = e.response.status;
+    if (status >= 500 && status <= 599) return true;
+  }
+  return false;
 }
 
 /** True when the server answered and refused the credential. */
