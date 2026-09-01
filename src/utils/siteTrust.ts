@@ -167,7 +167,11 @@ export interface LookalikeResult {
   /** The known/legitimate host the page appears to be impersonating. */
   target: string;
   /** Why it was flagged. */
-  reason: 'punycode' | 'typosquat';
+  reason: 'punycode' | 'typosquat' | 'brand_abuse' | 'suspicious_tld' | string;
+  /** Optional risk score (0-100). */
+  riskScore?: number;
+  /** Explainable threat reasons. */
+  reasons?: string[];
 }
 
 /**
@@ -175,16 +179,31 @@ export interface LookalikeResult {
  * user's known credential hosts (`knownHosts`) without actually matching it.
  * Returns null when the page is either a legitimate match or unrelated.
  *
- * Two heuristics:
- *  - IDN/punycode homograph domains that are close to a known ASCII domain.
+ * Checks:
+ *  - IDN/punycode homograph domains.
+ *  - Brand keyword abuse (e.g. stripe-login.example).
  *  - Typosquats within a small edit distance of a known registrable domain.
+ *  - Suspicious TLD changes for saved brands.
  */
 export function findLookalikeTarget(
   pageHost: string,
-  knownHosts: string[]
+  knownHosts: string[],
+  allowlist: string[] = []
 ): LookalikeResult | null {
   const pageReg = registrableDomain(pageHost);
   if (!pageReg) return null;
+
+  // Allowlist check – if the current host is explicitly allowed, skip lookalike detection
+  const isAllowlisted = allowlist.some((allowed) => {
+    const a = normalizeHostname(allowed);
+    return (
+      a &&
+      (pageHost === a ||
+        isSubdomainOf(pageHost, a) ||
+        registrableDomain(pageHost) === registrableDomain(a))
+    );
+  });
+  if (isAllowlisted) return null;
 
   // An IDN/punycode page is a homograph-attack risk on its own: its encoded
   // form can't be meaningfully edit-distance-compared, so it is treated as
@@ -195,14 +214,13 @@ export function findLookalikeTarget(
   let bestTypoDistance = Infinity;
   let closestKnown: string | null = null;
   let closestDistance = Infinity;
-
+  
   for (const raw of knownHosts) {
     const knownReg = registrableDomain(extractHostname(raw));
     if (!knownReg) continue;
 
     // A legitimate, matching site is never a lookalike.
     if (knownReg === pageReg || isDomainMatch(pageHost, raw)) return null;
-
     const distance = levenshtein(pageReg, knownReg);
     if (distance < closestDistance) {
       closestDistance = distance;
@@ -228,3 +246,6 @@ export function findLookalikeTarget(
   if (pageIsPuny && closestKnown) return { target: closestKnown, reason: 'punycode' };
   return null;
 }
+
+export * from './domainRisk';
+

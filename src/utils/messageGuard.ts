@@ -28,6 +28,8 @@ export const KNOWN_MESSAGE_TYPES = [
   'DISMISS_PENDING_SAVE',
   'GET_SITE_SETTINGS',
   'SET_SITE_DISABLED',
+  'GET_DOMAIN_ALLOWLIST',
+  'SET_DOMAIN_ALLOWLIST',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
   'SET_LOCK_ON_SCREEN_LOCK',
@@ -63,6 +65,12 @@ export const KNOWN_MESSAGE_TYPES = [
   // because the real consent already happened when a human unlocked it.
   'WEB_BRIDGE_REQUEST_SESSION',
   'GET_COPIED_SECRET',
+  'CHECK_DOMAIN_RISK',
+  // Risk-warning safe actions: same trust tier as CHECK_DOMAIN_RISK — our own
+  // injected overlay is what triggers these, never a page directly, and
+  // neither one carries or reveals any secret.
+  'REPORT_PHISHING',
+  'REQUEST_DOMAIN_ALLOWLIST',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -265,6 +273,18 @@ export function validateMessage(
         return { ok: false, reason: 'bad-payload' };
       }
       break;
+    case 'GET_DOMAIN_ALLOWLIST':
+      // Payload is optional (can be empty to get all, or { hostname })
+      break;
+    case 'SET_DOMAIN_ALLOWLIST':
+      if (
+        !payload ||
+        typeof payload.hostname !== 'string' ||
+        typeof payload.allowlisted !== 'boolean'
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
     case 'SET_AUTO_LOCK':
       if (!payload || typeof payload.minutes !== 'number' || !Number.isFinite(payload.minutes)) {
         return { ok: false, reason: 'bad-payload' };
@@ -322,6 +342,17 @@ export function validateMessage(
       break;
     case 'AI_SAVE_SECRET':
       if (!payload || typeof payload.value !== 'string' || payload.value.length === 0) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'CHECK_DOMAIN_RISK':
+      if (!payload || (typeof payload.currentUrl !== 'string' && typeof payload.currentDomain !== 'string')) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'REPORT_PHISHING':
+    case 'REQUEST_DOMAIN_ALLOWLIST':
+      if (!payload || typeof payload.hostname !== 'string' || payload.hostname.length === 0) {
         return { ok: false, reason: 'bad-payload' };
       }
       break;

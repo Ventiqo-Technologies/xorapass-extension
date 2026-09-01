@@ -30,12 +30,27 @@ import {
   showSavePrompt,
   closeSavePrompt,
   isSavePromptOpen,
+  showRiskWarning,
+  closeRiskWarning,
   clearAll,
   type OverlayCredential,
 } from './overlay';
 
 let activeCredentials: OverlayCredential[] = [];
-let lookalikeWarning: { target: string; reason: string } | null = null;
+let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
+let domainRisk: {
+  decision: string;
+  riskScore: number;
+  riskLevel?: string;
+  reasons: string[];
+  matchedTarget: string | null;
+  safeWarningMessage?: string;
+} | null = null;
+
+// Tracks the last hostname+decision pair we already alerted on, so
+// loadCredentials() re-running (tab focus, visibility change, SPA route
+// change) doesn't re-pop the same warning repeatedly.
+let lastWarnedRiskKey: string | null = null;
 
 /** Password field -> its paired username field (null when none was found). */
 const fieldPairs = new WeakMap<HTMLInputElement, HTMLInputElement | null>();
@@ -175,7 +190,10 @@ function loadCredentials(): void {
       }
 
       lookalikeWarning = response.lookalike || null;
+      domainRisk = response.risk || null;
       activeCredentials = response.credentials || [];
+
+      maybeShowProactiveRiskWarning();
 
       // Always scan: with no saved credentials there is nothing to fill, but a
       // sign-up field still gets an icon so a password can be generated.
@@ -185,6 +203,64 @@ function loadCredentials(): void {
     .catch(() => {
       /* background unavailable â€“ nothing to fill */
     });
+}
+
+// Surfaces a risky decision immediately, without requiring the user to click
+// a login field's icon first (which may not even exist on this page). Keyed
+// on hostname+decision so repeated loadCredentials() calls (tab focus,
+// visibility change, SPA route watchers) don't re-pop an already-seen alert.
+function maybeShowProactiveRiskWarning(): void {
+  const decision = domainRisk?.decision;
+  const isRisky = decision === 'block' || decision === 'warn' || decision === 'require_approval';
+  const key = `${window.location.hostname}|${decision || ''}`;
+
+  if (!isRisky) {
+    lastWarnedRiskKey = null;
+    closeRiskWarning();
+    return;
+  }
+  if (lastWarnedRiskKey === key) return;
+
+  const message = getRiskWarningMessage();
+  if (!message) return;
+
+  lastWarnedRiskKey = key;
+  const expectedDomain = domainRisk?.matchedTarget || lookalikeWarning?.target || null;
+  const currentHostname = window.location.hostname;
+
+  showRiskWarning({
+    severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
+    title: decision === 'block' ? 'Phishing Site Blocked' : 'Suspicious Site Detected',
+    message,
+    currentDomain: currentHostname,
+    expectedDomain,
+    riskLevel: domainRisk?.riskLevel,
+    onDismiss: () => {
+      // A manual dismiss shouldn't re-fire on the very next loadCredentials()
+      // tick, but should still recur if the user leaves and comes back later.
+    },
+    onGoToOfficial: expectedDomain
+      ? () => {
+          window.location.href = `https://${expectedDomain}`;
+        }
+      : undefined,
+    onReportPhishing: () =>
+      browser.runtime
+        .sendMessage({
+          type: 'REPORT_PHISHING',
+          payload: { hostname: currentHostname, decision, riskLevel: domainRisk?.riskLevel },
+        })
+        .then((res: any) => ({ success: !!res?.success }))
+        .catch(() => ({ success: false })),
+    onRequestAllowlist: () =>
+      browser.runtime
+        .sendMessage({
+          type: 'REQUEST_DOMAIN_ALLOWLIST',
+          payload: { hostname: currentHostname },
+        })
+        .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
+        .catch(() => ({ success: false, reason: 'network' as const })),
+  });
 }
 
 // Ask background whether an AI-approved fill is available for this page.
@@ -385,17 +461,56 @@ function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null
 // Fill flow
 // ---------------------------------------------------------------------------
 
+// True when the risk was driven by an AI agent's autofill attempt rather than
+// a human's — surfaced via the free-text `reasons` array since the merged
+// risk object doesn't carry structured reason codes through to the content
+// script (only the backend response does, pre-merge). Matching on the fixed
+// phrase domain_risk.go always appends for this case (AI_SESSION_ELEVATED_SCRUTINY).
+function isAiSessionRisk(): boolean {
+  return !!domainRisk?.reasons.some((r) => r.toLowerCase().includes('ai autonomous session'));
+}
+
+// Builds the human-readable risk message from current domainRisk/lookalikeWarning
+// state, shared by the in-dropdown banner (activate()) and the proactive
+// unprompted alert (maybeShowProactiveRiskWarning()).
+function getRiskWarningMessage(): string | null {
+  // Prefer the backend's explanation (static fallback table or OpenAI-
+  // generated) — it's already tailored to the specific reason codes,
+  // including the AI-session and org-policy cases below, so when present it
+  // supersedes the local construction that follows.
+  if (domainRisk?.safeWarningMessage) {
+    return domainRisk.safeWarningMessage;
+  }
+  if (domainRisk && domainRisk.decision === 'block') {
+    if (isAiSessionRisk()) {
+      return 'An AI agent attempted to autofill credentials on this domain, which is not a recognized or approved match. Autofill blocked for security.';
+    }
+    return domainRisk.matchedTarget
+      ? `Phishing / Lookalike Alert: This site mimics "${domainRisk.matchedTarget}". Autofill blocked for security.`
+      : 'This site has been flagged as dangerous by threat intelligence. Autofill blocked for security.';
+  }
+  if (lookalikeWarning) {
+    return `This site resembles "${lookalikeWarning.target}". Verify the address before filling.`;
+  }
+  if (domainRisk && (domainRisk.decision === 'warn' || domainRisk.decision === 'require_approval')) {
+    if (isAiSessionRisk()) {
+      return 'An AI agent attempted to autofill credentials here on a domain that requires explicit approval first.';
+    }
+    return `Security Warning: ${domainRisk.reasons[0] || 'Unfamiliar domain variation.'}`;
+  }
+  return null;
+}
+
 // Opens the credential menu for `passInput`, positioned at `anchor` â€” the field
 // the user actually clicked or focused, so the menu appears where they are
 // looking. On a sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
   const isNew = newPasswordFields.get(passInput) === true;
+  const warning = getRiskWarningMessage();
 
   openDropdown(anchor, {
     credentials: activeCredentials,
-    warning: lookalikeWarning
-      ? `This site resembles "${lookalikeWarning.target}". Verify the address before filling.`
-      : null,
+    warning,
     onPick: (id) => void handlePick(id, passInput),
     suggestion: isNew
       ? {
@@ -1474,6 +1589,7 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   window.addEventListener('pagehide', () => {
     closeDropdown();
     closeSavePrompt();
+    closeRiskWarning();
   });
 } else {
   // Third-party iframe: autofill deliberately blocked, and so is AI-approved

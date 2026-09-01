@@ -111,6 +111,26 @@ describe('validateMessage — payload validation', () => {
     );
     expect(res.ok).toBe(true);
   });
+  it('accepts valid GET_DOMAIN_ALLOWLIST and SET_DOMAIN_ALLOWLIST', () => {
+    const resGet = validateMessage({ type: 'GET_DOMAIN_ALLOWLIST' }, popupSender());
+    expect(resGet.ok).toBe(true);
+
+    const resSet = validateMessage(
+      { type: 'SET_DOMAIN_ALLOWLIST', payload: { hostname: 'stripe-login.example', allowlisted: true } },
+      popupSender()
+    );
+    expect(resSet.ok).toBe(true);
+  });
+  it('rejects invalid SET_DOMAIN_ALLOWLIST payloads', () => {
+    const res1 = validateMessage(
+      { type: 'SET_DOMAIN_ALLOWLIST', payload: { hostname: 'example.com', allowlisted: 'yes' } },
+      popupSender()
+    );
+    expect(res1.reason).toBe('bad-payload');
+
+    const res2 = validateMessage({ type: 'SET_DOMAIN_ALLOWLIST', payload: {} }, popupSender());
+    expect(res2.reason).toBe('bad-payload');
+  });
   it('accepts a valid SET_AUTO_LOCK from the popup', () => {
     const res = validateMessage({ type: 'SET_AUTO_LOCK', payload: { minutes: 15 } }, popupSender());
     expect(res.ok).toBe(true);

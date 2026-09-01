@@ -34,7 +34,7 @@ import {
   ShieldAlert
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
-import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
+import { isDomainMatch, findLookalikeTarget, extractHostname, assessDomainRisk } from '../utils/siteTrust';
 import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
 import {
   generatePassword,
@@ -199,6 +199,7 @@ export const PopupApp: React.FC = () => {
   const [currentHostname, setCurrentHostname] = useState('');
   const [currentProtocol, setCurrentProtocol] = useState('');
   const [siteDisabled, setSiteDisabled] = useState(false);
+  const [domainAllowlist, setDomainAllowlist] = useState<string[]>([]);
   // Matches the background's default so the control doesn't flash a value the
   // user never chose while GET_SETTINGS is in flight.
   const [autoLockMinutes, setAutoLockMinutes] = useState(0);
@@ -295,6 +296,12 @@ export const PopupApp: React.FC = () => {
             .then((res: any) => {
               if (res && typeof res.disabled === 'boolean') setSiteDisabled(res.disabled);
             });
+          // Load the domain allowlist for false-positive bypass rendering
+          browser.runtime
+            .sendMessage({ type: 'GET_DOMAIN_ALLOWLIST' })
+            .then((res: any) => {
+              if (res && Array.isArray(res.allowlist)) setDomainAllowlist(res.allowlist);
+            });
         } catch (e) {
           console.warn("Could not parse active tab URL", e);
         }
@@ -315,6 +322,26 @@ export const PopupApp: React.FC = () => {
       .then((res: any) => {
         if (res && res.success) setSiteDisabled(!!res.disabled);
       });
+  };
+
+  const toggleDomainAllowlist = (allowlisted: boolean) => {
+    browser.runtime
+      .sendMessage({ type: 'SET_DOMAIN_ALLOWLIST', payload: { hostname: currentHostname, allowlisted } })
+      .then((res: any) => {
+        if (res && res.success) setDomainAllowlist(res.allowlist || []);
+      });
+    if (currentHostname) {
+      void browser.runtime
+        .sendMessage({
+          type: 'CHECK_DOMAIN_RISK',
+          payload: {
+            currentDomain: currentHostname,
+            currentUrl: `https://${currentHostname}`,
+            savedDomain: domainRiskAssessment?.matchedTarget || (lookalike?.target || ''),
+          },
+        })
+        .catch(() => {});
+    }
   };
 
   const openSignup = () => {
@@ -721,10 +748,39 @@ export const PopupApp: React.FC = () => {
   const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(currentHostname);
   const isInsecure = currentProtocol === 'http:' && !isLocalHost;
   const knownHosts = vaultItems.map((i) => (i.url ? extractHostname(i.url) : '')).filter(Boolean);
-  const lookalike =
-    currentHostname && !siteDisabled && matchingItems.length === 0
-      ? findLookalikeTarget(currentHostname, knownHosts)
+
+  const domainRiskAssessment =
+    currentHostname && !siteDisabled && knownHosts.length > 0
+      ? assessDomainRisk(currentHostname, knownHosts, domainAllowlist)
       : null;
+
+  const lookalike =
+    currentHostname && !siteDisabled && matchingItems.length === 0 && !domainRiskAssessment?.isAllowlisted
+      ? findLookalikeTarget(currentHostname, knownHosts, domainAllowlist)
+      : null;
+
+  const isCurrentDomainAllowlisted = domainAllowlist.some((h) => {
+    try { return h === currentHostname || currentHostname.endsWith('.' + h); } catch { return false; }
+  });
+
+  // Report risk detections on the current active tab to backend threat intel
+  useEffect(() => {
+    if (
+      currentHostname &&
+      (domainRiskAssessment?.riskScore || 0) > 0
+    ) {
+      void browser.runtime
+        .sendMessage({
+          type: 'CHECK_DOMAIN_RISK',
+          payload: {
+            currentDomain: currentHostname,
+            currentUrl: `https://${currentHostname}`,
+            savedDomain: domainRiskAssessment?.matchedTarget || (lookalike?.target || ''),
+          },
+        })
+        .catch(() => {});
+    }
+  }, [currentHostname, domainRiskAssessment?.riskScore, domainRiskAssessment?.matchedTarget, lookalike?.target]);
 
   const health = computeVaultHealth(vaultItems.map((i) => ({ category: i.category, value: i.value })));
   const tier = scoreTier(health.score);
@@ -1442,10 +1498,83 @@ export const PopupApp: React.FC = () => {
                           <span>This page is not using HTTPS encryption. Exercise caution.</span>
                         </div>
                       )}
-                      {lookalike && (
+
+                      {/* Domain Risk Assessment Banner */}
+                      {domainRiskAssessment && domainRiskAssessment.decision === 'block' && !isCurrentDomainAllowlisted && (
+                        <div className="rounded-xl border border-rose-200 bg-rose-50 p-2.5 space-y-1.5">
+                          <div className="flex items-start gap-1.5">
+                            <ShieldAlert className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[10px] font-bold text-rose-800 leading-tight">
+                                Phishing / Lookalike Domain Blocked
+                              </div>
+                              <div className="text-[9px] text-rose-700 mt-0.5 leading-snug">
+                                This site appears to impersonate <span className="font-semibold">{domainRiskAssessment.matchedTarget || 'a saved brand'}</span>. Autofill is blocked for your protection.
+                              </div>
+                            </div>
+                            <span className="shrink-0 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[9px] font-bold">
+                              Score {domainRiskAssessment.riskScore}
+                            </span>
+                          </div>
+                          {domainRiskAssessment.reasons.length > 0 && (
+                            <div className="space-y-0.5 pl-5">
+                              {domainRiskAssessment.reasons.map((r, i) => (
+                                <div key={i} className="text-[9px] text-rose-600 leading-snug">• {r}</div>
+                              ))}
+                            </div>
+                          )}
+                          <div className="flex gap-1.5 pt-0.5">
+                            <button
+                              id="xp-allowlist-domain-btn"
+                              onClick={() => {
+                                if (window.confirm(`Allow autofill on "${currentHostname}"? Only do this if you are certain this is a legitimate site you control or trust.`)) {
+                                  toggleDomainAllowlist(true);
+                                }
+                              }}
+                              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 text-[9px] font-semibold border border-rose-200 transition"
+                            >
+                              <ShieldCheck className="w-3 h-3" />
+                              Allowlist this domain
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Domain Risk Warning (medium risk, not blocked) */}
+                      {domainRiskAssessment && domainRiskAssessment.decision === 'warn' && !isCurrentDomainAllowlisted && (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-2.5 space-y-1">
+                          <div className="flex items-start gap-1.5">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[10px] font-bold text-amber-800 leading-tight">Security Warning</div>
+                              <div className="text-[9px] text-amber-700 mt-0.5 leading-snug">
+                                {domainRiskAssessment.reasons[0] || 'This domain has unusual characteristics. Verify before filling.'}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Legacy simple lookalike (only shown when full risk assessment gives no result) */}
+                      {lookalike && !domainRiskAssessment?.matchedTarget && (
                         <div className="flex items-start gap-1.5 text-[10px] text-rose-700 bg-rose-50 p-2 rounded-lg leading-snug">
                           <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
                           <span>Possible lookalike for "{lookalike.target}". Verify domain before filling.</span>
+                        </div>
+                      )}
+
+                      {/* Allowlisted domain indicator */}
+                      {isCurrentDomainAllowlisted && (
+                        <div className="flex items-center gap-1.5 text-[10px] text-slate-500 bg-slate-100 p-2 rounded-lg leading-snug">
+                          <ShieldCheck className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span className="flex-1">This domain is allowlisted — risk checks bypassed.</span>
+                          <button
+                            id="xp-remove-allowlist-btn"
+                            onClick={() => toggleDomainAllowlist(false)}
+                            className="text-rose-500 hover:text-rose-700 font-semibold transition ml-1"
+                          >
+                            Remove
+                          </button>
                         </div>
                       )}
                     </div>

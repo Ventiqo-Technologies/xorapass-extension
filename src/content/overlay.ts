@@ -644,12 +644,169 @@ const STYLES = `
 .btn-confirm:active {
   transform: translateY(0);
 }
+
+/* Proactive risk alert — appears unprompted, no click required (unlike the
+   in-dropdown warning banner, which only renders once a login icon is
+   clicked). Positioned like the save prompt so it reads as part of the same
+   product language, but styled as an alert rather than a neutral prompt. */
+.risk-alert {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  background: #ffffff;
+  border: 1px solid rgba(225, 29, 72, 0.25);
+  border-radius: 18px;
+  box-shadow:
+    0 2px 4px rgba(15, 23, 42, 0.04),
+    0 10px 28px -4px rgba(225, 29, 72, 0.22),
+    0 24px 48px -12px rgba(15, 23, 42, 0.18);
+  pointer-events: auto;
+  color: #0f172a;
+  overflow: hidden;
+  z-index: 2147483647;
+  animation: xp-slide-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.risk-alert.is-warn { border-color: rgba(217, 119, 6, 0.25); }
+.risk-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 16px 0 18px;
+}
+.risk-head-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(225, 29, 72, 0.12);
+  border: 1px solid rgba(225, 29, 72, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.risk-alert.is-warn .risk-head-icon {
+  background: rgba(217, 119, 6, 0.12);
+  border-color: rgba(217, 119, 6, 0.25);
+}
+.risk-title {
+  font-size: 15px;
+  font-weight: 700;
+  flex: 1;
+  letter-spacing: -0.01em;
+  color: #e11d48;
+}
+.risk-alert.is-warn .risk-title { color: #b45309; }
+.risk-close {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  font-family: inherit;
+  transition: background-color 0.15s, color 0.15s;
+}
+.risk-close:hover { background: rgba(15, 23, 42, 0.06); color: #0f172a; }
+.risk-body {
+  padding: 8px 18px 4px 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #334155;
+}
+.risk-facts {
+  margin: 4px 18px 0 18px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.risk-fact-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 11.5px;
+}
+.risk-fact-label {
+  color: #94a3b8;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex: none;
+}
+.risk-fact-value {
+  color: #334155;
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+.risk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px 16px 18px;
+}
+.risk-btn-dismiss,
+.risk-btn-secondary,
+.risk-btn-primary {
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: 9px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.risk-btn-dismiss:disabled,
+.risk-btn-secondary:disabled,
+.risk-btn-primary:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+.risk-btn-dismiss {
+  color: #64748b;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+}
+.risk-btn-dismiss:hover { background: #e2e8f0; color: #0f172a; }
+.risk-btn-secondary {
+  color: #334155;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+}
+.risk-btn-secondary:hover:not(:disabled) { background: #f1f5f9; border-color: #94a3b8; }
+.risk-btn-primary {
+  color: #ffffff;
+  background: linear-gradient(135deg, #0d9488, #059669);
+  border: none;
+  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.24);
+}
+.risk-btn-primary:hover:not(:disabled) { box-shadow: 0 4px 14px rgba(13, 148, 136, 0.36); }
 `;
 
 const SHIELD_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" ' +
   'fill="none" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
   '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
+
+const DANGER_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="#e11d48" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/>' +
+  '<line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
 
 function ensureHost(): HTMLDivElement {
   if (layer && shadow) return layer;
@@ -974,7 +1131,7 @@ export function showConfirmDialog(opts: {
     const iconWrap = document.createElement('div');
     iconWrap.className = isDanger ? 'modal-head-icon is-danger' : 'modal-head-icon';
     iconWrap.innerHTML = isDanger
-      ? '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#e11d48" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'
+      ? DANGER_SVG
       : '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
     head.appendChild(iconWrap);
 
@@ -1293,6 +1450,195 @@ export function closeSavePrompt(): void {
 
 export function isSavePromptOpen(): boolean {
   return savePrompt !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Proactive risk alert
+// ---------------------------------------------------------------------------
+
+let riskAlertEl: HTMLElement | null = null;
+
+export interface RiskWarningOptions {
+  /** 'block' gets the strongest visual treatment; anything else reads as a caution. */
+  severity: 'block' | 'warn' | 'require_approval';
+  title: string;
+  message: string;
+  currentDomain: string;
+  /** The saved/trusted domain this page was compared against, when known. */
+  expectedDomain?: string | null;
+  riskLevel?: string;
+  onDismiss?: () => void;
+  /** Present only when expectedDomain is known — navigates the tab there. */
+  onGoToOfficial?: () => void;
+  /** Reports the current page as phishing. Resolves once the report lands. */
+  onReportPhishing?: () => Promise<{ success: boolean }>;
+  /** Submits an admin-review allowlist request for the current domain. */
+  onRequestAllowlist?: () => Promise<{ success: boolean; reason?: string }>;
+}
+
+/**
+ * Shows a phishing/domain-risk alert unprompted — unlike the warning banner
+ * inside the credential dropdown (which only renders once the user clicks a
+ * login field's icon), this appears the moment a risky decision comes back,
+ * even on pages with no login form at all.
+ */
+export function showRiskWarning(opts: RiskWarningOptions): void {
+  closeRiskWarning();
+  const root = ensureHost();
+
+  const card = document.createElement('div');
+  card.className = opts.severity === 'block' ? 'risk-alert' : 'risk-alert is-warn';
+  card.setAttribute('role', 'alert');
+  card.setAttribute('aria-live', 'assertive');
+
+  const head = document.createElement('div');
+  head.className = 'risk-head';
+
+  const iconWrap = document.createElement('div');
+  iconWrap.className = 'risk-head-icon';
+  iconWrap.innerHTML = DANGER_SVG; // static trusted markup
+
+  const title = document.createElement('div');
+  title.className = 'risk-title';
+  title.textContent = opts.title;
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'risk-close';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.textContent = '✕';
+  close.addEventListener('click', () => {
+    closeRiskWarning();
+    opts.onDismiss?.();
+  });
+
+  head.appendChild(iconWrap);
+  head.appendChild(title);
+  head.appendChild(close);
+  card.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'risk-body';
+  // textContent only — the message may embed a domain name we don't control.
+  body.textContent = opts.message;
+  card.appendChild(body);
+
+  // ── Structured facts: current domain, expected domain, risk level ────────
+  const facts = document.createElement('div');
+  facts.className = 'risk-facts';
+
+  const addFact = (label: string, value: string) => {
+    const row = document.createElement('div');
+    row.className = 'risk-fact-row';
+    const l = document.createElement('span');
+    l.className = 'risk-fact-label';
+    l.textContent = label;
+    const v = document.createElement('span');
+    v.className = 'risk-fact-value';
+    v.textContent = value;
+    row.appendChild(l);
+    row.appendChild(v);
+    facts.appendChild(row);
+  };
+
+  addFact('Current site', opts.currentDomain);
+  if (opts.expectedDomain) addFact('Expected site', opts.expectedDomain);
+  if (opts.riskLevel) addFact('Risk level', opts.riskLevel);
+  card.appendChild(facts);
+
+  const actions = document.createElement('div');
+  actions.className = 'risk-actions';
+
+  // Runs an async safe-action button through a consistent pending/settled
+  // sequence: disable + relabel immediately, then reflect the outcome rather
+  // than closing silently — the same pattern showSavePrompt uses, so a failed
+  // report/request isn't mistaken for a successful one.
+  const wireAsyncAction = (
+    btn: HTMLButtonElement,
+    pendingLabel: string,
+    doneLabel: string,
+    failedLabel: string | ((reason: string | undefined) => string),
+    run: () => Promise<{ success: boolean; reason?: string }>
+  ) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.textContent = pendingLabel;
+      try {
+        const res = await run();
+        if (res?.success) {
+          btn.textContent = doneLabel;
+          // Stays disabled: success is a terminal state, nothing left to retry.
+        } else {
+          btn.textContent = typeof failedLabel === 'function' ? failedLabel(res?.reason) : failedLabel;
+          btn.disabled = false; // otherwise the failure label is shown but unclickable
+        }
+      } catch {
+        btn.textContent = typeof failedLabel === 'function' ? failedLabel(undefined) : failedLabel;
+        btn.disabled = false;
+      }
+    });
+  };
+
+  if (opts.onGoToOfficial && opts.expectedDomain) {
+    const goOfficial = document.createElement('button');
+    goOfficial.type = 'button';
+    goOfficial.className = 'risk-btn-primary';
+    goOfficial.textContent = `Go to ${opts.expectedDomain}`;
+    goOfficial.addEventListener('click', () => {
+      closeRiskWarning();
+      opts.onGoToOfficial!();
+    });
+    actions.appendChild(goOfficial);
+  }
+
+  if (opts.onReportPhishing) {
+    const report = document.createElement('button');
+    report.type = 'button';
+    report.className = 'risk-btn-secondary';
+    report.textContent = 'Report phishing';
+    wireAsyncAction(report, 'Reporting…', 'Reported', 'Try again', opts.onReportPhishing);
+    actions.appendChild(report);
+  }
+
+  if (opts.onRequestAllowlist) {
+    const request = document.createElement('button');
+    request.type = 'button';
+    request.className = 'risk-btn-secondary';
+    request.textContent = 'Request allowlist review';
+    wireAsyncAction(
+      request,
+      'Sending…',
+      'Sent to admin',
+      (reason) => (reason === 'not_authenticated' ? 'Log in to request' : 'Try again'),
+      opts.onRequestAllowlist
+    );
+    actions.appendChild(request);
+  }
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'risk-btn-dismiss';
+  dismissBtn.textContent = 'Dismiss';
+  dismissBtn.addEventListener('click', () => {
+    closeRiskWarning();
+    opts.onDismiss?.();
+  });
+  actions.appendChild(dismissBtn);
+  card.appendChild(actions);
+
+  root.appendChild(card);
+  riskAlertEl = card;
+}
+
+export function closeRiskWarning(): void {
+  if (riskAlertEl) {
+    riskAlertEl.remove();
+    riskAlertEl = null;
+  }
+}
+
+export function isRiskWarningOpen(): boolean {
+  return riskAlertEl !== null;
 }
 
 // ---------------------------------------------------------------------------
