@@ -40,6 +40,9 @@ export const KNOWN_MESSAGE_TYPES = [
   // EXTENSION_PAGE_ONLY below).
   'GET_DOMAIN_RISK_SETTINGS',
   'SET_DOMAIN_RISK_SETTINGS',
+  'GET_DOMAIN_RISK_HISTORY',
+  'GET_DOMAIN_RISK_REPORTS',
+  'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS',
   // AI Access: the extension is a consumer of XoraPass's AI-access API, using
   // the human's own login (never a bridge token -- this is the trusted client
   // surface that performs the actual fill once a human has approved a scoped,
@@ -94,6 +97,9 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'SET_AUTO_LOCK',
   'GET_DOMAIN_RISK_SETTINGS',
   'SET_DOMAIN_RISK_SETTINGS',
+  'GET_DOMAIN_RISK_HISTORY',
+  'GET_DOMAIN_RISK_REPORTS',
+  'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS',
   // Turning the screen-lock guard OFF weakens the vault, so it belongs to the
   // popup alone. A content script that could send this would be able to
   // silently disable the control that protects an unattended machine.
@@ -314,6 +320,11 @@ export function validateMessage(
       if (!payload || typeof payload.enabled !== 'boolean') {
         return { ok: false, reason: 'bad-payload' };
       }
+      break;
+    case 'GET_DOMAIN_RISK_HISTORY':
+    case 'GET_DOMAIN_RISK_REPORTS':
+    case 'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS':
+      // No payload required.
       break;
     // GET_STATUS, LOCK_VAULT, GET_SETTINGS and CLIPBOARD_COPIED need no
     // payload — CLIPBOARD_COPIED deliberately carries no secret, it is only a

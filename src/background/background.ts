@@ -9,6 +9,9 @@ import {
   checkDomainRiskEnabled,
   getDomainRiskSettings,
   updateDomainRiskSettings,
+  getDomainRiskHistory,
+  getMyPhishingReports,
+  getMyDomainAllowlistRequests,
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
 import { validateMessage } from '../utils/messageGuard';
@@ -938,6 +941,18 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => ({
       success,
     }));
+  }
+
+  if (type === 'GET_DOMAIN_RISK_HISTORY') {
+    return getDomainRiskHistory(globalThis.fetch, getJwt).then((events) => ({ events }));
+  }
+
+  if (type === 'GET_DOMAIN_RISK_REPORTS') {
+    return getMyPhishingReports(globalThis.fetch, getJwt).then((reports) => ({ reports }));
+  }
+
+  if (type === 'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS') {
+    return getMyDomainAllowlistRequests(globalThis.fetch, getJwt).then((requests) => ({ requests }));
   }
 
   if (type === 'SET_LOCK_ON_SCREEN_LOCK') {

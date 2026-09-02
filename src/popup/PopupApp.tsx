@@ -35,7 +35,13 @@ import {
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { isDomainMatch, findLookalikeTarget, extractHostname, assessDomainRisk } from '../utils/siteTrust';
-import { mergeLocalAndRemoteRisk, type RemoteDomainRiskResponse } from '../utils/domainRiskService';
+import {
+  mergeLocalAndRemoteRisk,
+  type RemoteDomainRiskResponse,
+  type DomainRiskHistoryEvent,
+  type DomainRiskReportRecord,
+  type DomainRiskAllowlistRequestRecord,
+} from '../utils/domainRiskService';
 import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
 import {
   generatePassword,
@@ -126,6 +132,33 @@ const AUTO_LOCK_OPTIONS = [
   { label: '1 hour', value: 60 },
 ];
 
+// Domain Risk history badge — same decision set as the web app's Domain
+// Risk panel, condensed for this popup's tighter visual density.
+const DOMAIN_RISK_DECISION_LABELS: Record<string, string> = {
+  domain_risk_block: 'Blocked',
+  domain_risk_require_approval: 'Approval needed',
+  domain_risk_warn: 'Warned',
+};
+const DOMAIN_RISK_DECISION_STYLES: Record<string, string> = {
+  domain_risk_block: 'bg-rose-50 text-rose-700 border-rose-200',
+  domain_risk_require_approval: 'bg-amber-100 text-amber-800 border-amber-300',
+  domain_risk_warn: 'bg-amber-50 text-amber-700 border-amber-200',
+};
+const DOMAIN_RISK_REQUEST_STATUS_STYLES: Record<string, string> = {
+  pending: 'bg-amber-50 text-amber-700 border-amber-200',
+  approved: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  denied: 'bg-rose-50 text-rose-700 border-rose-200',
+};
+function fmtRelativeShort(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(Math.abs(diff) / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  return `${Math.round(hrs / 24)}d`;
+}
+
 interface ActiveAiTab {
   id?: number;
   title?: string;
@@ -209,6 +242,14 @@ export const PopupApp: React.FC = () => {
   // showed nothing at all in the popup, even though the in-page warning
   // overlay (which does call this) caught it correctly. null until fetched.
   const [remoteDomainRisk, setRemoteDomainRisk] = useState<RemoteDomainRiskResponse | null>(null);
+  // Recent personal Domain Risk activity (blocked/warned sites), shown as a
+  // small summary on the Firewall tab — same data as the web app's Domain
+  // Risk panel History tab, fetched fresh, capped client-side to the most
+  // recent few for a compact popup card.
+  const [domainRiskHistory, setDomainRiskHistory] = useState<DomainRiskHistoryEvent[]>([]);
+  const [domainRiskReports, setDomainRiskReports] = useState<DomainRiskReportRecord[]>([]);
+  const [domainRiskAllowlistRequests, setDomainRiskAllowlistRequests] = useState<DomainRiskAllowlistRequestRecord[]>([]);
+  const [domainRiskSubTab, setDomainRiskSubTab] = useState<'history' | 'reports' | 'requests'>('history');
   // Matches the background's default so the control doesn't flash a value the
   // user never chose while GET_SETTINGS is in flight.
   const [autoLockMinutes, setAutoLockMinutes] = useState(0);
@@ -445,6 +486,28 @@ export const PopupApp: React.FC = () => {
 
   useEffect(() => {
     if (unlocked && tab === 'ai') scanActiveAiTabs();
+  }, [unlocked, tab]);
+
+  useEffect(() => {
+    if (!unlocked || tab !== 'ai') return;
+    browser.runtime
+      .sendMessage({ type: 'GET_DOMAIN_RISK_HISTORY' })
+      .then((r: any) => {
+        if (Array.isArray(r?.events)) setDomainRiskHistory(r.events);
+      })
+      .catch(() => {});
+    browser.runtime
+      .sendMessage({ type: 'GET_DOMAIN_RISK_REPORTS' })
+      .then((r: any) => {
+        if (Array.isArray(r?.reports)) setDomainRiskReports(r.reports);
+      })
+      .catch(() => {});
+    browser.runtime
+      .sendMessage({ type: 'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS' })
+      .then((r: any) => {
+        if (Array.isArray(r?.requests)) setDomainRiskAllowlistRequests(r.requests);
+      })
+      .catch(() => {});
   }, [unlocked, tab]);
 
   const focusTab = (tabId?: number, windowId?: number) => {
@@ -2234,6 +2297,102 @@ export const PopupApp: React.FC = () => {
                       );
                     })
                   )}
+                </div>
+
+                {/* Domain Risk Activity — one card, internal tabs (History /
+                    Reports / Requests) and a scrollable body, same data as
+                    the web app's Domain Risk panel condensed for the popup. */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
+                    <ShieldAlert className="w-3.5 h-3.5 text-slate-500" /> Domain Risk Activity
+                  </div>
+                  <div className="bg-white border border-slate-900/10 rounded-xl shadow-xs overflow-hidden">
+                    <div className="flex items-center gap-0.5 px-1.5 pt-1.5 border-b border-slate-900/8">
+                      {(
+                        [
+                          { key: 'history', label: 'History', count: domainRiskHistory.length },
+                          { key: 'reports', label: 'Reports', count: domainRiskReports.length },
+                          { key: 'requests', label: 'Requests', count: domainRiskAllowlistRequests.length },
+                        ] as const
+                      ).map((t) => (
+                        <button
+                          key={t.key}
+                          onClick={() => setDomainRiskSubTab(t.key)}
+                          className={`px-2 py-1.5 text-[10px] font-bold border-b-2 transition cursor-pointer ${
+                            domainRiskSubTab === t.key
+                              ? 'border-brand-cyan text-brand-cyan'
+                              : 'border-transparent text-slate-400 hover:text-slate-700'
+                          }`}
+                        >
+                          {t.label}
+                          {t.count > 0 && <span className="ml-1 opacity-70 tabular-nums">{t.count}</span>}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="max-h-52 overflow-y-auto custom-scrollbar divide-y divide-slate-100">
+                      {domainRiskSubTab === 'history' &&
+                        (domainRiskHistory.length === 0 ? (
+                          <div className="py-6 text-center space-y-1">
+                            <ShieldCheck className="w-5 h-5 text-emerald-600 mx-auto" />
+                            <p className="text-[10px] text-slate-400 px-4">No sites flagged yet.</p>
+                          </div>
+                        ) : (
+                          domainRiskHistory.map((ev) => (
+                            <div key={ev.id} className="px-3 py-2.5 space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] font-extrabold text-slate-900 font-mono truncate">{ev.domain || 'Unknown site'}</span>
+                                <span
+                                  className={`shrink-0 text-[8px] font-black uppercase px-1.5 py-0.5 rounded-md border ${
+                                    DOMAIN_RISK_DECISION_STYLES[ev.event_type] || 'bg-slate-50 text-slate-500 border-slate-200'
+                                  }`}
+                                >
+                                  {DOMAIN_RISK_DECISION_LABELS[ev.event_type] || ev.event_type}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[9px] text-slate-500 truncate flex-1">{ev.detail || 'Flagged by domain risk detection.'}</p>
+                                <span className="text-[9px] text-slate-400 shrink-0">{fmtRelativeShort(ev.timestamp)} ago</span>
+                              </div>
+                            </div>
+                          ))
+                        ))}
+
+                      {domainRiskSubTab === 'reports' &&
+                        (domainRiskReports.length === 0 ? (
+                          <div className="py-6 text-center">
+                            <p className="text-[10px] text-slate-400 px-4">No phishing reports filed yet.</p>
+                          </div>
+                        ) : (
+                          domainRiskReports.map((r) => (
+                            <div key={r.id} className="px-3 py-2.5 flex items-center justify-between gap-2">
+                              <span className="text-[11px] font-extrabold text-slate-900 font-mono truncate">{r.hostname}</span>
+                              <span className="text-[9px] text-slate-400 shrink-0">{fmtRelativeShort(r.reported_at)} ago</span>
+                            </div>
+                          ))
+                        ))}
+
+                      {domainRiskSubTab === 'requests' &&
+                        (domainRiskAllowlistRequests.length === 0 ? (
+                          <div className="py-6 text-center">
+                            <p className="text-[10px] text-slate-400 px-4">No allowlist requests yet.</p>
+                          </div>
+                        ) : (
+                          domainRiskAllowlistRequests.map((r) => (
+                            <div key={r.id} className="px-3 py-2.5 flex items-center justify-between gap-2">
+                              <span className="text-[11px] font-extrabold text-slate-900 font-mono truncate">{r.hostname}</span>
+                              <span
+                                className={`shrink-0 text-[8px] font-black uppercase px-1.5 py-0.5 rounded-md border ${
+                                  DOMAIN_RISK_REQUEST_STATUS_STYLES[r.status] || 'bg-slate-50 text-slate-500 border-slate-200'
+                                }`}
+                              >
+                                {r.status}
+                              </span>
+                            </div>
+                          ))
+                        ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

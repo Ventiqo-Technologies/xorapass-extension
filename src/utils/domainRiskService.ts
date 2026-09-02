@@ -438,6 +438,96 @@ export async function updateDomainRiskSettings(
   }
 }
 
+export interface DomainRiskHistoryEvent {
+  id: number;
+  event_type: string; // "domain_risk_block" | "domain_risk_warn" | "domain_risk_require_approval"
+  timestamp: string;
+  secret_exposed: boolean;
+  detail?: string;
+  domain?: string;
+  reason_codes?: string; // JSON-encoded string[]
+}
+
+/**
+ * Calls GET /api/domain-risk/my-history — the same personal history the web
+ * app's Domain Risk panel shows, so the extension popup can surface a small
+ * "recently blocked/warned" summary without duplicating any backend logic.
+ * Requires auth; resolves an empty array without a request if no JWT is
+ * available, and on any network/parse failure (fails empty, not throwing,
+ * since this is a nice-to-have summary, not something autofill depends on).
+ */
+export async function getDomainRiskHistory(
+  fetchFn: typeof fetch = globalThis.fetch,
+  getJwtFn?: () => Promise<string>
+): Promise<DomainRiskHistoryEvent[]> {
+  const jwt = await getJwtOrEmpty(getJwtFn);
+  if (!jwt) return [];
+
+  try {
+    const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/my-history`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { events?: DomainRiskHistoryEvent[] };
+    return Array.isArray(data.events) ? data.events : [];
+  } catch {
+    return [];
+  }
+}
+
+export interface DomainRiskReportRecord {
+  id: string;
+  hostname: string;
+  decision: string;
+  risk_level: string;
+  reported_at: string;
+}
+
+/** Calls GET /api/domain-risk/my-reports — same fail-empty contract as getDomainRiskHistory. */
+export async function getMyPhishingReports(
+  fetchFn: typeof fetch = globalThis.fetch,
+  getJwtFn?: () => Promise<string>
+): Promise<DomainRiskReportRecord[]> {
+  const jwt = await getJwtOrEmpty(getJwtFn);
+  if (!jwt) return [];
+  try {
+    const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/my-reports`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { reports?: DomainRiskReportRecord[] };
+    return Array.isArray(data.reports) ? data.reports : [];
+  } catch {
+    return [];
+  }
+}
+
+export interface DomainRiskAllowlistRequestRecord {
+  id: string;
+  hostname: string;
+  status: 'pending' | 'approved' | 'denied';
+  requested_at: string;
+}
+
+/** Calls GET /api/domain-risk/my-allowlist-requests — same fail-empty contract as getDomainRiskHistory. */
+export async function getMyDomainAllowlistRequests(
+  fetchFn: typeof fetch = globalThis.fetch,
+  getJwtFn?: () => Promise<string>
+): Promise<DomainRiskAllowlistRequestRecord[]> {
+  const jwt = await getJwtOrEmpty(getJwtFn);
+  if (!jwt) return [];
+  try {
+    const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/my-allowlist-requests`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { requests?: DomainRiskAllowlistRequestRecord[] };
+    return Array.isArray(data.requests) ? data.requests : [];
+  } catch {
+    return [];
+  }
+}
+
 export interface AllowlistRequestResult {
   success: boolean;
   /** Set on failure so the caller can show something more useful than a dead-end "Try again". */
