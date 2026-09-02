@@ -850,7 +850,9 @@ export const PopupApp: React.FC = () => {
   // one with saved credentials — assessDomainRisk already handles an empty
   // knownHosts list gracefully (a clean, all-false assessment).
   const localDomainRisk =
-    currentHostname && !siteDisabled ? assessDomainRisk(currentHostname, knownHosts, domainAllowlist) : null;
+    currentHostname && !siteDisabled
+      ? assessDomainRisk(currentHostname, knownHosts, domainAllowlist, `${currentProtocol}//${currentHostname}`)
+      : null;
 
   const lookalike =
     currentHostname && !siteDisabled && matchingItems.length === 0 && !localDomainRisk?.isAllowlisted
@@ -882,7 +884,7 @@ export const PopupApp: React.FC = () => {
         type: 'CHECK_DOMAIN_RISK',
         payload: {
           currentDomain: currentHostname,
-          currentUrl: `https://${currentHostname}`,
+          currentUrl: `${currentProtocol}//${currentHostname}`,
           savedDomain: localDomainRisk?.matchedTarget || lookalike?.target || '',
         },
       })

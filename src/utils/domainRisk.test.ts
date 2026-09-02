@@ -79,6 +79,14 @@ describe('Domain Risk Assessment — Acceptance Criteria', () => {
     expect(resSub.riskScore).toBe(0);
   });
 
+  it('WARNS on HTTP even when the domain has no threat-intel signals', () => {
+    const res = assessDomainRisk('example.com', [], [], 'http://example.com/login');
+    expect(res.decision).toBe('warn');
+    expect(res.riskScore).toBe(30);
+    expect(res.reasons).toContain('This site is using unencrypted HTTP instead of HTTPS.');
+    expect(res.signals.isInsecureTransport).toBe(true);
+  });
+
   it('BLOCKS brand keyword abuse: stripe-login.example for stripe.com', () => {
     const res = assessDomainRisk('stripe-login.example', savedVaultHosts);
     expect(res.decision).toBe('block');

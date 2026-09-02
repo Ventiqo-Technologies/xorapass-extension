@@ -35,6 +35,7 @@ export interface DomainRiskSignals {
   brandAbuse?: { brand: string; pattern: string; matchedTarget: string };
   suspiciousKeywords: string[];
   suspiciousTldChange?: { savedTld: string; currentTld: string; brand: string };
+  isInsecureTransport: boolean;
   isHighRiskTld: boolean;
   subdomainCount: number;
 }
@@ -439,6 +440,7 @@ export function disabledDomainRiskAssessment(pageHost: string): DomainRiskAssess
       hasPunycode: false,
       isHomograph: false,
       suspiciousKeywords: [],
+      isInsecureTransport: false,
       isHighRiskTld: false,
       subdomainCount: 0,
     },
@@ -448,7 +450,8 @@ export function disabledDomainRiskAssessment(pageHost: string): DomainRiskAssess
 export function assessDomainRisk(
   pageHost: string,
   knownHosts: string[],
-  allowlist: string[] = []
+  allowlist: string[] = [],
+  pageUrl = ''
 ): DomainRiskAssessment {
   const pageHostname = normalizeHostname(pageHost);
   const pageReg = registrableDomain(pageHostname);
@@ -470,6 +473,7 @@ export function assessDomainRisk(
       hasPunycode: false,
       isHomograph: false,
       suspiciousKeywords: [],
+      isInsecureTransport: /^http:\/\//i.test(pageUrl.trim()),
       isHighRiskTld: false,
       subdomainCount: pageHostname ? pageHostname.split('.').length : 0,
     },
@@ -477,6 +481,13 @@ export function assessDomainRisk(
 
   if (!pageHostname) {
     return assessment;
+  }
+
+  if (assessment.signals.isInsecureTransport) {
+    assessment.riskScore = 30;
+    assessment.riskLevel = 'low';
+    assessment.decision = 'warn';
+    assessment.reasons.push('This site is using unencrypted HTTP instead of HTTPS.');
   }
 
   // 1. Check Allowlist: if user/admin explicitly allowlisted this domain, allow immediately

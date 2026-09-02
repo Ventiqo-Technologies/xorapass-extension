@@ -1030,6 +1030,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'GET_MATCHING_CREDENTIALS') {
     const hostname: string = msg.payload.hostname || '';
+    const currentUrl: string = msg.payload.currentUrl || `https://${hostname}`;
     if (!hostname) {
       return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null });
     }
@@ -1076,7 +1077,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       let risk: DomainRiskAssessment = disabledDomainRiskAssessment(hostname);
       if (domainRiskOn) {
         // Evaluate comprehensive lookalike, punycode, brand abuse, and phishing risk
-        risk = assessDomainRisk(hostname, knownHosts, allowlist);
+        risk = assessDomainRisk(hostname, knownHosts, allowlist, currentUrl);
 
         // Async threat intelligence enrichment.
         // Always query remote — every assessment (even safe known domains) must
@@ -1085,7 +1086,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         // the JWT is passed so the event is properly recorded and visible in the
         // admin feed immediately on refresh.
         const remoteRisk = await checkDomainRiskRemote(
-          `https://${hostname}`,
+          currentUrl,
           risk.matchedTarget || (matching[0]?.url ? extractHostname(matching[0].url) : ''),
           undefined,
           undefined,

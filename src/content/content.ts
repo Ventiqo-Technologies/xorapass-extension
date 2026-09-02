@@ -178,7 +178,7 @@ function isInsecureContext(): boolean {
 function loadCredentials(): void {
   const hostname = window.location.hostname;
   browser.runtime
-    .sendMessage({ type: 'GET_MATCHING_CREDENTIALS', payload: { hostname } })
+    .sendMessage({ type: 'GET_MATCHING_CREDENTIALS', payload: { hostname, currentUrl: window.location.href } })
     .then((response: any) => {
       if (!response) return;
 
@@ -209,7 +209,7 @@ function loadCredentials(): void {
 // a login field's icon first (which may not even exist on this page). Keyed
 // on hostname+decision so repeated loadCredentials() calls (tab focus,
 // visibility change, SPA route watchers) don't re-pop an already-seen alert.
-function maybeShowProactiveRiskWarning(): void {
+async function maybeShowProactiveRiskWarning(): Promise<void> {
   const decision = domainRisk?.decision;
   const isRisky = decision === 'block' || decision === 'warn' || decision === 'require_approval';
   const key = `${window.location.hostname}|${decision || ''}`;
@@ -224,9 +224,36 @@ function maybeShowProactiveRiskWarning(): void {
   const message = getRiskWarningMessage();
   if (!message) return;
 
+  // Set before the await below so a second loadCredentials() tick firing
+  // while this is still in flight doesn't start a duplicate lookup/render.
   lastWarnedRiskKey = key;
   const expectedDomain = domainRisk?.matchedTarget || lookalikeWarning?.target || null;
   const currentHostname = window.location.hostname;
+
+  // Check whether this domain already has an allowlist request on file —
+  // re-showing "Request allowlist review" every visit after one's already
+  // pending would just spam the admin queue with duplicates for no reason.
+  // Best-effort: any failure here just means the button renders normally.
+  let allowlistRequestStatus: 'pending' | 'approved' | 'denied' | null = null;
+  try {
+    const res: any = await browser.runtime.sendMessage({ type: 'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS' });
+    const requests: Array<{ hostname: string; status: string; requested_at: string }> = Array.isArray(res?.requests)
+      ? res.requests
+      : [];
+    const matching = requests
+      .filter((r) => r.hostname === currentHostname)
+      .sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime());
+    if (matching[0]?.status === 'pending' || matching[0]?.status === 'denied') {
+      allowlistRequestStatus = matching[0].status as 'pending' | 'denied';
+    }
+  } catch {
+    /* best-effort — fall through with allowlistRequestStatus = null */
+  }
+
+  // The risky-decision key can change (or this can go stale) while the
+  // lookup above was in flight — a page navigation, or the risk clearing.
+  // Bail rather than showing a warning for a state that's no longer current.
+  if (lastWarnedRiskKey !== key) return;
 
   showRiskWarning({
     severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
@@ -235,6 +262,7 @@ function maybeShowProactiveRiskWarning(): void {
     currentDomain: currentHostname,
     expectedDomain,
     riskLevel: domainRisk?.riskLevel,
+    allowlistRequestStatus,
     onDismiss: () => {
       // A manual dismiss shouldn't re-fire on the very next loadCredentials()
       // tick, but should still recur if the user leaves and comes back later.

@@ -99,7 +99,12 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'SET_DOMAIN_RISK_SETTINGS',
   'GET_DOMAIN_RISK_HISTORY',
   'GET_DOMAIN_RISK_REPORTS',
-  'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS',
+  // GET_DOMAIN_RISK_ALLOWLIST_REQUESTS is deliberately NOT extension-page-only
+  // — content.ts's own proactive risk-warning overlay needs it too, to check
+  // whether the current domain already has a request on file before offering
+  // "Request allowlist review" again. Same trust tier as REPORT_PHISHING /
+  // REQUEST_DOMAIN_ALLOWLIST below: read-only, scoped server-side to the
+  // caller's own requests, carries no secret.
   // Turning the screen-lock guard OFF weakens the vault, so it belongs to the
   // popup alone. A content script that could send this would be able to
   // silently disable the control that protects an unattended machine.

@@ -12,6 +12,7 @@
 // The page's DOM is never modified, page CSS cannot leak in, and page scripts
 // cannot reach our nodes (closed mode leaves element.shadowRoot === null).
 
+import browser from 'webextension-polyfill';
 import {
   computeIconPosition,
   computeTrailingOffset,
@@ -668,7 +669,19 @@ const STYLES = `
   z-index: 2147483647;
   animation: xp-slide-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.risk-alert.is-warn { border-color: rgba(217, 119, 6, 0.25); }
+.risk-alert.is-warn { border-color: rgba(13, 148, 136, 0.25); }
+.risk-brand {
+  display: flex;
+  align-items: center;
+  padding: 14px 18px 0;
+}
+.risk-brand-logo {
+  display: block;
+  width: auto;
+  height: 22px;
+  max-width: 126px;
+  object-fit: contain;
+}
 .risk-head {
   display: flex;
   align-items: center;
@@ -687,8 +700,8 @@ const STYLES = `
   flex: none;
 }
 .risk-alert.is-warn .risk-head-icon {
-  background: rgba(217, 119, 6, 0.12);
-  border-color: rgba(217, 119, 6, 0.25);
+  background: rgba(13, 148, 136, 0.12);
+  border-color: rgba(13, 148, 136, 0.25);
 }
 .risk-title {
   font-size: 15px;
@@ -697,7 +710,7 @@ const STYLES = `
   letter-spacing: -0.01em;
   color: #e11d48;
 }
-.risk-alert.is-warn .risk-title { color: #b45309; }
+.risk-alert.is-warn .risk-title { color: #0d9488; }
 .risk-close {
   width: 28px;
   height: 28px;
@@ -752,12 +765,37 @@ const STYLES = `
   white-space: nowrap;
   text-align: right;
 }
+.risk-status-note {
+  margin: 4px 18px 0 18px;
+  padding: 8px 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #1d4ed8;
+}
 .risk-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 16px 16px 18px;
+}
+.risk-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 18px 14px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+}
+.risk-footer-icon {
+  width: 16px;
+  height: 16px;
+  color: #0d9488;
 }
 .risk-btn-dismiss,
 .risk-btn-secondary,
@@ -1474,6 +1512,13 @@ export interface RiskWarningOptions {
   onReportPhishing?: () => Promise<{ success: boolean }>;
   /** Submits an admin-review allowlist request for the current domain. */
   onRequestAllowlist?: () => Promise<{ success: boolean; reason?: string }>;
+  /**
+   * When a request for this exact domain already exists, shows a status
+   * note instead of the "Request allowlist review" button — resubmitting
+   * a request that's already pending (or already decided) would just spam
+   * the admin queue with duplicates every time the user revisits the site.
+   */
+  allowlistRequestStatus?: 'pending' | 'approved' | 'denied' | null;
 }
 
 /**
@@ -1490,6 +1535,16 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
   card.className = opts.severity === 'block' ? 'risk-alert' : 'risk-alert is-warn';
   card.setAttribute('role', 'alert');
   card.setAttribute('aria-live', 'assertive');
+
+  const brand = document.createElement('div');
+  brand.className = 'risk-brand';
+  const brandLogo = document.createElement('img');
+  brandLogo.className = 'risk-brand-logo';
+  brandLogo.src = browser.runtime.getURL('xorapass_logo_horizontal.png');
+  brandLogo.alt = 'XoraPass';
+  brandLogo.draggable = false;
+  brand.appendChild(brandLogo);
+  card.appendChild(brand);
 
   const head = document.createElement('div');
   head.className = 'risk-head';
@@ -1546,6 +1601,16 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
   if (opts.riskLevel) addFact('Risk level', opts.riskLevel);
   card.appendChild(facts);
 
+  if (opts.allowlistRequestStatus === 'pending' || opts.allowlistRequestStatus === 'denied') {
+    const note = document.createElement('div');
+    note.className = 'risk-status-note';
+    note.textContent =
+      opts.allowlistRequestStatus === 'pending'
+        ? 'Allowlist request sent to admin — awaiting review.'
+        : 'Allowlist request was reviewed and denied by admin.';
+    card.appendChild(note);
+  }
+
   const actions = document.createElement('div');
   actions.className = 'risk-actions';
 
@@ -1600,7 +1665,7 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
     actions.appendChild(report);
   }
 
-  if (opts.onRequestAllowlist) {
+  if (opts.onRequestAllowlist && !opts.allowlistRequestStatus) {
     const request = document.createElement('button');
     request.type = 'button';
     request.className = 'risk-btn-secondary';
@@ -1625,6 +1690,17 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
   });
   actions.appendChild(dismissBtn);
   card.appendChild(actions);
+
+  const footer = document.createElement('div');
+  footer.className = 'risk-footer';
+  const footerIcon = document.createElement('span');
+  footerIcon.className = 'risk-footer-icon';
+  footerIcon.innerHTML = SHIELD_SVG;
+  const trustLabel = document.createElement('span');
+  trustLabel.textContent = 'Zero-Knowledge Encrypted';
+  footer.appendChild(footerIcon);
+  footer.appendChild(trustLabel);
+  card.appendChild(footer);
 
   root.appendChild(card);
   riskAlertEl = card;
