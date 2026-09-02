@@ -278,8 +278,12 @@ export function mergeLocalAndRemoteRisk(
   else if (score >= 30) riskLevel = 'low';
   else riskLevel = 'safe';
 
-  // Merge unique reason strings
-  const combinedReasons = Array.from(new Set([...local.reasons, ...remote.reasons]));
+  // Merge unique reason strings. Defensively coerced to [] — a backend
+  // response with reasons serialized as null (a real bug that shipped
+  // once already: a Go nil slice marshals to JSON null, not []) would
+  // otherwise crash this entire function on `...null`, taking down
+  // whatever UI called it.
+  const combinedReasons = Array.from(new Set([...(local.reasons || []), ...(remote.reasons || [])]));
 
   return {
     ...local,
@@ -318,6 +322,117 @@ export async function reportPhishing(
     if (!res.ok) return false;
     const data = (await res.json()) as { success?: boolean };
     return !!data.success;
+  } catch {
+    return false;
+  }
+}
+
+// Cached separately from MEMORY_CACHE (which is keyed per-domain): this is a
+// single account-wide flag, refreshed on its own short TTL so a plan change
+// takes effect quickly without a status call on every single domain check.
+let statusCache: { enabled: boolean; expiresAt: number } | null = null;
+const STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Calls GET /api/domain-risk/status — asks once whether Domain Risk (the
+ * whole feature: detection, warnings/blocking, reporting, allowlisting) is
+ * enabled for the caller's plan. Callers should check this BEFORE running
+ * the on-device heuristic engine (assessDomainRisk in siteTrust.ts) as well
+ * as before calling checkDomainRiskRemote — gating only the remote call
+ * would leave local detection running regardless, since it needs no network
+ * access at all. Fails open (true) on any network/parse error: a transient
+ * backend hiccup must not silently disable phishing protection.
+ */
+export async function checkDomainRiskEnabled(
+  fetchFn: typeof fetch = globalThis.fetch,
+  getJwtFn?: () => Promise<string>
+): Promise<boolean> {
+  if (statusCache && Date.now() < statusCache.expiresAt) {
+    return statusCache.enabled;
+  }
+
+  const headers: Record<string, string> = {};
+  const jwt = await getJwtOrEmpty(getJwtFn);
+  if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
+
+  try {
+    const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/status`, { headers });
+    if (!res.ok) return statusCache?.enabled ?? true;
+    const data = (await res.json()) as { enabled?: boolean };
+    const enabled = data.enabled !== false;
+    statusCache = { enabled, expiresAt: Date.now() + STATUS_CACHE_TTL_MS };
+    return enabled;
+  } catch {
+    return statusCache?.enabled ?? true;
+  }
+}
+
+export interface DomainRiskSettings {
+  enabled: boolean;
+  planAllows: boolean;
+  userEnabled: boolean;
+}
+
+/**
+ * Calls GET /api/domain-risk/status fresh — bypassing checkDomainRiskEnabled's
+ * short-lived cache — and returns the full plan/user breakdown, not just the
+ * combined value. Used to render the Settings toggle, which needs to show the
+ * true current state immediately (and distinguish "off because your plan
+ * doesn't include this" from "off because you turned it off") rather than a
+ * value that might be up to 5 minutes stale.
+ */
+export async function getDomainRiskSettings(
+  fetchFn: typeof fetch = globalThis.fetch,
+  getJwtFn?: () => Promise<string>
+): Promise<DomainRiskSettings | null> {
+  const headers: Record<string, string> = {};
+  const jwt = await getJwtOrEmpty(getJwtFn);
+  if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
+
+  try {
+    const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/status`, { headers });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      enabled?: boolean;
+      plan_allows?: boolean;
+      user_enabled?: boolean;
+    };
+    return {
+      enabled: data.enabled !== false,
+      planAllows: data.plan_allows !== false,
+      userEnabled: data.user_enabled !== false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Calls PATCH /api/domain-risk/my-settings to turn Domain Risk detection on
+ * or off for the signed-in user personally — the same preference the web app
+ * reads/writes, so toggling it here is reflected there on its next fetch,
+ * and vice versa. Requires auth (inherently account-bound); resolves false
+ * without a request if no JWT is available. Clears the short-lived
+ * checkDomainRiskEnabled cache on success so the very next autofill-time
+ * check reflects the change immediately instead of waiting out its TTL.
+ */
+export async function updateDomainRiskSettings(
+  enabled: boolean,
+  fetchFn: typeof fetch = globalThis.fetch,
+  getJwtFn?: () => Promise<string>
+): Promise<boolean> {
+  const jwt = await getJwtOrEmpty(getJwtFn);
+  if (!jwt) return false;
+
+  try {
+    const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/my-settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) return false;
+    statusCache = null;
+    return true;
   } catch {
     return false;
   }

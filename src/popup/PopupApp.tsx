@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { isDomainMatch, findLookalikeTarget, extractHostname, assessDomainRisk } from '../utils/siteTrust';
+import { mergeLocalAndRemoteRisk, type RemoteDomainRiskResponse } from '../utils/domainRiskService';
 import { computeVaultHealth, scoreTier } from '../utils/vaultHealth';
 import {
   generatePassword,
@@ -200,10 +201,24 @@ export const PopupApp: React.FC = () => {
   const [currentProtocol, setCurrentProtocol] = useState('');
   const [siteDisabled, setSiteDisabled] = useState(false);
   const [domainAllowlist, setDomainAllowlist] = useState<string[]>([]);
+  // Threat-intel (VirusTotal/Google Web Risk/Cloudflare) verdict for the
+  // active tab's domain — separate from the local heuristic engine below,
+  // which only catches lookalikes of the user's OWN saved domains. Without
+  // this, a straightforwardly malicious site that isn't impersonating
+  // anything saved (e.g. a torrent/piracy site flagged by threat intel)
+  // showed nothing at all in the popup, even though the in-page warning
+  // overlay (which does call this) caught it correctly. null until fetched.
+  const [remoteDomainRisk, setRemoteDomainRisk] = useState<RemoteDomainRiskResponse | null>(null);
   // Matches the background's default so the control doesn't flash a value the
   // user never chose while GET_SETTINGS is in flight.
   const [autoLockMinutes, setAutoLockMinutes] = useState(0);
   const [lockOnScreenLock, setLockOnScreenLock] = useState(false);
+  // Personal Domain Risk on/off — separate from planAllowsDomainRisk, which
+  // reflects the account's plan entitlement and can't be changed here (only
+  // in billing). null while GET_DOMAIN_RISK_SETTINGS is in flight.
+  const [domainRiskEnabled, setDomainRiskEnabled] = useState(true);
+  const [planAllowsDomainRisk, setPlanAllowsDomainRisk] = useState(true);
+  const [domainRiskSettingsLoaded, setDomainRiskSettingsLoaded] = useState(false);
   const [clipboardClearSeconds, setClipboardClearSeconds] = useState(
     DEFAULT_CLIPBOARD_CLEAR_SECONDS
   );
@@ -273,6 +288,14 @@ export const PopupApp: React.FC = () => {
               if (s && typeof s.lockOnScreenLock === 'boolean') {
                 setLockOnScreenLock(s.lockOnScreenLock);
               }
+            });
+            browser.runtime.sendMessage({ type: 'GET_DOMAIN_RISK_SETTINGS' }).then((r: any) => {
+              const settings = r?.settings;
+              if (settings) {
+                setDomainRiskEnabled(!!settings.userEnabled);
+                setPlanAllowsDomainRisk(!!settings.planAllows);
+              }
+              setDomainRiskSettingsLoaded(true);
             });
           } else if (!res && attempt < 3) {
             setTimeout(() => checkStatus(attempt + 1), 150);
@@ -375,6 +398,16 @@ export const PopupApp: React.FC = () => {
   const changeLockOnScreenLock = (enabled: boolean) => {
     setLockOnScreenLock(enabled);
     browser.runtime.sendMessage({ type: 'SET_LOCK_ON_SCREEN_LOCK', payload: { enabled } });
+  };
+
+  const changeDomainRiskEnabled = (enabled: boolean) => {
+    setDomainRiskEnabled(enabled); // optimistic; reverted below on failure
+    browser.runtime
+      .sendMessage({ type: 'SET_DOMAIN_RISK_SETTINGS', payload: { enabled } })
+      .then((r: any) => {
+        if (!r?.success) setDomainRiskEnabled(!enabled);
+      })
+      .catch(() => setDomainRiskEnabled(!enabled));
   };
 
   const changeClipboardClear = (seconds: number) => {
@@ -749,38 +782,56 @@ export const PopupApp: React.FC = () => {
   const isInsecure = currentProtocol === 'http:' && !isLocalHost;
   const knownHosts = vaultItems.map((i) => (i.url ? extractHostname(i.url) : '')).filter(Boolean);
 
-  const domainRiskAssessment =
-    currentHostname && !siteDisabled && knownHosts.length > 0
-      ? assessDomainRisk(currentHostname, knownHosts, domainAllowlist)
-      : null;
+  // Unconditional (no longer gated on knownHosts.length > 0): a user with an
+  // empty or partially-synced vault deserves a risk banner just as much as
+  // one with saved credentials — assessDomainRisk already handles an empty
+  // knownHosts list gracefully (a clean, all-false assessment).
+  const localDomainRisk =
+    currentHostname && !siteDisabled ? assessDomainRisk(currentHostname, knownHosts, domainAllowlist) : null;
 
   const lookalike =
-    currentHostname && !siteDisabled && matchingItems.length === 0 && !domainRiskAssessment?.isAllowlisted
+    currentHostname && !siteDisabled && matchingItems.length === 0 && !localDomainRisk?.isAllowlisted
       ? findLookalikeTarget(currentHostname, knownHosts, domainAllowlist)
       : null;
+
+  // The merged view is what actually drives the banner below — remote
+  // threat-intel can escalate (never soften) what the local engine alone
+  // found, same rule mergeLocalAndRemoteRisk already enforces for the
+  // in-page overlay.
+  const domainRiskAssessment =
+    localDomainRisk && remoteDomainRisk ? mergeLocalAndRemoteRisk(localDomainRisk, remoteDomainRisk) : localDomainRisk;
 
   const isCurrentDomainAllowlisted = domainAllowlist.some((h) => {
     try { return h === currentHostname || currentHostname.endsWith('.' + h); } catch { return false; }
   });
 
-  // Report risk detections on the current active tab to backend threat intel
+  // Fetch the remote threat-intel verdict for the active tab whenever it
+  // changes — unconditionally (not gated behind the local engine already
+  // having found something), since the whole point is catching threats the
+  // local engine alone can't see. Also reports the event to backend
+  // telemetry as a side effect, same as before.
   useEffect(() => {
-    if (
-      currentHostname &&
-      (domainRiskAssessment?.riskScore || 0) > 0
-    ) {
-      void browser.runtime
-        .sendMessage({
-          type: 'CHECK_DOMAIN_RISK',
-          payload: {
-            currentDomain: currentHostname,
-            currentUrl: `https://${currentHostname}`,
-            savedDomain: domainRiskAssessment?.matchedTarget || (lookalike?.target || ''),
-          },
-        })
-        .catch(() => {});
-    }
-  }, [currentHostname, domainRiskAssessment?.riskScore, domainRiskAssessment?.matchedTarget, lookalike?.target]);
+    setRemoteDomainRisk(null);
+    if (!currentHostname || siteDisabled || isLocalHost) return;
+    let cancelled = false;
+    browser.runtime
+      .sendMessage({
+        type: 'CHECK_DOMAIN_RISK',
+        payload: {
+          currentDomain: currentHostname,
+          currentUrl: `https://${currentHostname}`,
+          savedDomain: localDomainRisk?.matchedTarget || lookalike?.target || '',
+        },
+      })
+      .then((res: any) => {
+        if (!cancelled && res?.risk) setRemoteDomainRisk(res.risk);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentHostname, siteDisabled, isLocalHost]);
 
   const health = computeVaultHealth(vaultItems.map((i) => ({ category: i.category, value: i.value })));
   const tier = scoreTier(health.score);
@@ -1506,10 +1557,15 @@ export const PopupApp: React.FC = () => {
                             <ShieldAlert className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
                             <div className="flex-1 min-w-0">
                               <div className="text-[10px] font-bold text-rose-800 leading-tight">
-                                Phishing / Lookalike Domain Blocked
+                                {domainRiskAssessment.matchedTarget ? 'Phishing / Lookalike Domain Blocked' : 'Dangerous Site Blocked'}
                               </div>
                               <div className="text-[9px] text-rose-700 mt-0.5 leading-snug">
-                                This site appears to impersonate <span className="font-semibold">{domainRiskAssessment.matchedTarget || 'a saved brand'}</span>. Autofill is blocked for your protection.
+                                {domainRiskAssessment.safeWarningMessage ||
+                                  (domainRiskAssessment.matchedTarget ? (
+                                    <>This site appears to impersonate <span className="font-semibold">{domainRiskAssessment.matchedTarget}</span>. Autofill is blocked for your protection.</>
+                                  ) : (
+                                    'Security providers have flagged this site. Autofill is blocked for your protection.'
+                                  ))}
                               </div>
                             </div>
                             <span className="shrink-0 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[9px] font-bold">
@@ -1548,7 +1604,7 @@ export const PopupApp: React.FC = () => {
                             <div className="flex-1 min-w-0">
                               <div className="text-[10px] font-bold text-amber-800 leading-tight">Security Warning</div>
                               <div className="text-[9px] text-amber-700 mt-0.5 leading-snug">
-                                {domainRiskAssessment.reasons[0] || 'This domain has unusual characteristics. Verify before filling.'}
+                                {domainRiskAssessment.safeWarningMessage || domainRiskAssessment.reasons[0] || 'This domain has unusual characteristics. Verify before filling.'}
                               </div>
                             </div>
                           </div>
@@ -1999,6 +2055,33 @@ export const PopupApp: React.FC = () => {
                       <span
                         className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transform transition-transform ${lockOnScreenLock ? 'translate-x-5' : 'translate-x-1'
                           }`}
+                      />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
+                    <div className="min-w-0 pr-2">
+                      <div className="text-xs font-bold text-slate-800">Domain Risk Detection</div>
+                      <div className="text-[10px] text-slate-500">
+                        {planAllowsDomainRisk
+                          ? 'Warns or blocks autofill on phishing and lookalike sites'
+                          : 'Not included in your current plan'}
+                      </div>
+                    </div>
+                    <button
+                      role="switch"
+                      aria-checked={domainRiskEnabled}
+                      aria-label="Enable Domain Risk detection"
+                      disabled={!planAllowsDomainRisk || !domainRiskSettingsLoaded}
+                      onClick={() => changeDomainRiskEnabled(!domainRiskEnabled)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                        domainRiskEnabled && planAllowsDomainRisk ? 'bg-brand-cyan' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transform transition-transform ${
+                          domainRiskEnabled && planAllowsDomainRisk ? 'translate-x-5' : 'translate-x-1'
+                        }`}
                       />
                     </button>
                   </div>

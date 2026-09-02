@@ -1,10 +1,14 @@
 import browser from 'webextension-polyfill';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain, assessDomainRisk } from '../utils/siteTrust';
+import { disabledDomainRiskAssessment, type DomainRiskAssessment } from '../utils/domainRisk';
 import {
   checkDomainRiskRemote,
   mergeLocalAndRemoteRisk,
   reportPhishing,
   requestDomainAllowlist,
+  checkDomainRiskEnabled,
+  getDomainRiskSettings,
+  updateDomainRiskSettings,
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
 import { validateMessage } from '../utils/messageGuard';
@@ -925,6 +929,17 @@ browser.runtime.onMessage.addListener((message, sender) => {
     }));
   }
 
+  if (type === 'GET_DOMAIN_RISK_SETTINGS') {
+    return getDomainRiskSettings(globalThis.fetch, getJwt).then((settings) => ({ settings }));
+  }
+
+  if (type === 'SET_DOMAIN_RISK_SETTINGS') {
+    const enabled = !!msg.payload?.enabled;
+    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => ({
+      success,
+    }));
+  }
+
   if (type === 'SET_LOCK_ON_SCREEN_LOCK') {
     const enabled = !!msg.payload.enabled;
     return browser.storage.local
@@ -1035,29 +1050,40 @@ browser.runtime.onMessage.addListener((message, sender) => {
         .map((i) => extractHostname(i.url!))
         .filter(Boolean);
 
-      // Evaluate comprehensive lookalike, punycode, brand abuse, and phishing risk
-      let risk = assessDomainRisk(hostname, knownHosts, allowlist);
+      // Domain Risk is a plan entitlement (see backend PlanPricing.AllowDomainRiskPolicies)
+      // — when it's off, NEITHER engine runs: not the on-device heuristic
+      // assessment (which needs no network access, so it can't be gated by
+      // the /check call alone) nor the remote threat-intel lookup. Autofill
+      // proceeds with no risk evaluation at all, exactly as if this feature
+      // didn't exist for the account.
+      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
 
-      // Async threat intelligence enrichment.
-      // Always query remote — every assessment (even safe known domains) must
-      // produce a telemetry event so the admin Domain Risk panel has a complete
-      // picture. The remote call is cheap (cached server-side for 15 min) and
-      // the JWT is passed so the event is properly recorded and visible in the
-      // admin feed immediately on refresh.
-      const remoteRisk = await checkDomainRiskRemote(
-        `https://${hostname}`,
-        risk.matchedTarget || (matching[0]?.url ? extractHostname(matching[0].url) : ''),
-        undefined,
-        undefined,
-        'standard',
-        globalThis.fetch,
-        getJwt
-      );
-      if (remoteRisk && !risk.isAllowlisted) {
-        // Only merge risk signals if the domain is NOT explicitly allowlisted by the user.
-        // For allowlisted domains we still sent the request (for telemetry), but we
-        // don't let the remote engine escalate the decision.
-        risk = mergeLocalAndRemoteRisk(risk, remoteRisk);
+      let risk: DomainRiskAssessment = disabledDomainRiskAssessment(hostname);
+      if (domainRiskOn) {
+        // Evaluate comprehensive lookalike, punycode, brand abuse, and phishing risk
+        risk = assessDomainRisk(hostname, knownHosts, allowlist);
+
+        // Async threat intelligence enrichment.
+        // Always query remote — every assessment (even safe known domains) must
+        // produce a telemetry event so the admin Domain Risk panel has a complete
+        // picture. The remote call is cheap (cached server-side for 15 min) and
+        // the JWT is passed so the event is properly recorded and visible in the
+        // admin feed immediately on refresh.
+        const remoteRisk = await checkDomainRiskRemote(
+          `https://${hostname}`,
+          risk.matchedTarget || (matching[0]?.url ? extractHostname(matching[0].url) : ''),
+          undefined,
+          undefined,
+          'standard',
+          globalThis.fetch,
+          getJwt
+        );
+        if (remoteRisk && !risk.isAllowlisted) {
+          // Only merge risk signals if the domain is NOT explicitly allowlisted by the user.
+          // For allowlisted domains we still sent the request (for telemetry), but we
+          // don't let the remote engine escalate the decision.
+          risk = mergeLocalAndRemoteRisk(risk, remoteRisk);
+        }
       }
 
       // Maintain legacy lookalike compatibility for existing UI callers
@@ -1108,7 +1134,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       browser.storage.session.get(['unlocked', 'vaultItems']),
       isSiteDisabled(hostname),
       getDomainAllowlist(),
-    ]).then(([res, disabled, allowlist]) => {
+    ]).then(async ([res, disabled, allowlist]) => {
       if (!res.unlocked || !res.vaultItems) return { error: 'locked' };
       if (disabled) return { error: 'site_disabled' };
 
@@ -1131,16 +1157,21 @@ browser.runtime.onMessage.addListener((message, sender) => {
         return { error: 'domain_mismatch' };
       }
 
-      // Re-check domain risk: never release secret to a blocked phishing/lookalike domain
-      const items = res.vaultItems as VaultItem[];
-      const knownHosts = items
-        .filter((i) => !!i.url)
-        .map((i) => extractHostname(i.url!))
-        .filter(Boolean);
-      const risk = assessDomainRisk(hostname, knownHosts, allowlist);
-      if (risk.decision === 'block') {
-        console.warn('[XoraPass] Refused secret for blocked risk domain:', hostname, risk.reasons);
-        return { error: 'risk_blocked' };
+      // Re-check domain risk: never release secret to a blocked phishing/lookalike
+      // domain — unless Domain Risk is disabled for the plan, in which case there's
+      // no verdict to enforce here either (see GET_MATCHING_CREDENTIALS above).
+      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+      if (domainRiskOn) {
+        const items = res.vaultItems as VaultItem[];
+        const knownHosts = items
+          .filter((i) => !!i.url)
+          .map((i) => extractHostname(i.url!))
+          .filter(Boolean);
+        const risk = assessDomainRisk(hostname, knownHosts, allowlist);
+        if (risk.decision === 'block') {
+          console.warn('[XoraPass] Refused secret for blocked risk domain:', hostname, risk.reasons);
+          return { error: 'risk_blocked' };
+        }
       }
 
       void scheduleAutoLock(); // filling counts as activity

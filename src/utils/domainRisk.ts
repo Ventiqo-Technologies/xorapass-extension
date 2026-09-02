@@ -414,6 +414,37 @@ export function extractBrandProfiles(knownHosts: string[]): BrandProfile[] {
  * Analyzes a hostname against known legitimate brand hosts and explicit allowlists.
  * Returns a comprehensive risk score, decision ('allow' | 'warn' | 'block'), and explainable reasons.
  */
+/**
+ * Neutral "not evaluated" assessment — decision is always 'allow' so
+ * autofill proceeds unblocked. Used when Domain Risk is disabled for the
+ * account's plan (see checkDomainRiskEnabled in domainRiskService.ts),
+ * instead of running assessDomainRisk at all, so a downgraded/free-tier
+ * account gets none of the feature's signals, not just a suppressed warning.
+ */
+export function disabledDomainRiskAssessment(pageHost: string): DomainRiskAssessment {
+  const pageHostname = normalizeHostname(pageHost);
+  return {
+    pageHostname,
+    registrableDomain: registrableDomain(pageHostname),
+    riskScore: 0,
+    riskLevel: 'safe',
+    decision: 'allow',
+    reasons: [],
+    matchedTarget: null,
+    isAllowlisted: false,
+    signals: {
+      isExactMatch: false,
+      isSubdomainMatch: false,
+      isSameRegistrableDomain: false,
+      hasPunycode: false,
+      isHomograph: false,
+      suspiciousKeywords: [],
+      isHighRiskTld: false,
+      subdomainCount: 0,
+    },
+  };
+}
+
 export function assessDomainRisk(
   pageHost: string,
   knownHosts: string[],

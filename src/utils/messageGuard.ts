@@ -35,6 +35,11 @@ export const KNOWN_MESSAGE_TYPES = [
   'SET_LOCK_ON_SCREEN_LOCK',
   'SET_CLIPBOARD_CLEAR',
   'CLIPBOARD_COPIED',
+  // The user's own personal on/off preference for Domain Risk detection —
+  // same trust tier as the other account settings above (popup-only, see
+  // EXTENSION_PAGE_ONLY below).
+  'GET_DOMAIN_RISK_SETTINGS',
+  'SET_DOMAIN_RISK_SETTINGS',
   // AI Access: the extension is a consumer of XoraPass's AI-access API, using
   // the human's own login (never a bridge token -- this is the trusted client
   // surface that performs the actual fill once a human has approved a scoped,
@@ -87,6 +92,8 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'GET_STATUS',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  'GET_DOMAIN_RISK_SETTINGS',
+  'SET_DOMAIN_RISK_SETTINGS',
   // Turning the screen-lock guard OFF weakens the vault, so it belongs to the
   // popup alone. A content script that could send this would be able to
   // silently disable the control that protects an unattended machine.
@@ -296,6 +303,14 @@ export function validateMessage(
       }
       break;
     case 'SET_LOCK_ON_SCREEN_LOCK':
+      if (!payload || typeof payload.enabled !== 'boolean') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'GET_DOMAIN_RISK_SETTINGS':
+      // No payload required.
+      break;
+    case 'SET_DOMAIN_RISK_SETTINGS':
       if (!payload || typeof payload.enabled !== 'boolean') {
         return { ok: false, reason: 'bad-payload' };
       }
