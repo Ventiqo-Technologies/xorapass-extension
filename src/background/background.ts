@@ -1,6 +1,18 @@
-// XoraPass Background Service Worker (Manifest V3)
 import browser from 'webextension-polyfill';
-import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
+import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain, assessDomainRisk } from '../utils/siteTrust';
+import { disabledDomainRiskAssessment, type DomainRiskAssessment } from '../utils/domainRisk';
+import {
+  checkDomainRiskRemote,
+  mergeLocalAndRemoteRisk,
+  reportPhishing,
+  requestDomainAllowlist,
+  checkDomainRiskEnabled,
+  getDomainRiskSettings,
+  updateDomainRiskSettings,
+  getDomainRiskHistory,
+  getMyPhishingReports,
+  getMyDomainAllowlistRequests,
+} from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
 import { validateMessage } from '../utils/messageGuard';
 import {
@@ -35,6 +47,7 @@ import { base64ToBytes } from '../utils/crypto';
 // console.debug('[XoraPass] service worker started at', new Date().toISOString());
 
 const DISABLED_SITES_KEY = 'disabledSites';
+const DOMAIN_ALLOWLIST_KEY = 'domainAllowlist';
 const AUTO_LOCK_KEY = 'autoLockMinutes';
 const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
 
@@ -787,6 +800,30 @@ async function isSiteDisabled(hostname: string): Promise<boolean> {
   return (await getDisabledSites()).includes(host);
 }
 
+/** Set of hostnames explicitly allowlisted by the user for false-positive bypass. */
+async function getDomainAllowlist(): Promise<string[]> {
+  const res = await browser.storage.local.get([DOMAIN_ALLOWLIST_KEY]);
+  const list = (res as Record<string, unknown>)[DOMAIN_ALLOWLIST_KEY];
+  return Array.isArray(list) ? (list as string[]) : [];
+}
+
+async function setDomainAllowlist(hostname: string, allowlisted: boolean): Promise<string[]> {
+  const host = extractHostname(hostname);
+  if (!host) return getDomainAllowlist();
+
+  const current = new Set(await getDomainAllowlist());
+  if (allowlisted) {
+    current.add(host);
+  } else {
+    current.delete(host);
+  }
+  const updated = Array.from(current);
+  await browser.storage.local.set({ [DOMAIN_ALLOWLIST_KEY]: updated });
+  // Telemetry: report allowlisted domain event to backend
+  void checkDomainRiskRemote(`https://${host}`, '', undefined, undefined, 'standard');
+  return updated;
+}
+
 // Listen for messages from Content Scripts and the Popup UI.
 //
 // With webextension-polyfill the listener signals an async response by
@@ -895,6 +932,29 @@ browser.runtime.onMessage.addListener((message, sender) => {
     }));
   }
 
+  if (type === 'GET_DOMAIN_RISK_SETTINGS') {
+    return getDomainRiskSettings(globalThis.fetch, getJwt).then((settings) => ({ settings }));
+  }
+
+  if (type === 'SET_DOMAIN_RISK_SETTINGS') {
+    const enabled = !!msg.payload?.enabled;
+    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => ({
+      success,
+    }));
+  }
+
+  if (type === 'GET_DOMAIN_RISK_HISTORY') {
+    return getDomainRiskHistory(globalThis.fetch, getJwt).then((events) => ({ events }));
+  }
+
+  if (type === 'GET_DOMAIN_RISK_REPORTS') {
+    return getMyPhishingReports(globalThis.fetch, getJwt).then((reports) => ({ reports }));
+  }
+
+  if (type === 'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS') {
+    return getMyDomainAllowlistRequests(globalThis.fetch, getJwt).then((requests) => ({ requests }));
+  }
+
   if (type === 'SET_LOCK_ON_SCREEN_LOCK') {
     const enabled = !!msg.payload.enabled;
     return browser.storage.local
@@ -957,23 +1017,38 @@ browser.runtime.onMessage.addListener((message, sender) => {
     }));
   }
 
+  if (type === 'GET_DOMAIN_ALLOWLIST') {
+    return getDomainAllowlist().then((allowlist) => ({ allowlist }));
+  }
+
+  if (type === 'SET_DOMAIN_ALLOWLIST') {
+    return setDomainAllowlist(msg.payload.hostname, msg.payload.allowlisted).then((allowlist) => ({
+      success: true,
+      allowlist,
+    }));
+  }
+
   if (type === 'GET_MATCHING_CREDENTIALS') {
     const hostname: string = msg.payload.hostname || '';
+    const currentUrl: string = msg.payload.currentUrl || `https://${hostname}`;
     if (!hostname) {
-      return Promise.resolve({ credentials: [], disabled: false, lookalike: null });
+      return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null });
     }
 
-    return Promise.all([
-      browser.storage.session.get(['unlocked', 'vaultItems']),
-      isSiteDisabled(hostname),
-    ]).then(([res, disabled]) => {
+    return (async () => {
+      const [res, disabled, allowlist] = await Promise.all([
+        browser.storage.session.get(['unlocked', 'vaultItems']),
+        isSiteDisabled(hostname),
+        getDomainAllowlist(),
+      ]);
+
       if (!res.unlocked || !res.vaultItems) {
-        return { credentials: [], disabled, lookalike: null };
+        return { credentials: [], disabled, lookalike: null, risk: null };
       }
 
       // If the user disabled autofill for this site, offer nothing.
       if (disabled) {
-        return { credentials: [], disabled: true, lookalike: null };
+        return { credentials: [], disabled: true, lookalike: null, risk: null };
       }
 
       const items = res.vaultItems as VaultItem[];
@@ -986,20 +1061,67 @@ browser.runtime.onMessage.addListener((message, sender) => {
         (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)
       );
 
-      // Warn if the current page looks like a deceptive variant of a site the
-      // user actually has credentials for, but did not itself match.
       const knownHosts = items
         .filter((i) => !!i.url)
         .map((i) => extractHostname(i.url!))
         .filter(Boolean);
-      const lookalike = matching.length === 0 ? findLookalikeTarget(hostname, knownHosts) : null;
+
+      // Domain Risk is a plan entitlement (see backend PlanPricing.AllowDomainRiskPolicies)
+      // — when it's off, NEITHER engine runs: not the on-device heuristic
+      // assessment (which needs no network access, so it can't be gated by
+      // the /check call alone) nor the remote threat-intel lookup. Autofill
+      // proceeds with no risk evaluation at all, exactly as if this feature
+      // didn't exist for the account.
+      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+
+      let risk: DomainRiskAssessment = disabledDomainRiskAssessment(hostname);
+      if (domainRiskOn) {
+        // Evaluate comprehensive lookalike, punycode, brand abuse, and phishing risk
+        risk = assessDomainRisk(hostname, knownHosts, allowlist, currentUrl);
+
+        // Async threat intelligence enrichment.
+        // Always query remote — every assessment (even safe known domains) must
+        // produce a telemetry event so the admin Domain Risk panel has a complete
+        // picture. The remote call is cheap (cached server-side for 15 min) and
+        // the JWT is passed so the event is properly recorded and visible in the
+        // admin feed immediately on refresh.
+        const remoteRisk = await checkDomainRiskRemote(
+          currentUrl,
+          risk.matchedTarget || (matching[0]?.url ? extractHostname(matching[0].url) : ''),
+          undefined,
+          undefined,
+          'standard',
+          globalThis.fetch,
+          getJwt
+        );
+        if (remoteRisk && !risk.isAllowlisted) {
+          // Only merge risk signals if the domain is NOT explicitly allowlisted by the user.
+          // For allowlisted domains we still sent the request (for telemetry), but we
+          // don't let the remote engine escalate the decision.
+          risk = mergeLocalAndRemoteRisk(risk, remoteRisk);
+        }
+      }
+
+      // Maintain legacy lookalike compatibility for existing UI callers
+      let lookalike = matching.length === 0 ? findLookalikeTarget(hostname, knownHosts, allowlist) : null;
+      if (!lookalike && risk.decision === 'block' && risk.matchedTarget) {
+        lookalike = {
+          target: risk.matchedTarget,
+          reason: risk.signals.brandAbuse ? 'brand_abuse' : risk.signals.hasPunycode ? 'punycode' : 'typosquat',
+          riskScore: risk.riskScore,
+          reasons: risk.reasons,
+        };
+      }
+
+      // Block credentials if domain is flagged as dangerous phishing/lookalike and not allowlisted
+      const credentialsToOffer = risk.decision === 'block' ? [] : matching;
 
       return {
         // NOTE: `value` (the secret) is deliberately NOT included here. The
         // content script only ever learns which items exist for this site; the
         // password is released one at a time by GET_CREDENTIAL_SECRET, after a
         // fresh domain re-check, when the user actually picks an entry.
-        credentials: matching.map((item) => ({
+        credentials: credentialsToOffer.map((item) => ({
           id: item.id,
           label: item.label,
           username: item.username,
@@ -1007,8 +1129,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
         })),
         disabled: false,
         lookalike,
+        risk,
       };
-    });
+    })();
   }
 
   if (type === 'GET_CREDENTIAL_SECRET') {
@@ -1026,7 +1149,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return Promise.all([
       browser.storage.session.get(['unlocked', 'vaultItems']),
       isSiteDisabled(hostname),
-    ]).then(([res, disabled]) => {
+      getDomainAllowlist(),
+    ]).then(async ([res, disabled, allowlist]) => {
       if (!res.unlocked || !res.vaultItems) return { error: 'locked' };
       if (disabled) return { error: 'site_disabled' };
 
@@ -1047,6 +1171,48 @@ browser.runtime.onMessage.addListener((message, sender) => {
       if (!isDomainMatch(hostname, item.url)) {
         console.warn('[XoraPass] Refused secret for non-matching domain:', hostname);
         return { error: 'domain_mismatch' };
+      }
+
+      // Re-check domain risk: never release secret to a blocked phishing/lookalike
+      // domain — unless Domain Risk is disabled for the plan, in which case there's
+      // no verdict to enforce here either (see GET_MATCHING_CREDENTIALS above).
+      //
+      // This must run the SAME assessment GET_MATCHING_CREDENTIALS does — local
+      // heuristics AND the remote threat-intel call AND any admin DomainRiskPolicy
+      // (global or workspace) — not just the local engine. This handler is the
+      // one place the actual secret leaves the vault, so it's the last line of
+      // defense against something other than our own dropdown asking for a
+      // credential by id (a compromised content script, or a hand-crafted
+      // extension message). A domain blocked only by a remote threat-intel hit
+      // or an admin policy — with no local lookalike/punycode signal of its own —
+      // used to sail through here even though GET_MATCHING_CREDENTIALS had
+      // already hidden it from the UI; the two checks must agree.
+      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+      if (domainRiskOn) {
+        const items = res.vaultItems as VaultItem[];
+        const knownHosts = items
+          .filter((i) => !!i.url)
+          .map((i) => extractHostname(i.url!))
+          .filter(Boolean);
+        let risk = assessDomainRisk(hostname, knownHosts, allowlist, senderUrl);
+
+        const remoteRisk = await checkDomainRiskRemote(
+          senderUrl,
+          risk.matchedTarget || extractHostname(item.url),
+          undefined,
+          undefined,
+          'standard',
+          globalThis.fetch,
+          getJwt
+        );
+        if (remoteRisk && !risk.isAllowlisted) {
+          risk = mergeLocalAndRemoteRisk(risk, remoteRisk);
+        }
+
+        if (risk.decision === 'block') {
+          console.warn('[XoraPass] Refused secret for blocked risk domain:', hostname, risk.reasons);
+          return { error: 'risk_blocked' };
+        }
       }
 
       void scheduleAutoLock(); // filling counts as activity
@@ -1263,6 +1429,26 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return saveSecretToVault({ value, label, url, username }).then((r) =>
       r.ok ? { success: true } : { error: r.error }
     );
+  }
+
+  if (type === 'CHECK_DOMAIN_RISK') {
+    const { currentUrl, currentDomain, savedDomain, formContext, aiContext, sensitivity } = msg.payload || {};
+    const targetUrl = currentUrl || (currentDomain ? `https://${currentDomain}` : '');
+    return checkDomainRiskRemote(targetUrl, savedDomain, formContext, aiContext, sensitivity).then((result) => ({
+      risk: result,
+    }));
+  }
+
+  if (type === 'REPORT_PHISHING') {
+    const { hostname, decision, riskLevel } = msg.payload || {};
+    return reportPhishing(hostname, decision, riskLevel, globalThis.fetch, getJwt).then((success) => ({
+      success,
+    }));
+  }
+
+  if (type === 'REQUEST_DOMAIN_ALLOWLIST') {
+    const { hostname } = msg.payload || {};
+    return requestDomainAllowlist(hostname, globalThis.fetch, getJwt);
   }
 
   // ── Web Bridge messages from content script or internal pages ─────────

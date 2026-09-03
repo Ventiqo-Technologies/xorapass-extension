@@ -28,11 +28,21 @@ export const KNOWN_MESSAGE_TYPES = [
   'DISMISS_PENDING_SAVE',
   'GET_SITE_SETTINGS',
   'SET_SITE_DISABLED',
+  'GET_DOMAIN_ALLOWLIST',
+  'SET_DOMAIN_ALLOWLIST',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
   'SET_LOCK_ON_SCREEN_LOCK',
   'SET_CLIPBOARD_CLEAR',
   'CLIPBOARD_COPIED',
+  // The user's own personal on/off preference for Domain Risk detection —
+  // same trust tier as the other account settings above (popup-only, see
+  // EXTENSION_PAGE_ONLY below).
+  'GET_DOMAIN_RISK_SETTINGS',
+  'SET_DOMAIN_RISK_SETTINGS',
+  'GET_DOMAIN_RISK_HISTORY',
+  'GET_DOMAIN_RISK_REPORTS',
+  'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS',
   // AI Access: the extension is a consumer of XoraPass's AI-access API, using
   // the human's own login (never a bridge token -- this is the trusted client
   // surface that performs the actual fill once a human has approved a scoped,
@@ -63,6 +73,12 @@ export const KNOWN_MESSAGE_TYPES = [
   // because the real consent already happened when a human unlocked it.
   'WEB_BRIDGE_REQUEST_SESSION',
   'GET_COPIED_SECRET',
+  'CHECK_DOMAIN_RISK',
+  // Risk-warning safe actions: same trust tier as CHECK_DOMAIN_RISK — our own
+  // injected overlay is what triggers these, never a page directly, and
+  // neither one carries or reveals any secret.
+  'REPORT_PHISHING',
+  'REQUEST_DOMAIN_ALLOWLIST',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -79,6 +95,16 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'GET_STATUS',
   'GET_SETTINGS',
   'SET_AUTO_LOCK',
+  'GET_DOMAIN_RISK_SETTINGS',
+  'SET_DOMAIN_RISK_SETTINGS',
+  'GET_DOMAIN_RISK_HISTORY',
+  'GET_DOMAIN_RISK_REPORTS',
+  // GET_DOMAIN_RISK_ALLOWLIST_REQUESTS is deliberately NOT extension-page-only
+  // — content.ts's own proactive risk-warning overlay needs it too, to check
+  // whether the current domain already has a request on file before offering
+  // "Request allowlist review" again. Same trust tier as REPORT_PHISHING /
+  // REQUEST_DOMAIN_ALLOWLIST below: read-only, scoped server-side to the
+  // caller's own requests, carries no secret.
   // Turning the screen-lock guard OFF weakens the vault, so it belongs to the
   // popup alone. A content script that could send this would be able to
   // silently disable the control that protects an unattended machine.
@@ -265,6 +291,18 @@ export function validateMessage(
         return { ok: false, reason: 'bad-payload' };
       }
       break;
+    case 'GET_DOMAIN_ALLOWLIST':
+      // Payload is optional (can be empty to get all, or { hostname })
+      break;
+    case 'SET_DOMAIN_ALLOWLIST':
+      if (
+        !payload ||
+        typeof payload.hostname !== 'string' ||
+        typeof payload.allowlisted !== 'boolean'
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
     case 'SET_AUTO_LOCK':
       if (!payload || typeof payload.minutes !== 'number' || !Number.isFinite(payload.minutes)) {
         return { ok: false, reason: 'bad-payload' };
@@ -279,6 +317,19 @@ export function validateMessage(
       if (!payload || typeof payload.enabled !== 'boolean') {
         return { ok: false, reason: 'bad-payload' };
       }
+      break;
+    case 'GET_DOMAIN_RISK_SETTINGS':
+      // No payload required.
+      break;
+    case 'SET_DOMAIN_RISK_SETTINGS':
+      if (!payload || typeof payload.enabled !== 'boolean') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'GET_DOMAIN_RISK_HISTORY':
+    case 'GET_DOMAIN_RISK_REPORTS':
+    case 'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS':
+      // No payload required.
       break;
     // GET_STATUS, LOCK_VAULT, GET_SETTINGS and CLIPBOARD_COPIED need no
     // payload — CLIPBOARD_COPIED deliberately carries no secret, it is only a
@@ -322,6 +373,17 @@ export function validateMessage(
       break;
     case 'AI_SAVE_SECRET':
       if (!payload || typeof payload.value !== 'string' || payload.value.length === 0) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'CHECK_DOMAIN_RISK':
+      if (!payload || (typeof payload.currentUrl !== 'string' && typeof payload.currentDomain !== 'string')) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'REPORT_PHISHING':
+    case 'REQUEST_DOMAIN_ALLOWLIST':
+      if (!payload || typeof payload.hostname !== 'string' || payload.hostname.length === 0) {
         return { ok: false, reason: 'bad-payload' };
       }
       break;

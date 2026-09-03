@@ -1,9 +1,9 @@
 // Classifying axios failures.
 //
-// The distinction matters at unlock: an unreachable server is the one and only
-// reason to fall back to the cached vault, while a rejected credential must
-// stay a rejection. Getting this backwards would either lock people out of
-// their offline vault or let a wrong password appear to "work" offline.
+// The distinction matters at unlock: an unreachable OR erroring (5xx) server
+// is the reason to fall back to the cached vault, while a rejected credential
+// must stay a rejection. Getting this backwards would either lock people out
+// of their offline vault or let a wrong password appear to "work" offline.
 
 interface HttpLikeError {
   response?: { status?: number };

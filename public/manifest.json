@@ -17,7 +17,9 @@
   },
   "host_permissions": [
     "https://app.xorapass.com/*",
-    "http://localhost:8000/*"
+    "https://dev-app.xorapass.com/*",
+    "http://localhost:8000/*",
+    "http://localhost:8080/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -62,6 +64,7 @@
     "ids": ["*"],
     "matches": [
       "https://app.xorapass.com/*",
+      "https://dev-app.xorapass.com/*",
       "http://localhost:3000/*"
     ]
   }
