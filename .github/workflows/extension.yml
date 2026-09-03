@@ -44,6 +44,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Build Extension
+        env:
+          VITE_API_BASE_URL: https://app.xorapass.com
+          VITE_WEB_APP_URL: https://app.xorapass.com
         run: npm run build
       - name: Sign & Submit to Mozilla Add-ons (AMO)
         env:
@@ -65,6 +68,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Build Extension
+        env:
+          VITE_API_BASE_URL: https://app.xorapass.com
+          VITE_WEB_APP_URL: https://app.xorapass.com
         run: npm run build
       - name: Prepare Chrome zip package (strip key field)
         run: |

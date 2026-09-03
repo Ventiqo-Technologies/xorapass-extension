@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "XoraPass Zero-Knowledge Vault",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Zero-knowledge autofill companion for XoraPass.",
   "permissions": [
     "activeTab",
