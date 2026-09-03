@@ -7,19 +7,6 @@ on:
       - 'chrome-v*'
       - 'firefox-v*'
   workflow_dispatch:
-    inputs:
-      target:
-        description: 'Target store to publish to'
-        type: choice
-        options:
-          - all
-          - chrome
-          - firefox
-        default: all
-      publish:
-        description: 'Publish to stores?'
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -46,10 +33,7 @@ jobs:
   release-firefox:
     name: Submit & Publish to Firefox Add-ons (AMO)
     needs: test-and-build
-    if: >-
-      startsWith(github.ref, 'refs/tags/v') ||
-      startsWith(github.ref, 'refs/tags/firefox-v') ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish == true && (inputs.target == 'all' || inputs.target == 'firefox'))
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/firefox-v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -70,10 +54,7 @@ jobs:
   release-chrome:
     name: Submit & Publish to Chrome Web Store
     needs: test-and-build
-    if: >-
-      startsWith(github.ref, 'refs/tags/v') ||
-      startsWith(github.ref, 'refs/tags/chrome-v') ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish == true && (inputs.target == 'all' || inputs.target == 'chrome'))
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/chrome-v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
