@@ -1176,6 +1176,17 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // Re-check domain risk: never release secret to a blocked phishing/lookalike
       // domain — unless Domain Risk is disabled for the plan, in which case there's
       // no verdict to enforce here either (see GET_MATCHING_CREDENTIALS above).
+      //
+      // This must run the SAME assessment GET_MATCHING_CREDENTIALS does — local
+      // heuristics AND the remote threat-intel call AND any admin DomainRiskPolicy
+      // (global or workspace) — not just the local engine. This handler is the
+      // one place the actual secret leaves the vault, so it's the last line of
+      // defense against something other than our own dropdown asking for a
+      // credential by id (a compromised content script, or a hand-crafted
+      // extension message). A domain blocked only by a remote threat-intel hit
+      // or an admin policy — with no local lookalike/punycode signal of its own —
+      // used to sail through here even though GET_MATCHING_CREDENTIALS had
+      // already hidden it from the UI; the two checks must agree.
       const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
       if (domainRiskOn) {
         const items = res.vaultItems as VaultItem[];
@@ -1183,7 +1194,21 @@ browser.runtime.onMessage.addListener((message, sender) => {
           .filter((i) => !!i.url)
           .map((i) => extractHostname(i.url!))
           .filter(Boolean);
-        const risk = assessDomainRisk(hostname, knownHosts, allowlist);
+        let risk = assessDomainRisk(hostname, knownHosts, allowlist, senderUrl);
+
+        const remoteRisk = await checkDomainRiskRemote(
+          senderUrl,
+          risk.matchedTarget || extractHostname(item.url),
+          undefined,
+          undefined,
+          'standard',
+          globalThis.fetch,
+          getJwt
+        );
+        if (remoteRisk && !risk.isAllowlisted) {
+          risk = mergeLocalAndRemoteRisk(risk, remoteRisk);
+        }
+
         if (risk.decision === 'block') {
           console.warn('[XoraPass] Refused secret for blocked risk domain:', hostname, risk.reasons);
           return { error: 'risk_blocked' };
