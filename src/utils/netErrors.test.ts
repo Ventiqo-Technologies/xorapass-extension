@@ -11,7 +11,15 @@ describe('isOfflineError', () => {
     // The whole point: a 401 must never open the offline path, or a wrong
     // master password would appear to work whenever the server says no.
     expect(isOfflineError({ response: { status: 401 } })).toBe(false);
-    expect(isOfflineError({ response: { status: 500 } })).toBe(false);
+    expect(isOfflineError({ response: { status: 403 } })).toBe(false);
+  });
+
+  it('treats a 5xx as offline', () => {
+    // A broken server can't confirm the password any more than an
+    // unreachable one can -- both should fall back to the cached vault
+    // rather than lock the user out because the backend is erroring.
+    expect(isOfflineError({ response: { status: 500 } })).toBe(true);
+    expect(isOfflineError({ response: { status: 503 } })).toBe(true);
   });
 
   it('ignores non-objects', () => {
