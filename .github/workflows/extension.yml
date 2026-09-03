@@ -74,7 +74,7 @@ jobs:
           sed -i '/key/d' dist/manifest.json
           cd dist && zip -r ../xorapass-extension-chrome.zip *
       - name: Upload & Publish to Chrome Web Store
-        uses: chrome-stats/chrome-extension-upload-action@v2
+        uses: mnao305/chrome-extension-upload@v6.0.0
         with:
           extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
           client-id: ${{ secrets.CHROME_CLIENT_ID }}
