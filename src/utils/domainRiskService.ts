@@ -70,6 +70,12 @@ export interface RemoteDomainRiskResponse {
 const MEMORY_CACHE = new Map<string, { data: RemoteDomainRiskResponse; expiresAt: number }>();
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
+// Cached separately from MEMORY_CACHE (which is keyed per-domain): this is a
+// single account-wide flag, refreshed on its own short TTL so a plan change
+// takes effect quickly without a status call on every single domain check.
+let statusCache: { enabled: boolean; expiresAt: number } | null = null;
+const STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
+
 function buildCacheKey(
   currentDomain: string,
   savedDomain: string,
@@ -84,6 +90,20 @@ function buildCacheKey(
     isAI ? 'ai' : 'user',
     sensitivity,
   ].join('|');
+}
+
+/**
+ * Drops every cached remote verdict (and the cached plan/user status flag).
+ *
+ * Must be called whenever something that FEEDS a verdict changes rather than
+ * the domain itself: allowlisting or un-allowlisting a host, or toggling the
+ * user's Domain Risk preference. Without this, un-allowlisting a domain left
+ * the stale `allow` in place for up to CACHE_TTL_MS, so protection stayed off
+ * for ten minutes after the user turned it back on.
+ */
+export function clearRemoteRiskCache(): void {
+  MEMORY_CACHE.clear();
+  statusCache = null;
 }
 
 /**
@@ -326,12 +346,6 @@ export async function reportPhishing(
     return false;
   }
 }
-
-// Cached separately from MEMORY_CACHE (which is keyed per-domain): this is a
-// single account-wide flag, refreshed on its own short TTL so a plan change
-// takes effect quickly without a status call on every single domain check.
-let statusCache: { enabled: boolean; expiresAt: number } | null = null;
-const STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Calls GET /api/domain-risk/status — asks once whether Domain Risk (the

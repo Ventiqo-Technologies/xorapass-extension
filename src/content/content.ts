@@ -163,6 +163,57 @@ function assessFrame(): FrameAssessment {
   return { isTop: false, isCrossOriginFrame: isCrossOrigin };
 }
 
+// Describes the login form on this page for the backend risk engine.
+//
+// These are the highest-value phishing signals the server scores
+// (CROSS_ORIGIN_FORM_ACTION +25, IFRAME_LOGIN_EMBEDDING +15) and they can only
+// be observed here, in the page. Metadata only - field SHAPE, never field
+// contents - so this stays inside the zero-knowledge boundary.
+function collectFormContext(): {
+  isLoginForm: boolean;
+  hasPasswordField: boolean;
+  hasMfaField: boolean;
+  isIframe: boolean;
+  actionUrl?: string;
+  numInputs: number;
+} {
+  const passwords = Array.from(
+    document.querySelectorAll<HTMLInputElement>('input[type="password"]')
+  ).filter(isFillable);
+  const form = passwords[0]?.closest('form') || document.querySelector('form');
+  const inputs = Array.from((form || document).querySelectorAll<HTMLInputElement>('input'));
+
+  // One-time-code fields: the autocomplete token is the reliable signal, with
+  // name/id heuristics as a fallback for forms that don't set it.
+  const hasMfaField = inputs.some((el) => {
+    const auto = (el.getAttribute('autocomplete') || '').toLowerCase();
+    if (auto.includes('one-time-code')) return true;
+    const hint = `${el.name || ''} ${el.id || ''}`.toLowerCase();
+    return /\b(otp|totp|mfa|2fa|onetime|one-time|authcode|verificationcode)\b/.test(hint);
+  });
+
+  // Resolved against the document so a relative action is compared as the
+  // absolute URL the browser would actually POST to.
+  let actionUrl: string | undefined;
+  const rawAction = form?.getAttribute('action');
+  if (rawAction) {
+    try {
+      actionUrl = new URL(rawAction, window.location.href).href;
+    } catch {
+      /* unparseable action - send nothing rather than something misleading */
+    }
+  }
+
+  return {
+    isLoginForm: passwords.length > 0,
+    hasPasswordField: passwords.length > 0,
+    hasMfaField,
+    isIframe: window.top !== window.self,
+    actionUrl,
+    numInputs: inputs.length,
+  };
+}
+
 // True for pages served over plaintext HTTP (excluding local development).
 function isInsecureContext(): boolean {
   if (window.location.protocol !== 'http:') return false;
@@ -178,7 +229,10 @@ function isInsecureContext(): boolean {
 function loadCredentials(): void {
   const hostname = window.location.hostname;
   browser.runtime
-    .sendMessage({ type: 'GET_MATCHING_CREDENTIALS', payload: { hostname, currentUrl: window.location.href } })
+    .sendMessage({
+      type: 'GET_MATCHING_CREDENTIALS',
+      payload: { hostname, currentUrl: window.location.href, formContext: collectFormContext() },
+    })
     .then((response: any) => {
       if (!response) return;
 
@@ -288,7 +342,41 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
         })
         .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
         .catch(() => ({ success: false, reason: 'network' as const })),
+    // Offered only for require_approval; the overlay itself also checks the
+    // severity, so a block verdict can never render this button.
+    onApproveAnyway:
+      decision === 'require_approval'
+        ? () =>
+            browser.runtime
+              .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname } })
+              .then((res: any) => {
+                if (res?.success) {
+                  // Re-request the credential list: the background withheld it
+                  // pending exactly this approval.
+                  lastWarnedRiskKey = null;
+                  loadCredentials();
+                }
+                return { success: !!res?.success };
+              })
+              .catch(() => ({ success: false }))
+        : undefined,
   });
+}
+
+/**
+ * Reacts to the background refusing to release a secret.
+ *
+ * `risk_approval_required` is not a dead end - it means the verdict was
+ * require_approval and the user has not cleared it for this tab yet - so the
+ * alert is re-shown with its "Fill here anyway" action rather than the click
+ * appearing to do nothing.
+ */
+function handleFillRefusal(error: string | undefined): void {
+  console.warn('[XoraPass] Fill refused:', error || 'no_response');
+  if (error === 'risk_approval_required') {
+    lastWarnedRiskKey = null;
+    void maybeShowProactiveRiskWarning();
+  }
 }
 
 // Ask background whether an AI-approved fill is available for this page.
@@ -400,11 +488,11 @@ function scanForLoginFields(): void {
 
             // Fetch the secret which includes the account ID / alias (stored in accountId)
             const res = (await browser.runtime
-              .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id } })
+              .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id, formContext: collectFormContext() } })
               .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
 
             if (!res || res.error) {
-              console.warn('[XoraPass] Fill refused:', res?.error || 'no_response');
+              handleFillRefusal(res?.error);
               return;
             }
 
@@ -586,11 +674,11 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
 
   // Fetch the secret only now, for this one entry.
   const res = (await browser.runtime
-    .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id } })
+    .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id, formContext: collectFormContext() } })
     .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
 
   if (!res || res.error || typeof res.value !== 'string') {
-    console.warn('[XoraPass] Fill refused:', res?.error || 'no_response');
+    handleFillRefusal(res?.error);
     return;
   }
 

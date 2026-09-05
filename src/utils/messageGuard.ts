@@ -79,6 +79,11 @@ export const KNOWN_MESSAGE_TYPES = [
   // neither one carries or reveals any secret.
   'REPORT_PHISHING',
   'REQUEST_DOMAIN_ALLOWLIST',
+  // The user's explicit "fill anyway" on a require_approval verdict. Same
+  // trust tier as REPORT_PHISHING: raised by our own injected overlay, carries
+  // no secret, and the background scopes the resulting approval to the sender
+  // tab's REAL hostname (never the payload's) with a short TTL.
+  'RISK_APPROVE_DOMAIN',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -90,6 +95,12 @@ export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
  */
 const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'UNLOCK_VAULT',
+  // Allowlisting a domain suppresses the local phishing verdict for it, so a
+  // content script able to send this could allowlist the page it is running on
+  // and then walk straight through the GET_CREDENTIAL_SECRET risk re-check —
+  // defeating the very defence that handler exists for. Only the popup writes
+  // the allowlist (see PopupApp.tsx); nothing in the content script does.
+  'SET_DOMAIN_ALLOWLIST',
   'LOCK_VAULT',
   'REFRESH_TOKEN',
   'GET_STATUS',
@@ -383,6 +394,7 @@ export function validateMessage(
       break;
     case 'REPORT_PHISHING':
     case 'REQUEST_DOMAIN_ALLOWLIST':
+    case 'RISK_APPROVE_DOMAIN':
       if (!payload || typeof payload.hostname !== 'string' || payload.hostname.length === 0) {
         return { ok: false, reason: 'bad-payload' };
       }

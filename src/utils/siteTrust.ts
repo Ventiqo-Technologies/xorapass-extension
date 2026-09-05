@@ -6,21 +6,53 @@
 // imported by the content script, which must remain a self-contained classic
 // script.
 
-// A small set of common multi-part public suffixes. This is deliberately not a
-// full Public Suffix List — it only needs to cover enough cases to compute a
-// safe registrable domain for same-site comparisons. Unknown suffixes fall back
-// to the last two labels, which is the safe (stricter) direction.
+// Public suffixes under which registrations are made. Two kinds live here:
+//
+//  1. ccTLD second-level registries (co.uk, com.au, ...) — the classic case.
+//  2. Shared-tenant hosting suffixes (github.io, vercel.app, ...). These matter
+//     for exactly the same reason: every customer is registered directly under
+//     the suffix, so if the suffix itself were treated as the registrable
+//     domain then every tenant would be "same site" as every other tenant.
+//     Without github.io in this list, evil.github.io and victim.github.io both
+//     reduce to github.io, and isDomainMatch() happily offers one tenant's
+//     saved credentials on another tenant's page.
+//
+// This is deliberately not the full Public Suffix List. Unknown suffixes fall
+// back to the last two labels, which is the stricter (safe) direction for the
+// ccTLD case — but note it is the UNSAFE direction for case 2, which is why
+// shared-hosting suffixes must be added here explicitly as they are adopted.
 const MULTI_PART_SUFFIXES = new Set([
-  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk', 'ltd.uk', 'plc.uk',
-  'co.jp', 'or.jp', 'ne.jp', 'ac.jp', 'go.jp',
-  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au',
-  'co.nz', 'org.nz', 'govt.nz',
-  'co.za', 'org.za',
-  'co.in', 'net.in', 'org.in', 'gov.in', 'ac.in',
+  // ── ccTLD second-level registries ──────────────────────────────────────
+  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk', 'ltd.uk', 'plc.uk', 'net.uk', 'sch.uk',
+  'co.jp', 'or.jp', 'ne.jp', 'ac.jp', 'go.jp', 'lg.jp',
+  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'id.au',
+  'co.nz', 'org.nz', 'govt.nz', 'net.nz', 'ac.nz',
+  'co.za', 'org.za', 'net.za', 'gov.za', 'ac.za',
+  'co.in', 'net.in', 'org.in', 'gov.in', 'ac.in', 'firm.in',
   'com.br', 'net.br', 'org.br', 'gov.br',
-  'com.cn', 'net.cn', 'org.cn', 'gov.cn',
-  'com.mx', 'com.tr', 'com.sg', 'com.hk', 'com.tw', 'com.ar', 'com.co',
-  'co.kr', 'or.kr', 'co.il', 'co.id', 'co.th', 'com.ua', 'com.ph', 'com.my',
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn',
+  'com.mx', 'com.tr', 'net.tr', 'org.tr', 'gov.tr', 'edu.tr',
+  'com.sg', 'com.hk', 'com.tw', 'com.ar', 'com.co', 'com.pe', 'com.ec',
+  'com.uy', 'com.py', 'com.bo', 'com.do', 'com.gt', 'com.sv', 'com.ni',
+  'com.pa', 'com.ve', 'co.cr',
+  'co.kr', 'or.kr', 'co.il', 'org.il', 'net.il', 'co.id', 'co.th', 'in.th',
+  'com.ua', 'net.ua', 'org.ua', 'com.pl', 'net.pl', 'org.pl',
+  'com.ru', 'com.ph', 'com.my', 'com.vn', 'com.pk', 'com.bd', 'com.np',
+  'com.lk', 'com.kh', 'com.mm',
+  'com.ng', 'co.ke', 'co.tz', 'co.ug', 'com.gh', 'com.eg', 'com.ma', 'com.dz',
+  'com.sa', 'com.qa', 'com.kw', 'com.bh', 'com.om', 'com.jo', 'com.lb',
+  'co.at', 'or.at', 'ac.at', 'gv.at', 'com.es', 'com.pt', 'com.gr', 'com.cy',
+  'com.hr', 'com.ro', 'com.ee', 'com.lv',
+
+  // ── Shared-tenant hosting (see note 2 above) ───────────────────────────
+  'github.io', 'gitlab.io', 'github.dev', 'pages.dev', 'workers.dev', 'r2.dev',
+  'vercel.app', 'netlify.app', 'web.app', 'firebaseapp.com', 'appspot.com',
+  'herokuapp.com', 'onrender.com', 'fly.dev', 'railway.app', 'koyeb.app',
+  'surge.sh', 'glitch.me', 'repl.co', 'replit.dev', 'cloudfront.net',
+  'azurewebsites.net', 'azurestaticapps.net', 'blogspot.com', 'wordpress.com',
+  'myshopify.com', 'squarespace.com', 'webflow.io', 'wixsite.com',
+  'zendesk.com', 'freshdesk.com', 'atlassian.net', 'sharepoint.com',
+  'notion.site', 'ngrok.io', 'ngrok-free.app', 'trycloudflare.com',
 ]);
 
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
@@ -70,6 +102,29 @@ export function registrableDomain(host: string): string {
     return parts.slice(-3).join('.');
   }
   return lastTwo;
+}
+
+/**
+ * Returns `host` with its public suffix removed, e.g.
+ *   login.example.co.uk -> login.example
+ *   paypa1.com          -> paypa1
+ *
+ * Homoglyph/brand comparisons run over this rather than the whole hostname:
+ * the suffix is registry-controlled and identical across legitimate and
+ * deceptive domains alike, so including it only adds noise (and, once the
+ * leet-substitution entries in HOMOGLYPH_MAP are applied, false signal).
+ */
+export function stripPublicSuffix(host: string): string {
+  const h = normalizeHostname(host);
+  if (!h) return '';
+  const parts = h.split('.').filter(Boolean);
+  if (parts.length <= 1) return h;
+  // The suffix is two labels for a known multi-part suffix (co.uk, github.io),
+  // one otherwise. Mirrors registrableDomain's rule, so the two never disagree
+  // about where the registrable part of a hostname begins.
+  const suffixLabels = MULTI_PART_SUFFIXES.has(parts.slice(-2).join('.')) ? 2 : 1;
+  if (parts.length <= suffixLabels) return h;
+  return parts.slice(0, parts.length - suffixLabels).join('.');
 }
 
 /** True when `host` equals `base` or is a subdomain of it. */
