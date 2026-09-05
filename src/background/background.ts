@@ -12,6 +12,8 @@ import {
   getDomainRiskHistory,
   getMyPhishingReports,
   getMyDomainAllowlistRequests,
+  clearRemoteRiskCache,
+  type FormThreatContext,
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
 import { validateMessage } from '../utils/messageGuard';
@@ -133,6 +135,7 @@ async function lockVaultNow(): Promise<void> {
   await clearAiHeartbeat();
   await clearTokenRefresh();
   dismissedByTab.clear();
+  clearRiskApprovals();
   // Same ordering as the auto-lock alarm: drain the clipboard before the
   // pending marker is wiped along with the rest of the session.
   await clearClipboard().catch(() => undefined);
@@ -807,6 +810,118 @@ async function getDomainAllowlist(): Promise<string[]> {
   return Array.isArray(list) ? (list as string[]) : [];
 }
 
+// ── require_approval: explicit, short-lived, per-tab user approvals ────────
+//
+// `require_approval` is a THIRD decision, not a louder `warn`: the backend
+// returns it for a cross-origin form action on an otherwise-legitimate domain,
+// for AI sessions at medium risk, and whenever an admin policy demands it.
+// Treating it as a warning (show a banner, fill anyway) collapses it into
+// `warn` and throws away the whole distinction, so it is enforced here exactly
+// like `block` until the user has explicitly approved THIS host in THIS tab.
+//
+// Approvals are deliberately narrow: keyed by tab id + hostname, capped at
+// APPROVAL_TTL_MS, dropped when the vault locks, and never persisted beyond
+// the browser session.
+interface RiskApproval {
+  hostname: string;
+  expiresAt: number;
+}
+
+const APPROVAL_TTL_MS = 5 * 60 * 1000;
+const riskApprovalsByTab = new Map<number, RiskApproval>();
+
+function grantRiskApproval(tabId: number, hostname: string): void {
+  if (tabId === undefined || !hostname) return;
+  riskApprovalsByTab.set(tabId, { hostname, expiresAt: Date.now() + APPROVAL_TTL_MS });
+}
+
+function hasRiskApproval(tabId: number | undefined, hostname: string): boolean {
+  if (tabId === undefined || !hostname) return false;
+  const entry = riskApprovalsByTab.get(tabId);
+  if (!entry) return false;
+  if (Date.now() > entry.expiresAt) {
+    riskApprovalsByTab.delete(tabId);
+    return false;
+  }
+  return entry.hostname === hostname;
+}
+
+function clearRiskApprovals(): void {
+  riskApprovalsByTab.clear();
+}
+
+// A tab that navigates away loses its approval: the approval was for one host,
+// and reusing it after a redirect is exactly the case it must not cover.
+browser.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
+  if (!changeInfo.url) return;
+  const entry = riskApprovalsByTab.get(tabId);
+  if (entry && entry.hostname !== extractHostname(changeInfo.url)) {
+    riskApprovalsByTab.delete(tabId);
+  }
+});
+browser.tabs?.onRemoved?.addListener((tabId) => {
+  riskApprovalsByTab.delete(tabId);
+});
+
+/**
+ * Maps a vault category to the credential sensitivity the backend scores with.
+ * `other` holds a raw secret (API key, token) rather than a site password, so
+ * it earns the escalation; see the category table in utils/fillPolicy.
+ */
+function sensitivityForItems(items: VaultItem[]): 'standard' | 'high' | 'critical' {
+  return items.some((i) => (i.category || 'login') === 'other') ? 'high' : 'standard';
+}
+
+/**
+ * The single risk evaluation used by every path that can lead to a secret
+ * leaving the vault. Extracted so the credential LISTING and the credential
+ * RELEASE cannot drift apart — they must reach the same verdict from the same
+ * inputs, which is the bug this consolidates away.
+ */
+async function evaluateDomainRisk(opts: {
+  hostname: string;
+  currentUrl: string;
+  knownHosts: string[];
+  allowlist: string[];
+  savedDomain: string;
+  formContext?: FormThreatContext;
+  aiContext?: { isAISession?: boolean; agentId?: string; toolName?: string };
+  sensitivity: 'standard' | 'high' | 'critical';
+}): Promise<DomainRiskAssessment> {
+  const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+  if (!domainRiskOn) return disabledDomainRiskAssessment(opts.hostname);
+
+  let risk = assessDomainRisk(opts.hostname, opts.knownHosts, opts.allowlist, opts.currentUrl);
+
+  const remoteRisk = await checkDomainRiskRemote(
+    opts.currentUrl,
+    risk.matchedTarget || opts.savedDomain,
+    opts.formContext,
+    opts.aiContext,
+    opts.sensitivity,
+    globalThis.fetch,
+    getJwt
+  );
+
+  // Always merge. mergeLocalAndRemoteRisk owns the allowlist rule — it returns
+  // the local verdict for an allowlisted domain UNLESS the remote decision was
+  // policy_enforced, i.e. set by a business admin's DomainRiskPolicy. Skipping
+  // the call for allowlisted domains (as this used to) made that guard dead
+  // code and let a user-level allowlist toggle silently override an org
+  // blocklist — precisely what the policy_enforced flag exists to prevent.
+  return remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
+}
+
+/**
+ * Whether this verdict withholds credentials. `block` always does;
+ * `require_approval` does until the user approves this host in this tab.
+ */
+function isFillWithheld(risk: DomainRiskAssessment, tabId: number | undefined, hostname: string): boolean {
+  if (risk.decision === 'block') return true;
+  if (risk.decision === 'require_approval') return !hasRiskApproval(tabId, hostname);
+  return false;
+}
+
 async function setDomainAllowlist(hostname: string, allowlisted: boolean): Promise<string[]> {
   const host = extractHostname(hostname);
   if (!host) return getDomainAllowlist();
@@ -908,6 +1023,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     void clearAiHeartbeat();
     void clearTokenRefresh();
     dismissedByTab.clear();
+    clearRiskApprovals();
     // Same ordering as auto-lock: drain the clipboard before the pending
     // marker is wiped along with the rest of the session.
     return clearClipboard()
@@ -938,6 +1054,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'SET_DOMAIN_RISK_SETTINGS') {
     const enabled = !!msg.payload?.enabled;
+    clearRemoteRiskCache();
+    clearRiskApprovals();
     return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => ({
       success,
     }));
@@ -1022,6 +1140,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'SET_DOMAIN_ALLOWLIST') {
+    // The allowlist is an INPUT to every cached verdict, so a stale entry would
+    // keep protection off (or on) for up to the cache TTL after the toggle.
+    clearRemoteRiskCache();
+    clearRiskApprovals();
     return setDomainAllowlist(msg.payload.hostname, msg.payload.allowlisted).then((allowlist) => ({
       success: true,
       allowlist,
@@ -1031,6 +1153,13 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (type === 'GET_MATCHING_CREDENTIALS') {
     const hostname: string = msg.payload.hostname || '';
     const currentUrl: string = msg.payload.currentUrl || `https://${hostname}`;
+    // Shape of the login form as the content script sees it: iframe embedding,
+    // a cross-origin form action, MFA fields. These are the backend's
+    // highest-value signals (CROSS_ORIGIN_FORM_ACTION, IFRAME_LOGIN_EMBEDDING)
+    // and were previously never sent, leaving that whole scoring dimension
+    // dead on the autofill path.
+    const formContext: FormThreatContext | undefined = msg.payload.formContext;
+    const senderTabId = sender.tab?.id;
     if (!hostname) {
       return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null });
     }
@@ -1066,45 +1195,24 @@ browser.runtime.onMessage.addListener((message, sender) => {
         .map((i) => extractHostname(i.url!))
         .filter(Boolean);
 
-      // Domain Risk is a plan entitlement (see backend PlanPricing.AllowDomainRiskPolicies)
-      // — when it's off, NEITHER engine runs: not the on-device heuristic
-      // assessment (which needs no network access, so it can't be gated by
-      // the /check call alone) nor the remote threat-intel lookup. Autofill
-      // proceeds with no risk evaluation at all, exactly as if this feature
-      // didn't exist for the account.
-      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
-
-      let risk: DomainRiskAssessment = disabledDomainRiskAssessment(hostname);
-      if (domainRiskOn) {
-        // Evaluate comprehensive lookalike, punycode, brand abuse, and phishing risk
-        risk = assessDomainRisk(hostname, knownHosts, allowlist, currentUrl);
-
-        // Async threat intelligence enrichment.
-        // Always query remote — every assessment (even safe known domains) must
-        // produce a telemetry event so the admin Domain Risk panel has a complete
-        // picture. The remote call is cheap (cached server-side for 15 min) and
-        // the JWT is passed so the event is properly recorded and visible in the
-        // admin feed immediately on refresh.
-        const remoteRisk = await checkDomainRiskRemote(
-          currentUrl,
-          risk.matchedTarget || (matching[0]?.url ? extractHostname(matching[0].url) : ''),
-          undefined,
-          undefined,
-          'standard',
-          globalThis.fetch,
-          getJwt
-        );
-        if (remoteRisk && !risk.isAllowlisted) {
-          // Only merge risk signals if the domain is NOT explicitly allowlisted by the user.
-          // For allowlisted domains we still sent the request (for telemetry), but we
-          // don't let the remote engine escalate the decision.
-          risk = mergeLocalAndRemoteRisk(risk, remoteRisk);
-        }
-      }
+      // Domain Risk is a plan entitlement (see backend
+      // PlanPricing.AllowDomainRiskPolicies) — when it's off, NEITHER engine
+      // runs, and autofill proceeds with no risk evaluation at all, exactly as
+      // if the feature didn't exist for the account. evaluateDomainRisk owns
+      // that gate along with the local/remote merge.
+      const risk = await evaluateDomainRisk({
+        hostname,
+        currentUrl,
+        knownHosts,
+        allowlist,
+        savedDomain: matching[0]?.url ? extractHostname(matching[0].url) : '',
+        formContext,
+        sensitivity: sensitivityForItems(matching),
+      });
 
       // Maintain legacy lookalike compatibility for existing UI callers
       let lookalike = matching.length === 0 ? findLookalikeTarget(hostname, knownHosts, allowlist) : null;
-      if (!lookalike && risk.decision === 'block' && risk.matchedTarget) {
+      if (!lookalike && (risk.decision === 'block' || risk.decision === 'require_approval') && risk.matchedTarget) {
         lookalike = {
           target: risk.matchedTarget,
           reason: risk.signals.brandAbuse ? 'brand_abuse' : risk.signals.hasPunycode ? 'punycode' : 'typosquat',
@@ -1113,8 +1221,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
         };
       }
 
-      // Block credentials if domain is flagged as dangerous phishing/lookalike and not allowlisted
-      const credentialsToOffer = risk.decision === 'block' ? [] : matching;
+      // Withhold credentials on `block`, and on `require_approval` until the
+      // user has explicitly approved this host in this tab. See isFillWithheld.
+      const withheld = isFillWithheld(risk, senderTabId, hostname);
+      const credentialsToOffer = withheld ? [] : matching;
 
       return {
         // NOTE: `value` (the secret) is deliberately NOT included here. The
@@ -1173,46 +1283,29 @@ browser.runtime.onMessage.addListener((message, sender) => {
         return { error: 'domain_mismatch' };
       }
 
-      // Re-check domain risk: never release secret to a blocked phishing/lookalike
-      // domain — unless Domain Risk is disabled for the plan, in which case there's
-      // no verdict to enforce here either (see GET_MATCHING_CREDENTIALS above).
-      //
-      // This must run the SAME assessment GET_MATCHING_CREDENTIALS does — local
-      // heuristics AND the remote threat-intel call AND any admin DomainRiskPolicy
-      // (global or workspace) — not just the local engine. This handler is the
-      // one place the actual secret leaves the vault, so it's the last line of
-      // defense against something other than our own dropdown asking for a
-      // credential by id (a compromised content script, or a hand-crafted
-      // extension message). A domain blocked only by a remote threat-intel hit
-      // or an admin policy — with no local lookalike/punycode signal of its own —
-      // used to sail through here even though GET_MATCHING_CREDENTIALS had
-      // already hidden it from the UI; the two checks must agree.
-      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
-      if (domainRiskOn) {
-        const items = res.vaultItems as VaultItem[];
-        const knownHosts = items
-          .filter((i) => !!i.url)
-          .map((i) => extractHostname(i.url!))
-          .filter(Boolean);
-        let risk = assessDomainRisk(hostname, knownHosts, allowlist, senderUrl);
+      // Re-check domain risk before the secret leaves the vault. This is the
+      // one place a credential is actually released, so it must reach the SAME
+      // verdict the listing did — local heuristics, remote threat intel, and
+      // any admin DomainRiskPolicy — not a weaker local-only check. Both paths
+      // now share evaluateDomainRisk so they cannot drift.
+      const knownHosts = (res.vaultItems as VaultItem[])
+        .filter((i) => !!i.url)
+        .map((i) => extractHostname(i.url!))
+        .filter(Boolean);
 
-        const remoteRisk = await checkDomainRiskRemote(
-          senderUrl,
-          risk.matchedTarget || extractHostname(item.url),
-          undefined,
-          undefined,
-          'standard',
-          globalThis.fetch,
-          getJwt
-        );
-        if (remoteRisk && !risk.isAllowlisted) {
-          risk = mergeLocalAndRemoteRisk(risk, remoteRisk);
-        }
+      const risk = await evaluateDomainRisk({
+        hostname,
+        currentUrl: senderUrl,
+        knownHosts,
+        allowlist,
+        savedDomain: extractHostname(item.url),
+        formContext: msg.payload?.formContext,
+        sensitivity: sensitivityForItems([item]),
+      });
 
-        if (risk.decision === 'block') {
-          console.warn('[XoraPass] Refused secret for blocked risk domain:', hostname, risk.reasons);
-          return { error: 'risk_blocked' };
-        }
+      if (isFillWithheld(risk, sender.tab?.id, hostname)) {
+        console.warn('[XoraPass] Refused secret for risk domain:', hostname, risk.decision, risk.reasons);
+        return { error: risk.decision === 'block' ? 'risk_blocked' : 'risk_approval_required', risk };
       }
 
       void scheduleAutoLock(); // filling counts as activity
@@ -1328,12 +1421,52 @@ browser.runtime.onMessage.addListener((message, sender) => {
       if (!session || session.status !== 'active' || !session.granted_scopes.includes('autofill') || !session.vault_entry_id) {
         return { error: 'This AI session is no longer active.' };
       }
-      return browser.storage.session.get(['vaultItems']).then((res) => {
+      return (async () => {
+        const res = await browser.storage.session.get(['vaultItems']);
         const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
         const item = items?.find((i) => i.id === session.vault_entry_id);
         if (!item) return { error: 'Credential not found in this session -- try unlocking again.' };
+
+        // An approved AI session authorises WHICH credential may be filled; it
+        // says nothing about WHERE. This path releases a secret exactly like
+        // GET_CREDENTIAL_SECRET does and was doing no domain-risk check at all,
+        // so an agent driving a lookalike page got the credential the human had
+        // approved for the real one. The AI context is what raises the
+        // backend's scrutiny (AI_SESSION_ELEVATED_SCRUTINY, +35) and turns a
+        // medium score into require_approval rather than a warning.
+        const aiHostname = extractHostname(sender.tab?.url || sender.url || '');
+        if (!aiHostname) return { error: 'Could not determine this page -- try again.' };
+
+        const allowlist = await getDomainAllowlist();
+        const knownHosts = (items || [])
+          .filter((i) => !!i.url)
+          .map((i) => extractHostname(i.url!))
+          .filter(Boolean);
+
+        const risk = await evaluateDomainRisk({
+          hostname: aiHostname,
+          currentUrl: sender.tab?.url || sender.url || `https://${aiHostname}`,
+          knownHosts,
+          allowlist,
+          savedDomain: item.url ? extractHostname(item.url) : '',
+          aiContext: { isAISession: true, agentId: session.id, toolName: 'autofill' },
+          sensitivity: sensitivityForItems([item]),
+        });
+
+        // No per-tab "fill anyway" escape here: the whole point of an AI
+        // session is that a human is not watching this click, so a
+        // require_approval verdict has to stop it outright.
+        if (risk.decision === 'block' || risk.decision === 'require_approval') {
+          console.warn('[XoraPass] Refused AI fill for risk domain:', aiHostname, risk.decision);
+          return {
+            error:
+              'This page was flagged by domain risk checks, so the AI session was not allowed to fill here.',
+            risk,
+          };
+        }
+
         return { username: item.username, value: item.value };
-      });
+      })();
     });
   }
 
@@ -1437,6 +1570,21 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return checkDomainRiskRemote(targetUrl, savedDomain, formContext, aiContext, sensitivity).then((result) => ({
       risk: result,
     }));
+  }
+
+  if (type === 'RISK_APPROVE_DOMAIN') {
+    // The hostname is taken from the sender tab, never the payload — the same
+    // discipline GET_CREDENTIAL_SECRET uses. A caller naming some other host
+    // must not be able to pre-approve it. The payload host is only used to
+    // confirm the overlay and the tab still agree on where they are.
+    const tabId = sender.tab?.id;
+    const realHost = extractHostname(sender.tab?.url || sender.url || '');
+    const claimedHost = extractHostname(msg.payload?.hostname || '');
+    if (tabId === undefined || !realHost || realHost !== claimedHost) {
+      return Promise.resolve({ success: false, error: 'unknown_origin' });
+    }
+    grantRiskApproval(tabId, realHost);
+    return Promise.resolve({ success: true, expiresInSeconds: APPROVAL_TTL_MS / 1000 });
   }
 
   if (type === 'REPORT_PHISHING') {

@@ -1513,6 +1513,12 @@ export interface RiskWarningOptions {
   /** Submits an admin-review allowlist request for the current domain. */
   onRequestAllowlist?: () => Promise<{ success: boolean; reason?: string }>;
   /**
+   * Present only for a `require_approval` verdict: records the user's explicit
+   * decision to fill here anyway. Never offered for `block` - a blocked verdict
+   * has no user-side override by design.
+   */
+  onApproveAnyway?: () => Promise<{ success: boolean; reason?: string }>;
+  /**
    * When a request for this exact domain already exists, shows a status
    * note instead of the "Request allowlist review" button — resubmitting
    * a request that's already pending (or already decided) would just spam
@@ -1654,6 +1660,18 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
       opts.onGoToOfficial!();
     });
     actions.appendChild(goOfficial);
+  }
+
+  // `require_approval` is the one verdict a human may clear. It is rendered as
+  // a secondary action, never the primary one: the safe path (go to the real
+  // site) stays the visually dominant button.
+  if (opts.onApproveAnyway && opts.severity === 'require_approval') {
+    const approve = document.createElement('button');
+    approve.type = 'button';
+    approve.className = 'risk-btn-secondary';
+    approve.textContent = 'Fill here anyway';
+    wireAsyncAction(approve, 'Approving…', 'Approved - reopen the field', 'Try again', opts.onApproveAnyway);
+    actions.appendChild(approve);
   }
 
   if (opts.onReportPhishing) {
