@@ -17,6 +17,7 @@ import {
   isDomainMatch,
   isSubdomainOf,
   hasPunycode,
+  stripPublicSuffix,
 } from './siteTrust';
 
 export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
@@ -330,6 +331,24 @@ export function toHomoglyphSkeleton(str: string): string {
 }
 
 /**
+ * True when `str` contains a NON-ASCII character that maps to an ASCII
+ * lookalike (Cyrillic \u0430, Greek \u03BF, ...).
+ *
+ * This is deliberately narrower than `toHomoglyphSkeleton(str) !== str`, which
+ * also fires on the leet entries ('0'\u2192'o', '1'\u2192'l', '3'\u2192'e', ...) and so
+ * reports true for perfectly ordinary hostnames like `web3.example.com` or
+ * `s3-backup.example.com`. Leet substitution is a TYPOSQUATTING signal and is
+ * scored as one (via edit distance); treating it as evidence of an IDN
+ * homograph attack is what produced the 95-score false positives.
+ */
+export function hasConfusableChars(str: string): boolean {
+  for (const char of str.toLowerCase()) {
+    if (char.charCodeAt(0) > 0x7f && HOMOGLYPH_MAP[char]) return true;
+  }
+  return false;
+}
+
+/**
  * Extracts the primary brand name (second-level domain or base token) from a host.
  * e.g., 'stripe.com' -> 'stripe', 'login.paypal.co.uk' -> 'paypal'
  */
@@ -532,7 +551,11 @@ export function assessDomainRisk(
     assessment.signals.decodedPunycode = decodedPageHost;
   }
 
-  const pageSkeleton = toHomoglyphSkeleton(decodedPageHost);
+  // Compare over the labels the registrant actually chose \u2014 the public
+  // suffix is identical on the real site and the fake one, so folding it into
+  // the skeleton only adds noise. See stripPublicSuffix.
+  const pageSkeleton = toHomoglyphSkeleton(stripPublicSuffix(decodedPageHost));
+  const pageHasConfusables = hasConfusableChars(decodedPageHost);
 
   // Check for high-risk TLD
   if (HIGH_RISK_TLDS.has(pageBaseTld) || HIGH_RISK_TLDS.has(pageTld)) {
@@ -571,7 +594,7 @@ export function assessDomainRisk(
     const decodedSldSkeleton = toHomoglyphSkeleton(decodedSld);
 
     if (
-      (isPuny || decodedPageHost !== pageHostname || pageSkeleton !== pageHostname) &&
+      (isPuny || decodedPageHost !== pageHostname || pageHasConfusables) &&
       (decodedRegSkeleton === target ||
         decodedSldSkeleton === brand ||
         damerauLevenshtein(decodedSldSkeleton, brand) <= 1 ||

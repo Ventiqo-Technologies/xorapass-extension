@@ -58,9 +58,9 @@
     }
   ],
   "externally_connectable": {
-    "ids": ["*"],
     "matches": [
-      "https://app.xorapass.com/*"
+      "https://app.xorapass.com/*",
+      "https://dev-app.xorapass.com/*"
     ]
   }
 }
