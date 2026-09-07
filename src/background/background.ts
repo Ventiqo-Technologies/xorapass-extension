@@ -16,6 +16,7 @@ import {
   type FormThreatContext,
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
+import type { PageSignals } from '../utils/pageSignals';
 import { validateMessage } from '../utils/messageGuard';
 import {
   encryptPayload,
@@ -887,6 +888,7 @@ async function evaluateDomainRisk(opts: {
   formContext?: FormThreatContext;
   aiContext?: { isAISession?: boolean; agentId?: string; toolName?: string };
   sensitivity: 'standard' | 'high' | 'critical';
+  pageSignals?: PageSignals;
 }): Promise<DomainRiskAssessment> {
   const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
   if (!domainRiskOn) return disabledDomainRiskAssessment(opts.hostname);
@@ -900,7 +902,8 @@ async function evaluateDomainRisk(opts: {
     opts.aiContext,
     opts.sensitivity,
     globalThis.fetch,
-    getJwt
+    getJwt,
+    opts.pageSignals
   );
 
   // Always merge. mergeLocalAndRemoteRisk owns the allowlist rule — it returns
@@ -1169,6 +1172,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // and were previously never sent, leaving that whole scoring dimension
     // dead on the autofill path.
     const formContext: FormThreatContext | undefined = msg.payload.formContext;
+    // Structural page features from the content script (see pageSignals.ts).
+    const pageSignals: PageSignals | undefined = msg.payload.pageSignals;
     const senderTabId = sender.tab?.id;
     if (!hostname) {
       return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null });
@@ -1217,6 +1222,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         allowlist,
         savedDomain: matching[0]?.url ? extractHostname(matching[0].url) : '',
         formContext,
+        pageSignals,
         sensitivity: sensitivityForItems(matching),
       });
 
@@ -1310,6 +1316,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         allowlist,
         savedDomain: extractHostname(item.url),
         formContext: msg.payload?.formContext,
+        pageSignals: msg.payload?.pageSignals,
         sensitivity: sensitivityForItems([item]),
       });
 
@@ -1575,9 +1582,19 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'CHECK_DOMAIN_RISK') {
-    const { currentUrl, currentDomain, savedDomain, formContext, aiContext, sensitivity } = msg.payload || {};
+    const { currentUrl, currentDomain, savedDomain, formContext, aiContext, sensitivity, pageSignals } =
+      msg.payload || {};
     const targetUrl = currentUrl || (currentDomain ? `https://${currentDomain}` : '');
-    return checkDomainRiskRemote(targetUrl, savedDomain, formContext, aiContext, sensitivity).then((result) => ({
+    return checkDomainRiskRemote(
+      targetUrl,
+      savedDomain,
+      formContext,
+      aiContext,
+      sensitivity,
+      globalThis.fetch,
+      getJwt,
+      pageSignals
+    ).then((result) => ({
       risk: result,
     }));
   }
