@@ -32,9 +32,13 @@ import {
   isSavePromptOpen,
   showRiskWarning,
   closeRiskWarning,
+  showPhishingInterstitial,
+  closePhishingInterstitial,
+  isInterstitialOpen,
   clearAll,
   type OverlayCredential,
 } from './overlay';
+import { collectPageSignals, isWorthAssessing, type PageSignals } from '../utils/pageSignals';
 
 let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
@@ -45,6 +49,8 @@ let domainRisk: {
   reasons: string[];
   matchedTarget: string | null;
   safeWarningMessage?: string;
+  // Server-set: a full-page block rather than a corner banner.
+  showInterstitial?: boolean;
 } | null = null;
 
 // Tracks the last hostname+decision pair we already alerted on, so
@@ -231,7 +237,16 @@ function loadCredentials(): void {
   browser.runtime
     .sendMessage({
       type: 'GET_MATCHING_CREDENTIALS',
-      payload: { hostname, currentUrl: window.location.href, formContext: collectFormContext() },
+      payload: {
+        hostname,
+        currentUrl: window.location.href,
+        formContext: collectFormContext(),
+        // Sent only for pages with something to assess - an ordinary content
+        // page with no credential form and no brand claim produces no verdict
+        // the server could act on, so shipping its shape is pure noise (and
+        // needlessly busts the per-page verdict cache).
+        pageSignals: worthAssessingSignals(),
+      },
     })
     .then((response: any) => {
       if (!response) return;
@@ -259,6 +274,16 @@ function loadCredentials(): void {
     });
 }
 
+/**
+ * The page-shape vector, or undefined when the page has nothing worth
+ * assessing. See the privacy contract at the top of utils/pageSignals.ts for
+ * what this does and does not contain.
+ */
+function worthAssessingSignals(): PageSignals | undefined {
+  const signals = collectPageSignals();
+  return isWorthAssessing(signals) ? signals : undefined;
+}
+
 // Surfaces a risky decision immediately, without requiring the user to click
 // a login field's icon first (which may not even exist on this page). Keyed
 // on hostname+decision so repeated loadCredentials() calls (tab focus,
@@ -271,12 +296,52 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   if (!isRisky) {
     lastWarnedRiskKey = null;
     closeRiskWarning();
+    if (isInterstitialOpen()) closePhishingInterstitial();
     return;
   }
   if (lastWarnedRiskKey === key) return;
 
   const message = getRiskWarningMessage();
   if (!message) return;
+
+  // A server-confirmed critical verdict on a credential page gets the full-page
+  // block instead of a corner banner: at that point letting the user read and
+  // interact with the page at all is the risk being managed.
+  if (domainRisk?.showInterstitial) {
+    lastWarnedRiskKey = key;
+    closeRiskWarning();
+    showPhishingInterstitial({
+      currentDomain: window.location.hostname,
+      expectedDomain: domainRisk.matchedTarget || lookalikeWarning?.target || null,
+      message,
+      reasons: domainRisk.reasons,
+      onGoToOfficial: domainRisk.matchedTarget
+        ? () => {
+            window.location.href = `https://${domainRisk!.matchedTarget}`;
+          }
+        : undefined,
+      onLeave: () => {
+        // history.back() can land straight back here on a redirect chain, so
+        // prefer a neutral destination when there is nothing safe behind us.
+        if (window.history.length > 1) window.history.back();
+        else window.location.href = 'about:blank';
+      },
+      onReportPhishing: () =>
+        browser.runtime
+          .sendMessage({
+            type: 'REPORT_PHISHING',
+            payload: { hostname: window.location.hostname, decision, riskLevel: domainRisk?.riskLevel },
+          })
+          .then((res: any) => ({ success: !!res?.success }))
+          .catch(() => ({ success: false })),
+      onProceedAnyway: () =>
+        browser.runtime
+          .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: window.location.hostname } })
+          .then((res: any) => ({ success: !!res?.success }))
+          .catch(() => ({ success: false })),
+    });
+    return;
+  }
 
   // Set before the await below so a second loadCredentials() tick firing
   // while this is still in flight doesn't start a duplicate lookup/render.
@@ -488,7 +553,10 @@ function scanForLoginFields(): void {
 
             // Fetch the secret which includes the account ID / alias (stored in accountId)
             const res = (await browser.runtime
-              .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id, formContext: collectFormContext() } })
+              .sendMessage({
+    type: 'GET_CREDENTIAL_SECRET',
+    payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
+  })
               .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
 
             if (!res || res.error) {
@@ -674,7 +742,10 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
 
   // Fetch the secret only now, for this one entry.
   const res = (await browser.runtime
-    .sendMessage({ type: 'GET_CREDENTIAL_SECRET', payload: { id, formContext: collectFormContext() } })
+    .sendMessage({
+    type: 'GET_CREDENTIAL_SECRET',
+    payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
+  })
     .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
 
   if (!res || res.error || typeof res.value !== 'string') {

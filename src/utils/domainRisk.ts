@@ -55,6 +55,11 @@ export interface DomainRiskAssessment {
   // The local heuristic engine never sets this — only mergeLocalAndRemoteRisk
   // does, from the remote response's safe_warning_message.
   safeWarningMessage?: string;
+  // Set by mergeLocalAndRemoteRisk from the server's verdict: a full-page
+  // block rather than a dismissible banner. The local heuristic engine never
+  // sets this - an interstitial is reserved for a server-confirmed critical
+  // verdict on a page actively asking for a password.
+  showInterstitial?: boolean;
 }
 
 /** Known phishing and credential-harvesting action keywords. */
