@@ -59,8 +59,7 @@
   ],
   "externally_connectable": {
     "matches": [
-      "https://app.xorapass.com/*",
-      "https://dev-app.xorapass.com/*"
+      "https://app.xorapass.com/*"
     ]
   }
 }
