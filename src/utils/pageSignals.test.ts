@@ -4,6 +4,7 @@ import {
   analyzeUrl,
   brandsFromResourceOrigins,
   looksLikeFakeBrowserChrome,
+  looksLikeClickFixPrompt,
   isWorthAssessing,
   BRAND_LEXICON,
   type ChromeCandidate,
@@ -127,10 +128,41 @@ describe('isWorthAssessing', () => {
     expect(isWorthAssessing({ password_field_count: 0, path_depth: 2 })).toBe(false);
   });
 
-  it('assesses any credential form, brand claim, or fake chrome', () => {
+  it('assesses any credential form, brand claim, fake chrome, or clickfix prompt', () => {
     expect(isWorthAssessing({ password_field_count: 1 })).toBe(true);
     expect(isWorthAssessing({ title_brand_tokens: ['paypal'] })).toBe(true);
     expect(isWorthAssessing({ fake_browser_chrome: true })).toBe(true);
+    expect(isWorthAssessing({ has_clickfix_prompt: true })).toBe(true);
+  });
+});
+
+describe('looksLikeClickFixPrompt', () => {
+  it('detects Windows Run and Ctrl+V verification instructions', () => {
+    const attackText = `
+      Cloudflare Turnstile
+      Verify you are human
+      Complete the steps below:
+      Step 1: Press Win + R to open Run dialog
+      Step 2: Press Ctrl + V to paste the verification code
+      Step 3: Press Enter
+    `;
+    expect(looksLikeClickFixPrompt(attackText)).toBe(true);
+  });
+
+  it('detects PowerShell paste instructions in fake captcha', () => {
+    const lureText = `
+      Human Verification
+      To verify you are not a robot, open powershell and press ctrl + v and enter.
+    `;
+    expect(looksLikeClickFixPrompt(lureText)).toBe(true);
+  });
+
+  it('does not flag benign software documentation', () => {
+    const benignText = `
+      Welcome to our software documentation. Learn how to install our app on Windows, macOS, or Linux.
+      Download the installer from our secure download page.
+    `;
+    expect(looksLikeClickFixPrompt(benignText)).toBe(false);
   });
 });
 
@@ -138,9 +170,9 @@ describe('lexicon parity with the server', () => {
   it('holds the brands page_classifier.go also knows', () => {
     // A token present here but absent there is silently dropped server-side,
     // so the two lists must not drift apart unnoticed.
-    for (const brand of ['paypal', 'microsoft', 'office365', 'wellsfargo', 'royalmail', 'coinbase']) {
+    for (const brand of ['paypal', 'microsoft', 'office365', 'wellsfargo', 'royalmail', 'coinbase', 'cloudflare', 'turnstile']) {
       expect(BRAND_LEXICON.has(brand)).toBe(true);
     }
-    expect(BRAND_LEXICON.size).toBe(41);
+    expect(BRAND_LEXICON.size).toBe(45);
   });
 });

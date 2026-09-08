@@ -1186,16 +1186,13 @@ browser.runtime.onMessage.addListener((message, sender) => {
         getDomainAllowlist(),
       ]);
 
-      if (!res.unlocked || !res.vaultItems) {
-        return { credentials: [], disabled, lookalike: null, risk: null };
-      }
-
       // If the user disabled autofill for this site, offer nothing.
       if (disabled) {
         return { credentials: [], disabled: true, lookalike: null, risk: null };
       }
 
-      const items = res.vaultItems as VaultItem[];
+      const isUnlocked = !!(res.unlocked && res.vaultItems);
+      const items = (isUnlocked ? (res.vaultItems as VaultItem[]) : []);
 
       // Safe, exact/subdomain/registrable-domain matching (no substring hacks).
       // The category check is part of the match, not a nicety: a card entry's
@@ -1227,7 +1224,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       });
 
       // Maintain legacy lookalike compatibility for existing UI callers
-      let lookalike = matching.length === 0 ? findLookalikeTarget(hostname, knownHosts, allowlist) : null;
+      let lookalike = matching.length === 0 && knownHosts.length > 0
+        ? findLookalikeTarget(hostname, knownHosts, allowlist)
+        : null;
       if (!lookalike && (risk.decision === 'block' || risk.decision === 'require_approval') && risk.matchedTarget) {
         lookalike = {
           target: risk.matchedTarget,

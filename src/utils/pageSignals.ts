@@ -46,6 +46,7 @@ export interface PageSignals {
   inline_script_bytes?: number;
   blocks_context_menu?: boolean;
   fake_browser_chrome?: boolean;
+  has_clickfix_prompt?: boolean;
 }
 
 /**
@@ -65,6 +66,7 @@ export const BRAND_LEXICON: ReadonlySet<string> = new Set([
   'chase', 'wellsfargo', 'hsbc', 'barclays',
   'citibank', 'revolut', 'wise', 'westernunion',
   'dhl', 'fedex', 'ups', 'usps', 'royalmail',
+  'cloudflare', 'turnstile', 'recaptcha', 'hcaptcha',
 ]);
 
 /** Multi-word brand spellings folded to their lexicon token. */
@@ -215,13 +217,50 @@ export function looksLikeFakeBrowserChrome(candidates: ChromeCandidate[]): boole
   );
 }
 
+/**
+ * ClickFix / Fake CAPTCHA social engineering heuristic:
+ * Scans page text for instructions tricking victims into running malicious clipboard
+ * commands in Windows Run dialog or terminal (e.g. Win + R -> Ctrl + V -> Enter).
+ * Pure function taking a string for testability without a live DOM.
+ */
+export function looksLikeClickFixPrompt(pageText: string): boolean {
+  if (!pageText || pageText.length < 20) return false;
+  const lower = pageText.toLowerCase();
+
+  // Signature 1: Windows Run / Terminal launch instructions
+  const hasRunTrigger =
+    /\b(win\s*\+\s*r|windows\s*\+\s*r|press\s+(the\s+)?windows\s+key|open\s+(the\s+)?run\s+(dialog|box)|run\s+window)\b/i.test(lower) ||
+    /\b(press\s+win|hit\s+win\s*\+\s*r)\b/i.test(lower);
+
+  // Signature 2: Clipboard paste execution instructions
+  const hasPasteOrShell =
+    /\b(ctrl\s*\+\s*v|control\s*\+\s*v|paste\s+the\s+code|paste\s+(and\s+press\s+enter|below|command)|powershell|terminal|cmd(\.exe)?|mshta)\b/i.test(lower);
+
+  // Signature 3: Fake verification / CAPTCHA / error lure
+  const hasVerificationLure =
+    /\b(human\s+verification|verify\s+you\s+are\s+human|i'm\s+not\s+a\s+robot|robot\s+check|verification\s+steps?|complete\s+the\s+steps|how\s+to\s+verify|unblock\s+content)\b/i.test(lower);
+
+  // It is a ClickFix attack if it instructs Run/Win+R AND (Paste/Shell OR Verification Lure)
+  if (hasRunTrigger && (hasPasteOrShell || hasVerificationLure)) {
+    return true;
+  }
+
+  // Also catch direct PowerShell paste instructions disguised as verification
+  if (hasVerificationLure && /\b(powershell|mshta|curl\s+-|wget\s+-|cmd\.exe)\b/i.test(lower) && /\b(ctrl\s*\+\s*v|paste|enter)\b/i.test(lower)) {
+    return true;
+  }
+
+  return false;
+}
+
 /** True when a page has enough going on to be worth a server-side verdict. */
 export function isWorthAssessing(signals: PageSignals): boolean {
   return (
     (signals.password_field_count || 0) > 0 ||
     (signals.title_brand_tokens || []).length > 0 ||
     (signals.visible_brand_tokens || []).length > 0 ||
-    !!signals.fake_browser_chrome
+    !!signals.fake_browser_chrome ||
+    !!signals.has_clickfix_prompt
   );
 }
 
@@ -320,8 +359,16 @@ export function collectPageSignals(): PageSignals {
     signals.blocks_context_menu =
       !!document.body?.getAttribute('oncontextmenu') || !!document.documentElement.getAttribute('oncontextmenu');
 
-    // ── Browser-in-the-browser ──
+    // ── Browser-in-the-browser & ClickFix lures ──
     signals.fake_browser_chrome = looksLikeFakeBrowserChrome(readChromeCandidates());
+
+    // Check page text and modal dialog text for ClickFix instructions
+    const sampleText = [
+      document.title || '',
+      visibleParts.join(' '),
+      document.body?.innerText?.slice(0, 10000) || '',
+    ].join(' ');
+    signals.has_clickfix_prompt = looksLikeClickFixPrompt(sampleText);
 
     return signals;
   } catch {

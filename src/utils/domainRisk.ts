@@ -100,6 +100,12 @@ export const SUSPICIOUS_KEYWORDS = new Set([
   'validation',
   'recovery',
   'session',
+  'download',
+  'secret',
+  'captcha',
+  'turnstile',
+  'robot',
+  'install',
 ]);
 
 /** High-risk and frequently abused phishing/disposable TLDs. */
@@ -572,10 +578,19 @@ export function assessDomainRisk(
     .toLowerCase()
     .split(/[\.-]/)
     .filter(Boolean);
+  const hostLower = pageHostname.toLowerCase();
   for (const token of domainTokens) {
     if (SUSPICIOUS_KEYWORDS.has(token)) {
       if (!assessment.signals.suspiciousKeywords.includes(token)) {
         assessment.signals.suspiciousKeywords.push(token);
+      }
+    }
+  }
+  // Check for embedded keywords in compound words (e.g. tremblepopdownloadsecret)
+  for (const kw of SUSPICIOUS_KEYWORDS) {
+    if (kw.length >= 5 && hostLower.includes(kw)) {
+      if (!assessment.signals.suspiciousKeywords.includes(kw)) {
+        assessment.signals.suspiciousKeywords.push(kw);
       }
     }
   }
