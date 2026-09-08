@@ -43,6 +43,10 @@ export const KNOWN_MESSAGE_TYPES = [
   'GET_DOMAIN_RISK_HISTORY',
   'GET_DOMAIN_RISK_REPORTS',
   'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS',
+  // Read-only plan-entitlement check (currently just Secret Paste Guard's
+  // allow_secret_rotation flag) so the popup can show "Not included in your
+  // plan" instead of a control that silently does nothing.
+  'GET_PLAN_FEATURES',
   // AI Access: the extension is a consumer of XoraPass's AI-access API, using
   // the human's own login (never a bridge token -- this is the trusted client
   // surface that performs the actual fill once a human has approved a scoped,
@@ -99,6 +103,7 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'SET_DOMAIN_RISK_SETTINGS',
   'GET_DOMAIN_RISK_HISTORY',
   'GET_DOMAIN_RISK_REPORTS',
+  'GET_PLAN_FEATURES',
   // GET_DOMAIN_RISK_ALLOWLIST_REQUESTS is deliberately NOT extension-page-only
   // — content.ts's own proactive risk-warning overlay needs it too, to check
   // whether the current domain already has a request on file before offering
@@ -329,6 +334,7 @@ export function validateMessage(
     case 'GET_DOMAIN_RISK_HISTORY':
     case 'GET_DOMAIN_RISK_REPORTS':
     case 'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS':
+    case 'GET_PLAN_FEATURES':
       // No payload required.
       break;
     // GET_STATUS, LOCK_VAULT, GET_SETTINGS and CLIPBOARD_COPIED need no

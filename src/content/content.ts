@@ -1637,7 +1637,6 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
 (function installWebBridge() {
   const ALLOWED_ORIGINS = new Set([
     'https://app.xorapass.com',
-    'https://dev-app.xorapass.com',
   ]);
 
   window.addEventListener('message', (event: MessageEvent) => {

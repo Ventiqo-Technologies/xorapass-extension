@@ -259,6 +259,7 @@ export const PopupApp: React.FC = () => {
   // in billing). null while GET_DOMAIN_RISK_SETTINGS is in flight.
   const [domainRiskEnabled, setDomainRiskEnabled] = useState(true);
   const [planAllowsDomainRisk, setPlanAllowsDomainRisk] = useState(true);
+  const [planAllowsPasteGuard, setPlanAllowsPasteGuard] = useState(true);
   const [domainRiskSettingsLoaded, setDomainRiskSettingsLoaded] = useState(false);
   const [clipboardClearSeconds, setClipboardClearSeconds] = useState(
     DEFAULT_CLIPBOARD_CLEAR_SECONDS
@@ -337,6 +338,9 @@ export const PopupApp: React.FC = () => {
                 setPlanAllowsDomainRisk(!!settings.planAllows);
               }
               setDomainRiskSettingsLoaded(true);
+            });
+            browser.runtime.sendMessage({ type: 'GET_PLAN_FEATURES' }).then((r: any) => {
+              setPlanAllowsPasteGuard(r?.allowPasteGuard !== false);
             });
           } else if (!res && attempt < 3) {
             setTimeout(() => checkStatus(attempt + 1), 150);
@@ -2218,24 +2222,29 @@ export const PopupApp: React.FC = () => {
                       <ShieldAlert className="w-3.5 h-3.5 text-brand-cyan" /> Secret Paste Guard
                     </div>
                     <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 uppercase">
-                      {pasteMode === 'warn' ? 'Warning Mode' : pasteMode === 'block' ? 'Strict Blocking' : 'Disabled'}
+                      {!planAllowsPasteGuard
+                        ? 'Unavailable'
+                        : pasteMode === 'warn' ? 'Warning Mode' : pasteMode === 'block' ? 'Strict Blocking' : 'Disabled'}
                     </span>
                   </div>
 
                   <p className="text-[10px] text-slate-500 leading-snug">
-                    {pasteMode === 'warn'
+                    {!planAllowsPasteGuard
+                      ? 'Not included in your current plan.'
+                      : pasteMode === 'warn'
                       ? 'Warns before pasting passwords or secret keys into AI prompts.'
                       : pasteMode === 'block'
                         ? 'Automatically blocks pasting passwords or secret keys into AI prompts.'
                         : 'Secret paste detection is turned off.'}
                   </p>
 
-                  <div className="flex gap-1 p-1 bg-slate-100 border border-slate-900/8 rounded-xl">
+                  <div className={`flex gap-1 p-1 bg-slate-100 border border-slate-900/8 rounded-xl ${!planAllowsPasteGuard ? 'opacity-40' : ''}`}>
                     {(['warn', 'block', 'off'] as const).map((m) => (
                       <button
                         key={m}
+                        disabled={!planAllowsPasteGuard}
                         onClick={() => changePasteMode(m)}
-                        className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold capitalize transition cursor-pointer ${pasteMode === m
+                        className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold capitalize transition cursor-pointer disabled:cursor-not-allowed ${pasteMode === m
                             ? 'bg-slate-900 text-white shadow-xs'
                             : 'text-slate-600 hover:text-slate-900 font-medium'
                           }`}
@@ -2309,6 +2318,13 @@ export const PopupApp: React.FC = () => {
                     <ShieldAlert className="w-3.5 h-3.5 text-slate-500" /> Domain Risk Activity
                   </div>
                   <div className="bg-white border border-slate-900/10 rounded-xl shadow-xs overflow-hidden">
+                    {!domainRiskSettingsLoaded ? null : !planAllowsDomainRisk ? (
+                      <div className="py-6 text-center space-y-1">
+                        <ShieldAlert className="w-5 h-5 text-slate-300 mx-auto" />
+                        <p className="text-[10px] text-slate-400 px-4">Not included in your current plan.</p>
+                      </div>
+                    ) : (
+                    <>
                     <div className="flex items-center gap-0.5 px-1.5 pt-1.5 border-b border-slate-900/8">
                       {(
                         [
@@ -2394,6 +2410,8 @@ export const PopupApp: React.FC = () => {
                           ))
                         ))}
                     </div>
+                    </>
+                    )}
                   </div>
                 </div>
               </div>
