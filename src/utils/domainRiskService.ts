@@ -9,6 +9,7 @@
 import { API_BASE_URL } from './config';
 import type { Decision, RiskLevel, DomainRiskAssessment } from './domainRisk';
 import { extractHostname } from './siteTrust';
+import type { PageSignals } from './pageSignals';
 
 export interface FormThreatContext {
   isLoginForm?: boolean;
@@ -43,6 +44,9 @@ export interface RemoteDomainRiskCheckRequest {
     tool_name?: string;
   };
   credential_sensitivity?: 'standard' | 'high' | 'critical';
+  // Structural page features (see pageSignals.ts). Counts, booleans and
+  // fixed-lexicon brand names only - never page text or user input.
+  page_signals?: PageSignals;
 }
 
 export interface RemoteDomainRiskResponse {
@@ -64,18 +68,44 @@ export interface RemoteDomainRiskResponse {
   // setting" business policy is meant to override, so mergeLocalAndRemoteRisk
   // must not let isAllowlisted bypass a policy-enforced remote decision.
   policy_enforced?: boolean;
+  // True when the server wants a full-page block rather than a banner: a
+  // critical verdict on a page actively asking for a password.
+  show_interstitial?: boolean;
 }
 
 // In-memory cache for fast sync lookups (10 min TTL)
 const MEMORY_CACHE = new Map<string, { data: RemoteDomainRiskResponse; expiresAt: number }>();
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
+// Cached separately from MEMORY_CACHE (which is keyed per-domain): this is a
+// single account-wide flag, refreshed on its own short TTL so a plan change
+// takes effect quickly without a status call on every single domain check.
+let statusCache: { enabled: boolean; expiresAt: number } | null = null;
+const STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Stable hash of the page-shape vector, so two visits to the same host with
+ * the same page share a cached verdict while a page that changes shape does
+ * not. Mirrors pageSignalsFingerprint in the backend's page_classifier.go.
+ */
+function pageShapeKey(signals?: PageSignals): string {
+  if (!signals) return 'nosig';
+  const json = JSON.stringify(signals);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < json.length; i++) {
+    hash ^= json.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16);
+}
+
 function buildCacheKey(
   currentDomain: string,
   savedDomain: string,
   actionHost: string,
   isAI: boolean,
-  sensitivity: string
+  sensitivity: string,
+  signals?: PageSignals
 ): string {
   return [
     extractHostname(currentDomain),
@@ -83,7 +113,22 @@ function buildCacheKey(
     extractHostname(actionHost),
     isAI ? 'ai' : 'user',
     sensitivity,
+    pageShapeKey(signals),
   ].join('|');
+}
+
+/**
+ * Drops every cached remote verdict (and the cached plan/user status flag).
+ *
+ * Must be called whenever something that FEEDS a verdict changes rather than
+ * the domain itself: allowlisting or un-allowlisting a host, or toggling the
+ * user's Domain Risk preference. Without this, un-allowlisting a domain left
+ * the stale `allow` in place for up to CACHE_TTL_MS, so protection stayed off
+ * for ten minutes after the user turned it back on.
+ */
+export function clearRemoteRiskCache(): void {
+  MEMORY_CACHE.clear();
+  statusCache = null;
 }
 
 /**
@@ -94,9 +139,10 @@ export function getCachedRemoteRisk(
   savedDomain: string = '',
   actionUrl: string = '',
   isAI: boolean = false,
-  sensitivity: 'standard' | 'high' | 'critical' = 'standard'
+  sensitivity: 'standard' | 'high' | 'critical' = 'standard',
+  signals?: PageSignals
 ): RemoteDomainRiskResponse | null {
-  const key = buildCacheKey(currentDomain, savedDomain, actionUrl, isAI, sensitivity);
+  const key = buildCacheKey(currentDomain, savedDomain, actionUrl, isAI, sensitivity, signals);
   const entry = MEMORY_CACHE.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
@@ -143,7 +189,8 @@ export async function checkDomainRiskRemote(
   aiContext?: AISessionThreatContext,
   sensitivity: 'standard' | 'high' | 'critical' = 'standard',
   fetchFn: typeof fetch = globalThis.fetch,
-  getJwtFn?: () => Promise<string>
+  getJwtFn?: () => Promise<string>,
+  pageSignals?: PageSignals
 ): Promise<RemoteDomainRiskResponse | null> {
   const currHost = extractHostname(currentUrl);
   if (!currHost) return null;
@@ -157,7 +204,7 @@ export async function checkDomainRiskRemote(
   const isAI = !!aiContext?.isAISession;
 
   // 1. Check client cache first
-  const cached = getCachedRemoteRisk(currHost, savedDomain, actionHost, isAI, sensitivity);
+  const cached = getCachedRemoteRisk(currHost, savedDomain, actionHost, isAI, sensitivity, pageSignals);
   if (cached) {
     return cached;
   }
@@ -169,6 +216,10 @@ export async function checkDomainRiskRemote(
     saved_domain: extractHostname(savedDomain),
     credential_sensitivity: sensitivity,
   };
+
+  if (pageSignals) {
+    payload.page_signals = pageSignals;
+  }
 
   if (formContext) {
     payload.form_context = {
@@ -214,7 +265,7 @@ export async function checkDomainRiskRemote(
     const data = (await res.json()) as RemoteDomainRiskResponse;
     if (data && typeof data.risk_score === 'number' && data.decision) {
       // Store in memory cache
-      const key = buildCacheKey(currHost, savedDomain, actionHost, isAI, sensitivity);
+      const key = buildCacheKey(currHost, savedDomain, actionHost, isAI, sensitivity, pageSignals);
       MEMORY_CACHE.set(key, {
         data,
         expiresAt: Date.now() + CACHE_TTL_MS,
@@ -293,6 +344,7 @@ export function mergeLocalAndRemoteRisk(
     reasons: combinedReasons,
     matchedTarget: local.matchedTarget || remote.matched_target || null,
     safeWarningMessage: remote.safe_warning_message || local.safeWarningMessage,
+    showInterstitial: !!remote.show_interstitial,
   };
 }
 
@@ -326,12 +378,6 @@ export async function reportPhishing(
     return false;
   }
 }
-
-// Cached separately from MEMORY_CACHE (which is keyed per-domain): this is a
-// single account-wide flag, refreshed on its own short TTL so a plan change
-// takes effect quickly without a status call on every single domain check.
-let statusCache: { enabled: boolean; expiresAt: number } | null = null;
-const STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Calls GET /api/domain-risk/status — asks once whether Domain Risk (the

@@ -670,6 +670,62 @@ const STYLES = `
   animation: xp-slide-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .risk-alert.is-warn { border-color: rgba(13, 148, 136, 0.25); }
+
+/* ── Full-page interstitial ──────────────────────────────────────────────
+   Reserved for a server-confirmed critical verdict on a page actively asking
+   for a password: the point at which reading the page at all is the risk. */
+.xp-interstitial {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  background: #450a0a;
+  color: #fff5f5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font: 400 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.xp-int-card { max-width: 560px; width: 100%; text-align: left; }
+.xp-int-badge {
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 5px 12px;
+  margin-bottom: 20px;
+}
+.xp-int-title { font-size: 30px; line-height: 1.2; font-weight: 700; margin: 0 0 14px; }
+.xp-int-body { font-size: 16px; margin: 0 0 22px; color: rgba(255, 245, 245, 0.9); }
+.xp-int-facts {
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 24px;
+  font-size: 14px;
+}
+.xp-int-row { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; }
+.xp-int-row span:first-child { color: rgba(255, 245, 245, 0.62); }
+.xp-int-row span:last-child { font-weight: 600; word-break: break-all; text-align: right; }
+.xp-int-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.xp-int-primary {
+  background: #fff5f5; color: #450a0a; border: 0; border-radius: 8px;
+  padding: 12px 20px; font-size: 15px; font-weight: 650; cursor: pointer;
+}
+.xp-int-secondary {
+  background: transparent; color: rgba(255, 245, 245, 0.92);
+  border: 1px solid rgba(255, 245, 245, 0.35); border-radius: 8px;
+  padding: 12px 18px; font-size: 14px; cursor: pointer;
+}
+.xp-int-escape {
+  background: none; border: 0; color: rgba(255, 245, 245, 0.5);
+  font-size: 13px; text-decoration: underline; cursor: pointer;
+  padding: 10px 2px; margin-top: 6px;
+}
+.xp-int-escape[disabled] { cursor: default; text-decoration: none; opacity: 0.55; }
+.xp-int-foot { margin-top: 22px; font-size: 12px; color: rgba(255, 245, 245, 0.5); }
 .risk-brand {
   display: flex;
   align-items: center;
@@ -1513,6 +1569,12 @@ export interface RiskWarningOptions {
   /** Submits an admin-review allowlist request for the current domain. */
   onRequestAllowlist?: () => Promise<{ success: boolean; reason?: string }>;
   /**
+   * Present only for a `require_approval` verdict: records the user's explicit
+   * decision to fill here anyway. Never offered for `block` - a blocked verdict
+   * has no user-side override by design.
+   */
+  onApproveAnyway?: () => Promise<{ success: boolean; reason?: string }>;
+  /**
    * When a request for this exact domain already exists, shows a status
    * note instead of the "Request allowlist review" button — resubmitting
    * a request that's already pending (or already decided) would just spam
@@ -1656,6 +1718,18 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
     actions.appendChild(goOfficial);
   }
 
+  // `require_approval` is the one verdict a human may clear. It is rendered as
+  // a secondary action, never the primary one: the safe path (go to the real
+  // site) stays the visually dominant button.
+  if (opts.onApproveAnyway && opts.severity === 'require_approval') {
+    const approve = document.createElement('button');
+    approve.type = 'button';
+    approve.className = 'risk-btn-secondary';
+    approve.textContent = 'Fill here anyway';
+    wireAsyncAction(approve, 'Approving…', 'Approved - reopen the field', 'Try again', opts.onApproveAnyway);
+    actions.appendChild(approve);
+  }
+
   if (opts.onReportPhishing) {
     const report = document.createElement('button');
     report.type = 'button';
@@ -1704,6 +1778,182 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
 
   root.appendChild(card);
   riskAlertEl = card;
+}
+
+export interface InterstitialOptions {
+  currentDomain: string;
+  expectedDomain?: string | null;
+  message: string;
+  reasons?: string[];
+  onGoToOfficial?: () => void;
+  onReportPhishing?: () => Promise<{ success: boolean }>;
+  onLeave: () => void;
+  /**
+   * Dismisses the interstitial and records the user's decision. Gated behind a
+   * deliberate delay below - a block users learn to click through instantly is
+   * worse than no block, because it trains the reflex it is meant to interrupt.
+   */
+  onProceedAnyway?: () => Promise<{ success: boolean }>;
+}
+
+let interstitialEl: HTMLElement | null = null;
+let interstitialGuard: MutationObserver | null = null;
+
+/** Seconds the escape hatch stays disabled. Long enough to be read, not so long it is rage-inducing. */
+const PROCEED_DELAY_SECONDS = 5;
+
+/**
+ * Full-page block. Rendered into the same CLOSED shadow root as everything
+ * else here, so page scripts can neither read it nor synthesise clicks on its
+ * buttons - and a MutationObserver re-attaches the host if the page tries to
+ * delete it, which a phishing page has every reason to attempt.
+ */
+export function showPhishingInterstitial(opts: InterstitialOptions): void {
+  closePhishingInterstitial();
+  const root = ensureHost();
+
+  const shell = document.createElement('div');
+  shell.className = 'xp-interstitial';
+  shell.setAttribute('role', 'alertdialog');
+  shell.setAttribute('aria-modal', 'true');
+  shell.setAttribute('aria-live', 'assertive');
+
+  const card = document.createElement('div');
+  card.className = 'xp-int-card';
+
+  const badge = document.createElement('div');
+  badge.className = 'xp-int-badge';
+  badge.textContent = 'XoraPass \u2014 phishing site blocked';
+  card.appendChild(badge);
+
+  const title = document.createElement('h1');
+  title.className = 'xp-int-title';
+  title.textContent = opts.expectedDomain
+    ? `This page is impersonating ${opts.expectedDomain}`
+    : 'This page is trying to steal your credentials';
+  card.appendChild(title);
+
+  const body = document.createElement('p');
+  body.className = 'xp-int-body';
+  body.textContent = opts.message; // textContent only - contains a domain we do not control
+  card.appendChild(body);
+
+  const facts = document.createElement('div');
+  facts.className = 'xp-int-facts';
+  const addRow = (label: string, value: string) => {
+    const row = document.createElement('div');
+    row.className = 'xp-int-row';
+    const l = document.createElement('span');
+    l.textContent = label;
+    const v = document.createElement('span');
+    v.textContent = value;
+    row.appendChild(l);
+    row.appendChild(v);
+    facts.appendChild(row);
+  };
+  addRow('You are on', opts.currentDomain);
+  if (opts.expectedDomain) addRow('It claims to be', opts.expectedDomain);
+  for (const reason of (opts.reasons || []).slice(0, 3)) addRow('Detected', reason);
+  card.appendChild(facts);
+
+  const actions = document.createElement('div');
+  actions.className = 'xp-int-actions';
+
+  if (opts.onGoToOfficial && opts.expectedDomain) {
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'xp-int-primary';
+    go.textContent = `Go to the real ${opts.expectedDomain}`;
+    go.addEventListener('click', () => opts.onGoToOfficial!());
+    actions.appendChild(go);
+  }
+
+  const leave = document.createElement('button');
+  leave.type = 'button';
+  leave.className = opts.onGoToOfficial && opts.expectedDomain ? 'xp-int-secondary' : 'xp-int-primary';
+  leave.textContent = 'Leave this site';
+  leave.addEventListener('click', () => opts.onLeave());
+  actions.appendChild(leave);
+
+  if (opts.onReportPhishing) {
+    const report = document.createElement('button');
+    report.type = 'button';
+    report.className = 'xp-int-secondary';
+    report.textContent = 'Report phishing';
+    report.addEventListener('click', async () => {
+      report.disabled = true;
+      report.textContent = 'Reporting\u2026';
+      const res = await opts.onReportPhishing!().catch(() => ({ success: false }));
+      report.textContent = res.success ? 'Reported' : 'Try again';
+      report.disabled = res.success;
+    });
+    actions.appendChild(report);
+  }
+
+  card.appendChild(actions);
+
+  if (opts.onProceedAnyway) {
+    const escape = document.createElement('button');
+    escape.type = 'button';
+    escape.className = 'xp-int-escape';
+    escape.disabled = true;
+    let remaining = PROCEED_DELAY_SECONDS;
+    escape.textContent = `I understand the risk, continue (${remaining})`;
+    const tick = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        window.clearInterval(tick);
+        escape.disabled = false;
+        escape.textContent = 'I understand the risk, continue';
+        return;
+      }
+      escape.textContent = `I understand the risk, continue (${remaining})`;
+    }, 1000);
+    escape.addEventListener('click', async () => {
+      escape.disabled = true;
+      await opts.onProceedAnyway!().catch(() => ({ success: false }));
+      window.clearInterval(tick);
+      closePhishingInterstitial();
+    });
+    card.appendChild(escape);
+  }
+
+  const foot = document.createElement('div');
+  foot.className = 'xp-int-foot';
+  foot.textContent = 'Your vault stayed locked. No credentials were released to this page.';
+  card.appendChild(foot);
+
+  shell.appendChild(card);
+  root.appendChild(shell);
+  interstitialEl = shell;
+
+  // A phishing page has every reason to delete our host node. Put it back.
+  try {
+    const hostNode = document.getElementById(HOST_ID);
+    if (hostNode?.parentNode) {
+      interstitialGuard = new MutationObserver(() => {
+        if (interstitialEl && !document.getElementById(HOST_ID)) {
+          document.documentElement.appendChild(hostNode);
+        }
+      });
+      interstitialGuard.observe(document.documentElement, { childList: true, subtree: false });
+    }
+  } catch {
+    /* observation unavailable - the interstitial still renders */
+  }
+}
+
+export function closePhishingInterstitial(): void {
+  interstitialGuard?.disconnect();
+  interstitialGuard = null;
+  if (interstitialEl) {
+    interstitialEl.remove();
+    interstitialEl = null;
+  }
+}
+
+export function isInterstitialOpen(): boolean {
+  return interstitialEl !== null;
 }
 
 export function closeRiskWarning(): void {
