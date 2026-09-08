@@ -73,6 +73,15 @@ describe('brandsFromResourceOrigins', () => {
   it('ignores the page serving its own assets', () => {
     expect(brandsFromResourceOrigins(['https://cdn.paypal.com/logo.png'], 'paypal.com')).toEqual([]);
   });
+
+  it('ignores standard federated SSO / OAuth client SDK assets', () => {
+    const ssoAssets = [
+      'https://accounts.google.com/gsi/client',
+      'https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js',
+      'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+    ];
+    expect(brandsFromResourceOrigins(ssoAssets, 'dropbox.com')).toEqual([]);
+  });
 });
 
 describe('looksLikeFakeBrowserChrome', () => {

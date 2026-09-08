@@ -138,6 +138,20 @@ function decodeSafely(s: string): string {
 }
 
 /**
+ * Official OAuth / OIDC / Federated Identity SDK and asset hosts. Loading SDK scripts
+ * or official sign-in button icons from these hosts on a third-party site is standard
+ * web practice and should NOT be flagged as asset hotlinking or impersonation.
+ */
+export const FEDERATED_SSO_ASSET_HOSTS: ReadonlySet<string> = new Set([
+  'accounts.google.com',
+  'apis.google.com',
+  'appleid.apple.com',
+  'appleid.cdn-apple.com',
+  'login.microsoftonline.com',
+  'connect.facebook.net',
+]);
+
+/**
  * Lexicon brands whose OWN domains serve subresources to this page. A page
  * hotlinking the real brand's asset CDN while living elsewhere is copying a
  * login page, which is cheap to detect and expensive for an attacker to avoid.
@@ -148,6 +162,7 @@ export function brandsFromResourceOrigins(urls: string[], pageHost: string): str
   for (const raw of urls) {
     const host = extractHostname(raw);
     if (!host) continue;
+    if (FEDERATED_SSO_ASSET_HOSTS.has(host)) continue;
     const reg = registrableDomain(host);
     if (!reg || reg === pageReg) continue;
     const brand = reg.split('.')[0];
