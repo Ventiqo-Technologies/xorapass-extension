@@ -16,10 +16,7 @@
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
   },
   "host_permissions": [
-    "https://app.xorapass.com/*",
-    "https://dev-app.xorapass.com/*",
-    "http://localhost:8000/*",
-    "http://localhost:8080/*"
+    "https://app.xorapass.com/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -63,9 +60,7 @@
   "externally_connectable": {
     "ids": ["*"],
     "matches": [
-      "https://app.xorapass.com/*",
-      "https://dev-app.xorapass.com/*",
-      "http://localhost:3000/*"
+      "https://app.xorapass.com/*"
     ]
   }
 }
