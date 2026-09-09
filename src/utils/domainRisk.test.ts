@@ -156,4 +156,13 @@ describe('Domain Risk Assessment — Acceptance Criteria', () => {
     expect(res.decision).toBe('allow');
     expect(res.riskScore).toBe(0);
   });
+
+  it('ALLOWS legitimate regional ccTLDs without suspicious signals (e.g. www.google.nl for google.com)', () => {
+    const res = assessDomainRisk('www.google.nl', savedVaultHosts, [], 'https://www.google.nl');
+    expect(res.decision).toBe('allow');
+    expect(res.riskScore).toBe(0);
+    expect(res.riskLevel).toBe('safe');
+    expect(res.reasons).toHaveLength(0);
+  });
 });
+

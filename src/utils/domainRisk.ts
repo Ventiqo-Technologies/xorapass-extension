@@ -623,6 +623,8 @@ export function assessDomainRisk(
     // ──────────────────────────────────────────────────────────────────────────
     const isBrandInHost = pageHostname.includes(brand) || decodedPageHost.includes(brand) || pageSkeleton.includes(brandSkeleton);
     const hasSuspiciousKeyword = assessment.signals.suspiciousKeywords.length > 0;
+    const pageSldClean = pageSld.toLowerCase();
+    const isExactBrandSld = pageSldClean === brand;
 
     if (isBrandInHost && pageReg !== target) {
       // Check if brand is combined with login/secure/verify keywords or hyphenated/subdomain
@@ -644,9 +646,9 @@ export function assessDomainRisk(
         detectedReasons.push(
           `Brand keyword abuse: Brand "${brand}" (for "${target}") combined with security keywords [${kwList}] on unauthorized domain "${pageReg}"`
         );
-      } else if (isTokenMatch) {
+      } else if (isTokenMatch && !isExactBrandSld) {
         // Brand name used as a prefix/suffix or token on an unrelated domain
-        // e.g. stripe-portal.net, stripe-app.org
+        // e.g. stripe-portal.net, stripe-app.org (excluding exact regional domain variations like google.nl vs google.com)
         const score = 80;
         if (score > highestScore) {
           highestScore = score;
@@ -667,24 +669,26 @@ export function assessDomainRisk(
     // Threat C: Suspicious TLD / Domain Extension Changes
     // e.g. user has paypal.com, current site is paypal.xyz or paypal.top
     // ──────────────────────────────────────────────────────────────────────────
-    const pageSldClean = pageSld.toLowerCase();
-    if (pageSldClean === brand && pageReg !== target) {
+    if (isExactBrandSld && pageReg !== target) {
       const isHighTld = assessment.signals.isHighRiskTld;
-      const score = isHighTld ? 85 : 75;
-      if (score > highestScore) {
-        highestScore = score;
-        assessment.matchedTarget = target;
+      // Only flag as suspicious TLD change if hosted on a known high-risk/disposable TLD or has security keywords
+      if (isHighTld || hasSuspiciousKeyword) {
+        const score = isHighTld ? 85 : 75;
+        if (score > highestScore) {
+          highestScore = score;
+          assessment.matchedTarget = target;
+        }
+        assessment.signals.suspiciousTldChange = {
+          savedTld: profile.tld,
+          currentTld: pageTld,
+          brand,
+        };
+        detectedReasons.push(
+          `Suspicious TLD change: Exact brand name "${brand}" from saved "${target}" hosted on unexpected ${
+            isHighTld ? 'high-risk ' : ''
+          }TLD ".${pageTld}"`
+        );
       }
-      assessment.signals.suspiciousTldChange = {
-        savedTld: profile.tld,
-        currentTld: pageTld,
-        brand,
-      };
-      detectedReasons.push(
-        `Suspicious TLD change: Exact brand name "${brand}" from saved "${target}" hosted on unexpected ${
-          isHighTld ? 'high-risk ' : ''
-        }TLD ".${pageTld}"`
-      );
     }
 
     // ──────────────────────────────────────────────────────────────────────────
