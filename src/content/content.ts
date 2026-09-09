@@ -39,6 +39,7 @@ import {
   type OverlayCredential,
 } from './overlay';
 import { collectPageSignals, isWorthAssessing, type PageSignals } from '../utils/pageSignals';
+import { WEB_APP_URL } from '../utils/config';
 
 let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
@@ -1796,6 +1797,7 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
 (function installWebBridge() {
   const ALLOWED_ORIGINS = new Set([
     'https://app.xorapass.com',
+    WEB_APP_URL,
   ]);
 
   window.addEventListener('message', (event: MessageEvent) => {

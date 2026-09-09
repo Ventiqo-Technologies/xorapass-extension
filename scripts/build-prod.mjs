@@ -18,7 +18,6 @@ const steps = [
   ['npx', ['tsc']],
   ['npx', ['vite', 'build']],
   ['npx', ['vite', 'build', '--mode', 'content']],
-  ['node', ['scripts/verify-production.mjs']],
 ];
 
 for (const [cmd, args] of steps) {
@@ -31,3 +30,26 @@ for (const [cmd, args] of steps) {
     process.exit(result.status ?? 1);
   }
 }
+
+// Ensure dist/manifest.json only contains production origins
+import { readFile, writeFile } from 'node:fs/promises';
+const manifestPath = 'dist/manifest.json';
+try {
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  if (Array.isArray(manifest.host_permissions)) {
+    manifest.host_permissions = manifest.host_permissions.filter(p => !p.includes('dev-app.xorapass.com'));
+  }
+  if (Array.isArray(manifest.externally_connectable?.matches)) {
+    manifest.externally_connectable.matches = manifest.externally_connectable.matches.filter(m => !m.includes('dev-app.xorapass.com'));
+  }
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+} catch (err) {
+  console.error('Failed to sanitize production manifest:', err);
+  process.exit(1);
+}
+
+const verifyResult = spawnSync('node', ['scripts/verify-production.mjs'], { stdio: 'inherit', env, shell: true });
+if (verifyResult.error || verifyResult.status !== 0) {
+  process.exit(verifyResult.status ?? 1);
+}
+
