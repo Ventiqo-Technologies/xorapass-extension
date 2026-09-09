@@ -1,11 +1,11 @@
 {
   "name": "cloudpass-browser-extension",
   "private": true,
-  "version": "1.0.8",
+  "version": "1.0.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && vite build --mode content",
+    "build": "node scripts/build-prod.mjs",
     "package:firefox": "npm run build && npx web-ext build --source-dir dist --artifacts-dir web-ext-artifacts --overwrite-dest",
     "deploy:firefox": "npx web-ext sign --source-dir dist --channel listed --api-key $AMO_JWT_ISSUER --api-secret $AMO_JWT_SECRET",
     "preview": "vite preview",

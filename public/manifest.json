@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "XoraPass Zero-Knowledge Vault",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Zero-knowledge autofill companion for XoraPass.",
   "permissions": [
     "activeTab",
@@ -16,10 +16,7 @@
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
   },
   "host_permissions": [
-    "https://app.xorapass.com/*",
-    "https://dev-app.xorapass.com/*",
-    "http://localhost:8000/*",
-    "http://localhost:8080/*"
+    "https://app.xorapass.com/*"
   ],
   "action": {
     "default_popup": "popup.html",

@@ -1051,6 +1051,16 @@ browser.runtime.onMessage.addListener((message, sender) => {
     }));
   }
 
+  if (type === 'GET_PLAN_FEATURES') {
+    // Reuses the existing GET /auth/me response (already returned to every
+    // authenticated caller) rather than a new endpoint -- fails open
+    // (allowPasteGuard: true) on any error so a transient backend hiccup
+    // never hides a feature the user's plan actually includes.
+    return apiJwt('GET', '/auth/me').then(({ ok, data }) => ({
+      allowPasteGuard: ok ? data?.features?.allow_secret_rotation !== false : true,
+    }));
+  }
+
   if (type === 'GET_DOMAIN_RISK_SETTINGS') {
     return getDomainRiskSettings(globalThis.fetch, getJwt).then((settings) => ({ settings }));
   }
