@@ -909,7 +909,7 @@ export const PopupApp: React.FC = () => {
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
-    <div className="w-[380px] h-[550px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50/50 border border-slate-900/10 shadow-2xl">
+    <div className={`w-[380px] ${unlocked ? 'h-[550px]' : 'h-[490px]'} text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50/50 border border-slate-900/10 shadow-2xl rounded-xl`}>
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
       {unlocked && (
@@ -957,8 +957,8 @@ export const PopupApp: React.FC = () => {
         // master password must only ever be checked against XoraPass's own
         // Argon2id verification, not duplicated into a second, weaker store.
         // Enter-to-submit is replicated manually below instead.
-        <div className="flex-1 flex flex-col justify-between p-6 z-10 animate-fade-in bg-gradient-to-b from-white via-slate-50/90 to-slate-100/70">
-          <div className="text-center pt-2 space-y-2.5">
+        <div className="flex-1 flex flex-col justify-between px-5 py-4 z-10 animate-fade-in bg-gradient-to-b from-white via-slate-50/90 to-slate-100/70">
+          <div className="text-center pt-1 space-y-2">
             <div className="relative w-16 h-16 mx-auto flex items-center justify-center">
               <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-brand-cyan/25 to-brand-teal/20 blur-md" />
               <div className="w-14 h-14 rounded-2xl bg-white border border-slate-900/10 flex items-center justify-center shadow-md relative">
@@ -2483,7 +2483,7 @@ export const PopupApp: React.FC = () => {
               <span className="text-[10px] leading-none tracking-tight">Settings</span>
             </button>
           </nav>
-          <div className="text-center text-[9px] text-slate-400 font-mono pb-1 select-text">
+          <div className="text-center text-[9px] text-slate-400 font-mono py-1 bg-white/95 border-t border-slate-900/8 select-text">
             v{browser.runtime.getManifest().version}
           </div>
         </div>
