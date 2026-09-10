@@ -909,7 +909,7 @@ export const PopupApp: React.FC = () => {
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
-    <div className="w-[380px] min-h-[480px] max-h-[600px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50">
+    <div className={`w-[380px] ${unlocked ? 'h-[550px]' : 'min-h-[480px]'} text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50`}>
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
       {unlocked && (
