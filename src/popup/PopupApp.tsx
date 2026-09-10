@@ -909,7 +909,7 @@ export const PopupApp: React.FC = () => {
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
-    <div className="w-[380px] h-[550px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50 border border-slate-900/10 shadow-2xl rounded-2xl">
+    <div className="w-[380px] min-h-[480px] max-h-[600px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50">
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
       {unlocked && (
@@ -2483,7 +2483,7 @@ export const PopupApp: React.FC = () => {
               <span className="text-[10px] leading-none tracking-tight">Settings</span>
             </button>
           </nav>
-          <div className="text-center text-[9px] text-slate-400 font-mono py-1 bg-white/95 border-t border-slate-900/8 select-text">
+          <div className="text-center text-[10px] text-slate-400 font-mono py-1 bg-white/95 select-text">
             v{browser.runtime.getManifest().version}
           </div>
         </div>
