@@ -1106,7 +1106,7 @@ export const PopupApp: React.FC = () => {
               <Shield className="w-3.5 h-3.5 text-brand-cyan shrink-0" />
               <span>Zero-Knowledge Encrypted</span>
             </div>
-            <div className="text-[9px] text-slate-300 font-mono select-text">
+            <div className="text-[9px] text-slate-400 font-mono select-text">
               v{browser.runtime.getManifest().version}
             </div>
           </div>
@@ -2483,7 +2483,7 @@ export const PopupApp: React.FC = () => {
               <span className="text-[10px] leading-none tracking-tight">Settings</span>
             </button>
           </nav>
-          <div className="text-center text-[9px] text-slate-300 font-mono pb-1 select-text">
+          <div className="text-center text-[9px] text-slate-400 font-mono pb-1 select-text">
             v{browser.runtime.getManifest().version}
           </div>
         </div>
