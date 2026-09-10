@@ -966,14 +966,14 @@ export const PopupApp: React.FC = () => {
               </div>
             </div>
             <div>
-              <h2 className="text-lg font-black text-slate-900 tracking-tight">Unlock XoraPass</h2>
-              <p className="text-xs text-slate-500 mt-0.5 font-medium">Enter your master password to access vault</p>
+              <h2 className="text-2xl font-black text-slate-900 tracking-tight">Unlock XoraPass</h2>
+              <p className="text-sm text-slate-500 mt-0.5 font-medium">Enter your master password to access vault</p>
             </div>
           </div>
 
           <div className="space-y-3.5 my-auto py-2">
             {error && (
-              <div className="p-3 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-xl text-xs flex items-start gap-2 leading-relaxed">
+              <div className="p-3 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-xl text-sm flex items-start gap-2 leading-relaxed">
                 <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                 <span>{error}</span>
               </div>
@@ -982,18 +982,18 @@ export const PopupApp: React.FC = () => {
             {email && rememberedEmail ? (
               <div className="flex items-center justify-between p-2.5 bg-white border border-slate-900/12 rounded-xl shadow-xs">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-brand-cyan to-brand-teal text-white font-black flex items-center justify-center text-xs uppercase shrink-0 shadow-xs">
+                  <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-brand-cyan to-brand-teal text-white font-black flex items-center justify-center text-sm uppercase shrink-0 shadow-xs">
                     {email[0]}
                   </div>
                   <div className="min-w-0 flex-1 text-left">
-                    <div className="text-xs font-bold text-slate-900 font-mono truncate leading-tight">{email}</div>
-                    <div className="text-[10px] text-slate-500 font-medium">Vault locked</div>
+                    <div className="text-sm font-bold text-slate-900 font-mono truncate leading-tight">{email}</div>
+                    <div className="text-xs text-slate-500 font-medium">Vault locked</div>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => { setEmail(''); setRememberedEmail(false); }}
-                  className="text-[10px] text-brand-cyan font-bold hover:underline shrink-0 px-1 cursor-pointer"
+                  className="text-xs text-brand-cyan font-bold hover:underline shrink-0 px-1 cursor-pointer"
                 >
                   Switch
                 </button>
@@ -1010,7 +1010,7 @@ export const PopupApp: React.FC = () => {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !loading) handleLogin(); }}
-                  className="auth-input w-full pl-10 pr-3 py-3 rounded-xl text-xs text-slate-900 placeholder-slate-400 font-sans shadow-xs"
+                  className="auth-input w-full pl-10 pr-3 py-3 rounded-xl text-sm text-slate-900 placeholder-slate-400 font-sans shadow-xs"
                 />
               </div>
             )}
@@ -1031,7 +1031,7 @@ export const PopupApp: React.FC = () => {
                   if (e.key === 'Enter' && !loading) handleLogin();
                 }}
                 onKeyUp={(e) => setCapsLockOn(e.getModifierState('CapsLock'))}
-                className="auth-input w-full pl-10 pr-10 py-3 rounded-xl text-xs text-slate-900 placeholder-slate-400 font-sans shadow-xs"
+                className="auth-input w-full pl-10 pr-10 py-3 rounded-xl text-sm text-slate-900 placeholder-slate-400 font-sans shadow-xs"
               />
               <button
                 type="button"
@@ -1043,7 +1043,7 @@ export const PopupApp: React.FC = () => {
             </div>
 
             {capsLockOn && (
-              <div className="p-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-xs font-bold flex items-center gap-2 animate-fade-in">
+              <div className="p-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-sm font-bold flex items-center gap-2 animate-fade-in">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
                 <span>Caps Lock is ON</span>
               </div>
@@ -1053,7 +1053,7 @@ export const PopupApp: React.FC = () => {
               type="button"
               onClick={() => handleLogin()}
               disabled={loading}
-              className="btn-primary group w-full py-3 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-md hover:shadow-lg transition"
+              className="btn-primary group w-full py-3 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-md hover:shadow-lg transition"
             >
               {loading ? (
                 <>
@@ -1077,7 +1077,7 @@ export const PopupApp: React.FC = () => {
                 browser.tabs.create({ url: `${WEB_APP_URL}/auth?ext_id=${extId}` });
                 window.close();
               }}
-              className="w-full py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 border border-slate-900/10 hover:bg-slate-100/50 transition cursor-pointer font-semibold text-slate-700 bg-white"
+              className="w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 border border-slate-900/10 hover:bg-slate-100/50 transition cursor-pointer font-semibold text-slate-700 bg-white"
             >
               <Key className="w-4 h-4 text-brand-cyan" />
               <span>Sign in with Passkey</span>
@@ -1085,7 +1085,7 @@ export const PopupApp: React.FC = () => {
           </div>
 
           <div className="space-y-2.5 pt-2 text-center border-t border-slate-900/8">
-            <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+            <div className="flex items-center justify-between text-sm text-slate-500 px-1">
               <button
                 type="button"
                 onClick={openRecovery}
@@ -1102,11 +1102,11 @@ export const PopupApp: React.FC = () => {
               </button>
             </div>
 
-            <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-400 font-medium">
+            <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400 font-medium">
               <Shield className="w-3.5 h-3.5 text-brand-cyan shrink-0" />
               <span>Zero-Knowledge Encrypted</span>
             </div>
-            <div className="text-[9px] text-slate-400 font-mono select-text">
+            <div className="text-xs text-slate-400 font-mono select-text">
               v{browser.runtime.getManifest().version}
             </div>
           </div>
@@ -1719,8 +1719,8 @@ export const PopupApp: React.FC = () => {
                           >
                             <ItemAvatar label={item.label} url={item.url} category={item.category} size="w-7 h-7 text-xs" />
                             <div className="min-w-0 flex-1">
-                              <div className="text-xs font-bold text-slate-900 truncate leading-tight">{item.label}</div>
-                              <div className="text-[10px] text-slate-500 font-mono truncate">{getItemSubtitle(item)}</div>
+                              <div className="text-sm font-bold text-slate-900 truncate leading-tight">{item.label}</div>
+                              <div className="text-xs text-slate-500 font-mono truncate">{getItemSubtitle(item)}</div>
                             </div>
                             <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                               {item.username && (
@@ -1832,8 +1832,8 @@ export const PopupApp: React.FC = () => {
                           <ItemAvatar label={item.label} url={item.url} category={item.category} size="w-7 h-7 text-xs" />
 
                           <div className="min-w-0 flex-1">
-                            <div className="text-xs font-bold text-slate-800 truncate leading-tight group-hover:text-brand-cyan transition">{item.label}</div>
-                            <div className="text-[9px] text-slate-500 font-mono truncate mt-0.5">{getItemSubtitle(item)}</div>
+                            <div className="text-sm font-bold text-slate-800 truncate leading-tight group-hover:text-brand-cyan transition">{item.label}</div>
+                            <div className="text-xs text-slate-500 font-mono truncate mt-0.5">{getItemSubtitle(item)}</div>
                           </div>
 
                           <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -2431,7 +2431,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <LayoutGrid className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">Vault</span>
+              <span className="text-xs leading-none tracking-tight">Vault</span>
             </button>
 
             <button
@@ -2442,7 +2442,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <Wand2 className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">Generator</span>
+              <span className="text-xs leading-none tracking-tight">Generator</span>
             </button>
 
             <button
@@ -2453,7 +2453,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <Activity className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">Health</span>
+              <span className="text-xs leading-none tracking-tight">Health</span>
             </button>
 
             <button
@@ -2464,7 +2464,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <ShieldAlert className="w-4 h-4 mb-0.5 shrink-0 text-brand-cyan" />
-              <span className="text-[10px] leading-none tracking-tight">Firewall</span>
+              <span className="text-xs leading-none tracking-tight">Firewall</span>
               {activeAiTabs.length > 0 && (
                 <span className="absolute top-1 right-2 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-brand-cyan text-white text-[9px] font-bold shadow-xs animate-pulse">
                   {activeAiTabs.length}
@@ -2480,7 +2480,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <Settings className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">Settings</span>
+              <span className="text-xs leading-none tracking-tight">Settings</span>
             </button>
           </nav>
           <div className="text-center text-[10px] text-slate-400 font-mono py-1 bg-white/95 select-text">
