@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import {
   Shield,
@@ -303,6 +303,13 @@ export const PopupApp: React.FC = () => {
   const [tempSalt, setTempSalt] = useState('');
   const [capsLockOn, setCapsLockOn] = useState(false);
   const [rememberedEmail, setRememberedEmail] = useState(false);
+  const mfaInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (step === 'mfa') {
+      setTimeout(() => mfaInputRef.current?.focus(), 50);
+    }
+  }, [step]);
 
   useEffect(() => {
     browser.storage.local.get(['vaultCache']).then((data) => {
@@ -791,6 +798,7 @@ export const PopupApp: React.FC = () => {
     setSelectedItem(null);
     setSearchTerm('');
     setEmail('');
+    setRememberedEmail(false);
   };
 
   const copyToClipboard = (text: string, id: string, field: string) => {
@@ -909,13 +917,19 @@ export const PopupApp: React.FC = () => {
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
-    <div className="w-[380px] h-[550px] text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50/50 border border-slate-900/10 shadow-2xl">
+    <div className={`w-[380px] ${unlocked ? 'h-[550px]' : 'min-h-[480px]'} text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50`}>
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
       {unlocked && (
         <header className="glass-card border-x-0 border-t-0 border-b border-slate-900/10 px-3.5 py-2.5 flex items-center justify-between z-20 flex-shrink-0">
           <div className="flex items-center gap-2">
-            <LogoHorizontal className="h-6 w-auto" />
+            <button
+              onClick={openWebVault}
+              className="cursor-pointer hover:opacity-85 transition flex items-center"
+              title="Open XoraPass Web Vault"
+            >
+              <LogoHorizontal className="h-6 w-auto" />
+            </button>
             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-900/5 border border-slate-900/8 text-[9px] font-semibold text-slate-600">
               <span className={`w-1.5 h-1.5 rounded-full ${offline ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
               <span>{offline ? 'Offline' : 'Connected'}</span>
@@ -923,6 +937,13 @@ export const PopupApp: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-1">
+            <button
+              onClick={openWebVault}
+              className="p-1.5 bg-white/80 border border-slate-900/10 hover:bg-white text-brand-cyan hover:text-brand-teal rounded-lg transition cursor-pointer flex items-center justify-center shadow-xs"
+              title="Open Web Vault"
+            >
+              <Globe className="w-3.5 h-3.5" />
+            </button>
             <button
               onClick={() => refreshVault(true)}
               disabled={refreshing || offline}
@@ -957,8 +978,8 @@ export const PopupApp: React.FC = () => {
         // master password must only ever be checked against XoraPass's own
         // Argon2id verification, not duplicated into a second, weaker store.
         // Enter-to-submit is replicated manually below instead.
-        <div className="flex-1 flex flex-col justify-between p-6 z-10 animate-fade-in bg-gradient-to-b from-white via-slate-50/90 to-slate-100/70">
-          <div className="text-center pt-2 space-y-2.5">
+        <div className="flex-1 flex flex-col justify-between p-6 z-10 animate-fade-in bg-slate-50/50">
+          <div className="text-center pt-2 space-y-2">
             <div className="relative w-16 h-16 mx-auto flex items-center justify-center">
               <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-brand-cyan/25 to-brand-teal/20 blur-md" />
               <div className="w-14 h-14 rounded-2xl bg-white border border-slate-900/10 flex items-center justify-center shadow-md relative">
@@ -966,14 +987,14 @@ export const PopupApp: React.FC = () => {
               </div>
             </div>
             <div>
-              <h2 className="text-lg font-black text-slate-900 tracking-tight">Unlock XoraPass</h2>
-              <p className="text-xs text-slate-500 mt-0.5 font-medium">Enter your master password to access vault</p>
+              <h2 className="text-2xl font-black text-slate-900 tracking-tight">Unlock XoraPass</h2>
+              <p className="text-sm text-slate-500 mt-0.5 font-medium">Enter your master password to access vault</p>
             </div>
           </div>
 
           <div className="space-y-3.5 my-auto py-2">
             {error && (
-              <div className="p-3 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-xl text-xs flex items-start gap-2 leading-relaxed">
+              <div className="p-3 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-xl text-sm flex items-start gap-2 leading-relaxed">
                 <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                 <span>{error}</span>
               </div>
@@ -982,18 +1003,18 @@ export const PopupApp: React.FC = () => {
             {email && rememberedEmail ? (
               <div className="flex items-center justify-between p-2.5 bg-white border border-slate-900/12 rounded-xl shadow-xs">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-brand-cyan to-brand-teal text-white font-black flex items-center justify-center text-xs uppercase shrink-0 shadow-xs">
+                  <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-brand-cyan to-brand-teal text-white font-black flex items-center justify-center text-sm uppercase shrink-0 shadow-xs">
                     {email[0]}
                   </div>
                   <div className="min-w-0 flex-1 text-left">
-                    <div className="text-xs font-bold text-slate-900 font-mono truncate leading-tight">{email}</div>
-                    <div className="text-[10px] text-slate-500 font-medium">Vault locked</div>
+                    <div className="text-sm font-bold text-slate-900 font-mono truncate leading-tight">{email}</div>
+                    <div className="text-xs text-slate-500 font-medium">Vault locked</div>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => { setEmail(''); setRememberedEmail(false); }}
-                  className="text-[10px] text-brand-cyan font-bold hover:underline shrink-0 px-1 cursor-pointer"
+                  className="text-xs text-brand-cyan font-bold hover:underline shrink-0 px-1 cursor-pointer"
                 >
                   Switch
                 </button>
@@ -1010,7 +1031,7 @@ export const PopupApp: React.FC = () => {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !loading) handleLogin(); }}
-                  className="auth-input w-full pl-10 pr-3 py-3 rounded-xl text-xs text-slate-900 placeholder-slate-400 font-sans shadow-xs"
+                  className="auth-input w-full pl-10 pr-3 py-3 rounded-xl text-sm text-slate-900 placeholder-slate-400 font-sans shadow-xs"
                 />
               </div>
             )}
@@ -1031,7 +1052,7 @@ export const PopupApp: React.FC = () => {
                   if (e.key === 'Enter' && !loading) handleLogin();
                 }}
                 onKeyUp={(e) => setCapsLockOn(e.getModifierState('CapsLock'))}
-                className="auth-input w-full pl-10 pr-10 py-3 rounded-xl text-xs text-slate-900 placeholder-slate-400 font-sans shadow-xs"
+                className="auth-input w-full pl-10 pr-10 py-3 rounded-xl text-sm text-slate-900 placeholder-slate-400 font-sans shadow-xs"
               />
               <button
                 type="button"
@@ -1043,7 +1064,7 @@ export const PopupApp: React.FC = () => {
             </div>
 
             {capsLockOn && (
-              <div className="p-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-xs font-bold flex items-center gap-2 animate-fade-in">
+              <div className="p-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-sm font-bold flex items-center gap-2 animate-fade-in">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
                 <span>Caps Lock is ON</span>
               </div>
@@ -1053,7 +1074,7 @@ export const PopupApp: React.FC = () => {
               type="button"
               onClick={() => handleLogin()}
               disabled={loading}
-              className="btn-primary group w-full py-3 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-md hover:shadow-lg transition"
+              className="btn-primary group w-full py-3 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-md hover:shadow-lg transition"
             >
               {loading ? (
                 <>
@@ -1077,7 +1098,7 @@ export const PopupApp: React.FC = () => {
                 browser.tabs.create({ url: `${WEB_APP_URL}/auth?ext_id=${extId}` });
                 window.close();
               }}
-              className="w-full py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 border border-slate-900/10 hover:bg-slate-100/50 transition cursor-pointer font-semibold text-slate-700 bg-white"
+              className="w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 border border-slate-900/10 hover:bg-slate-100/50 transition cursor-pointer font-semibold text-slate-700 bg-white"
             >
               <Key className="w-4 h-4 text-brand-cyan" />
               <span>Sign in with Passkey</span>
@@ -1085,7 +1106,7 @@ export const PopupApp: React.FC = () => {
           </div>
 
           <div className="space-y-2.5 pt-2 text-center border-t border-slate-900/8">
-            <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+            <div className="flex items-center justify-between text-sm text-slate-500 px-1">
               <button
                 type="button"
                 onClick={openRecovery}
@@ -1102,21 +1123,27 @@ export const PopupApp: React.FC = () => {
               </button>
             </div>
 
-            <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-400 font-medium">
+            <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400 font-medium">
               <Shield className="w-3.5 h-3.5 text-brand-cyan shrink-0" />
               <span>Zero-Knowledge Encrypted</span>
+            </div>
+            <div className="text-xs text-slate-400 font-mono select-text">
+              v{browser.runtime.getManifest().version}
             </div>
           </div>
         </div>
       ) : !unlocked && step === 'mfa' ? (
         <form onSubmit={handleMfaSubmit} className="flex-1 flex flex-col justify-center space-y-4 max-w-[310px] mx-auto w-full p-6 animate-fade-in">
           <div className="auth-card rounded-2xl p-5 space-y-4 text-center shadow-xl">
-            <div className="w-12 h-12 rounded-full bg-brand-emerald/10 border border-brand-emerald/20 flex items-center justify-center mx-auto text-brand-emerald">
-              <Shield className="w-6 h-6 animate-pulse" />
+            <div className="relative w-14 h-14 mx-auto flex items-center justify-center">
+              <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-brand-cyan/25 to-brand-teal/20 blur-md" />
+              <div className="w-12 h-12 rounded-2xl bg-white border border-slate-900/10 flex items-center justify-center shadow-md relative">
+                <LogoIcon className="w-8 h-8" />
+              </div>
             </div>
             <div>
-              <h2 className="text-sm font-bold text-slate-900">Two-Factor Authentication</h2>
-              <p className="text-[11px] text-slate-500 mt-0.5">Enter the 6-digit verification code</p>
+              <h2 className="text-base font-bold text-slate-900">Two-Factor Authentication</h2>
+              <p className="text-xs text-slate-500 mt-0.5">Enter the 6-digit verification code</p>
             </div>
 
             {error && (
@@ -1126,53 +1153,91 @@ export const PopupApp: React.FC = () => {
               </div>
             )}
 
-            <input
-              required
-              disabled={loading}
-              type="text"
-              maxLength={6}
-              placeholder="000000"
-              value={mfaCode}
-              onChange={(e) => {
-                const val = e.target.value.replace(/\D/g, '');
-                setMfaCode(val);
-                if (val.length === 6 && mfaToken && tempEncKey) {
-                  // Trigger validation automatically
-                  setLoading(true);
-                  setError(null);
-                  axios.post(`${API_BASE_URL}/api/auth/mfa/verify`, {
-                    email,
-                    mfa_token: mfaToken,
-                    code: val
-                  })
-                    .then((verifyRes) => {
-                      return processVault(verifyRes.data.access_token, tempEncKey, tempSalt);
+            {/* Segmented 6-Digit OTP Box Display */}
+            <div
+              className="relative flex items-center justify-between gap-1.5 cursor-text py-1"
+              onClick={() => mfaInputRef.current?.focus()}
+            >
+              <input
+                ref={mfaInputRef}
+                required
+                autoFocus
+                disabled={loading}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                value={mfaCode}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                  setMfaCode(val);
+                  if (val.length === 6 && mfaToken && tempEncKey) {
+                    // Trigger validation automatically
+                    setLoading(true);
+                    setError(null);
+                    axios.post(`${API_BASE_URL}/api/auth/mfa/verify`, {
+                      email,
+                      mfa_token: mfaToken,
+                      code: val
                     })
-                    .catch((err: any) => {
-                      console.error(err);
-                      setError(err.response?.data?.detail || "Invalid MFA code.");
-                    })
-                    .finally(() => {
-                      setLoading(false);
-                    });
-                }
-              }}
-              className="w-full px-3 py-2.5 text-center bg-white border border-slate-900/12 rounded-xl text-xl text-slate-900 placeholder-slate-300 focus:outline-none focus:border-brand-emerald font-mono tracking-[0.5em] shadow-xs"
-            />
+                      .then((verifyRes) => {
+                        return processVault(verifyRes.data.access_token, tempEncKey, tempSalt, verifyRes.data.refresh_token);
+                      })
+                      .catch((err: any) => {
+                        console.error(err);
+                        setError(err.response?.data?.detail || "Invalid MFA code.");
+                      })
+                      .finally(() => {
+                        setLoading(false);
+                      });
+                  }
+                }}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-text pointer-events-auto"
+                aria-label="Two-factor authentication code"
+              />
+
+              {[0, 1, 2, 3, 4, 5].map((index) => {
+                const digit = mfaCode[index];
+                const isCurrent = mfaCode.length === index;
+                const isLastAndFilled = mfaCode.length === 6 && index === 5;
+                const isActive = isCurrent || isLastAndFilled;
+
+                return (
+                  <div
+                    key={index}
+                    className={`w-10 h-12 flex items-center justify-center rounded-xl font-mono text-xl font-bold transition-all shadow-xs ${
+                      isActive
+                        ? 'bg-white border-2 border-brand-cyan shadow-sm ring-2 ring-brand-cyan/20 text-slate-900 scale-105'
+                        : digit
+                        ? 'bg-white border border-slate-900/15 text-slate-900'
+                        : 'bg-slate-50/80 border border-slate-900/10 text-slate-300'
+                    }`}
+                  >
+                    {digit ? (
+                      <span>{digit}</span>
+                    ) : isCurrent ? (
+                      <span className="w-2 h-0.5 bg-brand-cyan rounded-full animate-pulse" />
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-slate-200" />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
 
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => { setStep('login'); setMfaCode(''); }}
                 disabled={loading}
-                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-sm transition cursor-pointer"
               >
                 Back
               </button>
               <button
                 type="submit"
                 disabled={loading || mfaCode.length !== 6}
-                className="flex-[2] btn-primary py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-xs"
+                className="flex-[2] btn-primary py-2.5 rounded-xl text-sm flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-xs"
               >
                 {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
                 <span>Verify</span>
@@ -1203,12 +1268,12 @@ export const PopupApp: React.FC = () => {
                 <div className="flex items-center justify-between pb-1 border-b border-slate-900/8">
                   <button
                     onClick={() => setSelectedItem(null)}
-                    className="flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-slate-900 transition cursor-pointer"
+                    className="flex items-center gap-1.5 text-sm font-bold text-slate-600 hover:text-slate-900 transition cursor-pointer"
                   >
                     <ArrowLeft className="w-4 h-4" /> Back to Vault
                   </button>
                   <span
-                    className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider text-white"
+                    className="px-2.5 py-0.5 rounded-md text-xs font-bold uppercase tracking-wider text-white"
                     style={{ backgroundColor: categoryColor(selectedItem.category) }}
                   >
                     {categoryLabel(selectedItem.category)}
@@ -1219,10 +1284,10 @@ export const PopupApp: React.FC = () => {
                   <div className="flex items-center gap-3">
                     <ItemAvatar label={selectedItem.label} url={selectedItem.url} category={selectedItem.category} size="w-10 h-10 text-sm" />
                     <div className="min-w-0 flex-1">
-                      <h3 className="text-sm font-extrabold text-slate-900 truncate leading-tight">{selectedItem.label}</h3>
+                      <h3 className="text-base font-extrabold text-slate-900 truncate leading-tight">{selectedItem.label}</h3>
                       {selectedItem.url && (
-                        <div className="text-[10px] text-slate-500 truncate font-mono mt-0.5 flex items-center gap-1">
-                          <Globe className="w-3 h-3 text-brand-cyan shrink-0" />
+                        <div className="text-xs text-slate-500 truncate font-mono mt-0.5 flex items-center gap-1">
+                          <Globe className="w-3.5 h-3.5 text-brand-cyan shrink-0" />
                           <span>{extractHostname(selectedItem.url)}</span>
                         </div>
                       )}
@@ -1233,9 +1298,9 @@ export const PopupApp: React.FC = () => {
                     <div className="space-y-2">
                       {selectedItem.cardholderName && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Cardholder Name</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Cardholder Name</div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.cardholderName}</span>
+                            <span className="text-sm font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.cardholderName}</span>
                             <button
                               onClick={() => copyToClipboard(selectedItem.cardholderName || '', selectedItem.id, 'cardholderName')}
                               className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
@@ -1252,9 +1317,9 @@ export const PopupApp: React.FC = () => {
                       )}
                       {selectedItem.cardNumber && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Card Number</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Card Number</div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
+                            <span className="text-sm font-mono font-bold text-slate-900 truncate select-all">
                               {showDetailPassword ? selectedItem.cardNumber : `•••• •••• •••• ${selectedItem.cardNumber.replace(/\s+/g, '').slice(-4)}`}
                             </span>
                             <div className="flex items-center gap-1 shrink-0">
@@ -1282,13 +1347,13 @@ export const PopupApp: React.FC = () => {
                       )}
                       <div className="grid grid-cols-2 gap-2">
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Expiry Date</div>
-                          <span className="text-xs font-mono font-semibold text-slate-800 block">{selectedItem.expiryDate || '—'}</span>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Expiry Date</div>
+                          <span className="text-sm font-mono font-semibold text-slate-800 block">{selectedItem.expiryDate || '—'}</span>
                         </div>
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">CVV</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">CVV</div>
                           <div className="flex items-center justify-between gap-1">
-                            <span className="text-xs font-mono font-semibold text-slate-800">
+                            <span className="text-sm font-mono font-semibold text-slate-800">
                               {showDetailPassword ? selectedItem.cvv : '•••'}
                             </span>
                             <button
@@ -1297,9 +1362,9 @@ export const PopupApp: React.FC = () => {
                               title="Copy CVV"
                             >
                               {copiedField?.id === selectedItem.id && copiedField?.field === 'cvv' ? (
-                                <Check className="w-3 h-3 text-brand-emerald" />
+                                <Check className="w-3.5 h-3.5 text-brand-emerald" />
                               ) : (
-                                <Copy className="w-3 h-3" />
+                                <Copy className="w-3.5 h-3.5" />
                               )}
                             </button>
                           </div>
@@ -1313,9 +1378,9 @@ export const PopupApp: React.FC = () => {
                     <div className="space-y-2">
                       {selectedItem.username && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Username</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Username</div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
+                            <span className="text-sm font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
                             <button
                               onClick={() => copyToClipboard(selectedItem.username, selectedItem.id, 'username')}
                               className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
@@ -1332,9 +1397,9 @@ export const PopupApp: React.FC = () => {
                       )}
                       {selectedItem.privateKey && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Private Key</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Private Key</div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-[10px] font-mono text-slate-600 truncate flex-1 leading-snug">
+                            <span className="text-xs font-mono text-slate-600 truncate flex-1 leading-snug">
                               {showDetailPassword ? selectedItem.privateKey : '••••••••••••••••••••••••'}
                             </span>
                             <div className="flex items-center gap-1 shrink-0">
@@ -1362,9 +1427,9 @@ export const PopupApp: React.FC = () => {
                       )}
                       {selectedItem.publicKey && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Public Key</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Public Key</div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-[10px] font-mono text-slate-600 truncate select-all">{selectedItem.publicKey}</span>
+                            <span className="text-xs font-mono text-slate-600 truncate select-all">{selectedItem.publicKey}</span>
                             <button
                               onClick={() => copyToClipboard(selectedItem.publicKey || '', selectedItem.id, 'publicKey')}
                               className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
@@ -1381,9 +1446,9 @@ export const PopupApp: React.FC = () => {
                       )}
                       {selectedItem.passphrase && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Passphrase</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Passphrase</div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
+                            <span className="text-sm font-mono font-bold text-slate-900 truncate select-all">
                               {showDetailPassword ? selectedItem.passphrase : '••••••••'}
                             </span>
                             <button
@@ -1408,9 +1473,9 @@ export const PopupApp: React.FC = () => {
                     <div className="space-y-2">
                       {selectedItem.accountId && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Account ID / Alias</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Account ID / Alias</div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.accountId}</span>
+                            <span className="text-sm font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.accountId}</span>
                             <button
                               onClick={() => copyToClipboard(selectedItem.accountId || '', selectedItem.id, 'accountId')}
                               className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
@@ -1427,9 +1492,9 @@ export const PopupApp: React.FC = () => {
                       )}
                       {selectedItem.username && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">IAM Username</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">IAM Username</div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
+                            <span className="text-sm font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
                             <button
                               onClick={() => copyToClipboard(selectedItem.username, selectedItem.id, 'username')}
                               className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
@@ -1445,11 +1510,11 @@ export const PopupApp: React.FC = () => {
                         </div>
                       )}
                       <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                        <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400 flex items-center justify-between">
+                        <div className="text-xs uppercase tracking-wider font-bold text-slate-400 flex items-center justify-between">
                           <span>Password</span>
                         </div>
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
+                          <span className="text-sm font-mono font-bold text-slate-900 truncate select-all">
                             {showDetailPassword ? selectedItem.value : '•'.repeat(Math.min(selectedItem.value.length || 16, 24))}
                           </span>
                           <div className="flex items-center gap-1 shrink-0">
@@ -1482,9 +1547,9 @@ export const PopupApp: React.FC = () => {
                     <>
                       {selectedItem.username && (
                         <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                          <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Username / Identity</div>
+                          <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Username / Identity</div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
+                            <span className="text-sm font-mono font-semibold text-slate-800 truncate select-all">{selectedItem.username}</span>
                             <button
                               onClick={() => copyToClipboard(selectedItem.username, selectedItem.id, 'username')}
                               className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer"
@@ -1501,14 +1566,14 @@ export const PopupApp: React.FC = () => {
                       )}
 
                       <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                        <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400 flex items-center justify-between">
+                        <div className="text-xs uppercase tracking-wider font-bold text-slate-400 flex items-center justify-between">
                           <span>Password</span>
-                          <span className="text-[9px] text-slate-500 font-mono">
+                          <span className="text-xs text-slate-500 font-mono">
                             {entropyBits({ length: selectedItem.value.length, uppercase: true, lowercase: true, digits: true, symbols: true, avoidAmbiguous: false })} bits
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-mono font-bold text-slate-900 truncate select-all">
+                          <span className="text-sm font-mono font-bold text-slate-900 truncate select-all">
                             {showDetailPassword ? selectedItem.value : '•'.repeat(Math.min(selectedItem.value.length || 16, 24))}
                           </span>
                           <div className="flex items-center gap-1 shrink-0">
@@ -1539,16 +1604,16 @@ export const PopupApp: React.FC = () => {
                   {/* Website Link Field */}
                   {selectedItem.url && (
                     <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                      <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Website Address</div>
+                      <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Website Address</div>
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-mono text-slate-700 truncate select-all">{selectedItem.url}</span>
+                        <span className="text-sm font-mono text-slate-700 truncate select-all">{selectedItem.url}</span>
                         <div className="flex items-center gap-1 shrink-0">
                           <button
                             onClick={() => openUrl(selectedItem.url)}
                             className="p-1 hover:bg-slate-200 text-brand-cyan rounded transition cursor-pointer"
                             title="Open URL in new tab"
                           >
-                            <ExternalLink className="w-3.5 h-3.5" />
+                            <ExternalLink className="w-4 h-4" />
                           </button>
                         </div>
                       </div>
@@ -1558,8 +1623,8 @@ export const PopupApp: React.FC = () => {
                   {/* Notes Field */}
                   {selectedItem.notes && (
                     <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
-                      <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Secure Notes</div>
-                      <p className="text-[11px] text-slate-700 whitespace-pre-wrap font-sans leading-relaxed select-all max-h-24 overflow-y-auto custom-scrollbar">
+                      <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Secure Notes</div>
+                      <p className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed select-all max-h-24 overflow-y-auto custom-scrollbar">
                         {selectedItem.notes}
                       </p>
                     </div>
@@ -1569,20 +1634,20 @@ export const PopupApp: React.FC = () => {
                   <div className="flex gap-2 pt-1">
                     <button
                       onClick={() => copyToClipboard(selectedItem.value, selectedItem.id, 'password')}
-                      className="btn-primary flex-1 py-2 rounded-lg text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="btn-primary flex-1 py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer"
                     >
                       {copiedField?.id === selectedItem.id && copiedField?.field === 'password' ? (
-                        <><Check className="w-3.5 h-3.5" /> Password Copied</>
+                        <><Check className="w-4 h-4" /> Password Copied</>
                       ) : (
-                        <><Key className="w-3.5 h-3.5" /> Copy Password</>
+                        <><Key className="w-4 h-4" /> Copy Password</>
                       )}
                     </button>
                     {selectedItem.url && (
                       <button
                         onClick={() => openUrl(selectedItem.url)}
-                        className="py-2 px-3 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/10 text-slate-800 font-bold rounded-lg text-xs flex items-center justify-center gap-1 transition cursor-pointer shrink-0"
+                        className="py-2.5 px-3 bg-slate-900/5 hover:bg-slate-900/10 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-sm flex items-center justify-center gap-1.5 transition cursor-pointer shrink-0"
                       >
-                        <ExternalLink className="w-3.5 h-3.5" /> Launch
+                        <ExternalLink className="w-4 h-4" /> Launch
                       </button>
                     )}
                   </div>
@@ -1596,25 +1661,25 @@ export const PopupApp: React.FC = () => {
                     <div className="p-3 bg-white/90 border border-slate-900/10 rounded-xl space-y-2 shadow-xs">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
-                          <ItemAvatar label={currentHostname} url={`https://${currentHostname}`} size="w-6 h-6 text-[10px]" />
-                          <span className="truncate text-slate-900 font-bold text-xs">{currentHostname}</span>
+                          <ItemAvatar label={currentHostname} url={`https://${currentHostname}`} size="w-6 h-6 text-xs" />
+                          <span className="truncate text-slate-900 font-bold text-sm">{currentHostname}</span>
                         </div>
                         <button
                           onClick={toggleSiteDisabled}
-                          className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider border transition cursor-pointer shrink-0 ${siteDisabled
+                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider border transition cursor-pointer shrink-0 ${siteDisabled
                               ? 'bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby hover:bg-brand-ruby/20'
                               : 'bg-brand-emerald/10 border-brand-emerald/25 text-brand-emerald hover:bg-brand-emerald/20'
                             }`}
                           title={siteDisabled ? 'Autofill is disabled on this site' : 'Disable autofill on this site'}
                         >
-                          {siteDisabled ? <ShieldOff className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+                          {siteDisabled ? <ShieldOff className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
                           <span>{siteDisabled ? 'Autofill Off' : 'Autofill On'}</span>
                         </button>
                       </div>
 
                       {isInsecure && (
-                        <div className="flex items-start gap-1.5 text-[10px] text-amber-700 bg-amber-50 p-2 rounded-lg leading-snug">
-                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="flex items-start gap-1.5 text-xs text-amber-700 bg-amber-50 p-2 rounded-lg leading-snug">
+                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                           <span>This page is not using HTTPS encryption. Exercise caution.</span>
                         </div>
                       )}
@@ -1623,12 +1688,12 @@ export const PopupApp: React.FC = () => {
                       {domainRiskAssessment && domainRiskAssessment.decision === 'block' && !isCurrentDomainAllowlisted && (
                         <div className="rounded-xl border border-rose-200 bg-rose-50 p-2.5 space-y-1.5">
                           <div className="flex items-start gap-1.5">
-                            <ShieldAlert className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                            <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                             <div className="flex-1 min-w-0">
-                              <div className="text-[10px] font-bold text-rose-800 leading-tight">
+                              <div className="text-xs font-bold text-rose-800 leading-tight">
                                 {domainRiskAssessment.matchedTarget ? 'Phishing / Lookalike Domain Blocked' : 'Dangerous Site Blocked'}
                               </div>
-                              <div className="text-[9px] text-rose-700 mt-0.5 leading-snug">
+                              <div className="text-xs text-rose-700 mt-0.5 leading-snug">
                                 {domainRiskAssessment.safeWarningMessage ||
                                   (domainRiskAssessment.matchedTarget ? (
                                     <>This site appears to impersonate <span className="font-semibold">{domainRiskAssessment.matchedTarget}</span>. Autofill is blocked for your protection.</>
@@ -1637,14 +1702,14 @@ export const PopupApp: React.FC = () => {
                                   ))}
                               </div>
                             </div>
-                            <span className="shrink-0 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[9px] font-bold">
+                            <span className="shrink-0 px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 text-xs font-bold">
                               Score {domainRiskAssessment.riskScore}
                             </span>
                           </div>
                           {domainRiskAssessment.reasons.length > 0 && (
                             <div className="space-y-0.5 pl-5">
                               {domainRiskAssessment.reasons.map((r, i) => (
-                                <div key={i} className="text-[9px] text-rose-600 leading-snug">• {r}</div>
+                                <div key={i} className="text-xs text-rose-600 leading-snug">• {r}</div>
                               ))}
                             </div>
                           )}
@@ -1656,9 +1721,9 @@ export const PopupApp: React.FC = () => {
                                   toggleDomainAllowlist(true);
                                 }
                               }}
-                              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 text-[9px] font-semibold border border-rose-200 transition"
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs font-semibold border border-rose-200 transition"
                             >
-                              <ShieldCheck className="w-3 h-3" />
+                              <ShieldCheck className="w-3.5 h-3.5" />
                               Allowlist this domain
                             </button>
                           </div>
@@ -1669,10 +1734,10 @@ export const PopupApp: React.FC = () => {
                       {domainRiskAssessment && domainRiskAssessment.decision === 'warn' && !isCurrentDomainAllowlisted && (
                         <div className="rounded-xl border border-amber-200 bg-amber-50 p-2.5 space-y-1">
                           <div className="flex items-start gap-1.5">
-                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                             <div className="flex-1 min-w-0">
-                              <div className="text-[10px] font-bold text-amber-800 leading-tight">Security Warning</div>
-                              <div className="text-[9px] text-amber-700 mt-0.5 leading-snug">
+                              <div className="text-xs font-bold text-amber-800 leading-tight">Security Warning</div>
+                              <div className="text-xs text-amber-700 mt-0.5 leading-snug">
                                 {domainRiskAssessment.safeWarningMessage || domainRiskAssessment.reasons[0] || 'This domain has unusual characteristics. Verify before filling.'}
                               </div>
                             </div>
@@ -1682,16 +1747,16 @@ export const PopupApp: React.FC = () => {
 
                       {/* Legacy simple lookalike (only shown when full risk assessment gives no result) */}
                       {lookalike && !domainRiskAssessment?.matchedTarget && (
-                        <div className="flex items-start gap-1.5 text-[10px] text-rose-700 bg-rose-50 p-2 rounded-lg leading-snug">
-                          <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                        <div className="flex items-start gap-1.5 text-xs text-rose-700 bg-rose-50 p-2 rounded-lg leading-snug">
+                          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                           <span>Possible lookalike for "{lookalike.target}". Verify domain before filling.</span>
                         </div>
                       )}
 
                       {/* Allowlisted domain indicator */}
                       {isCurrentDomainAllowlisted && (
-                        <div className="flex items-center gap-1.5 text-[10px] text-slate-500 bg-slate-100 p-2 rounded-lg leading-snug">
-                          <ShieldCheck className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <div className="flex items-center gap-1.5 text-xs text-slate-500 bg-slate-100 p-2 rounded-lg leading-snug">
+                          <ShieldCheck className="w-4 h-4 text-slate-400 shrink-0" />
                           <span className="flex-1">This domain is allowlisted — risk checks bypassed.</span>
                           <button
                             id="xp-remove-allowlist-btn"
@@ -1707,7 +1772,7 @@ export const PopupApp: React.FC = () => {
                     {/* Site matching items */}
                     {!siteDisabled && matchingItems.length > 0 && (
                       <div className="space-y-1.5">
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-0.5">Matching Logins</div>
+                        <div className="text-xs font-bold uppercase tracking-wider text-slate-400 px-0.5">Matching Logins</div>
                         {matchingItems.map((item) => (
                           <div
                             key={item.id}
@@ -1716,8 +1781,8 @@ export const PopupApp: React.FC = () => {
                           >
                             <ItemAvatar label={item.label} url={item.url} category={item.category} size="w-7 h-7 text-xs" />
                             <div className="min-w-0 flex-1">
-                              <div className="text-xs font-bold text-slate-900 truncate leading-tight">{item.label}</div>
-                              <div className="text-[10px] text-slate-500 font-mono truncate">{getItemSubtitle(item)}</div>
+                              <div className="text-sm font-bold text-slate-900 truncate leading-tight">{item.label}</div>
+                              <div className="text-xs text-slate-500 font-mono truncate">{getItemSubtitle(item)}</div>
                             </div>
                             <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                               {item.username && (
@@ -1755,20 +1820,20 @@ export const PopupApp: React.FC = () => {
                 {/* Vault Items Search Bar */}
                 <div className="space-y-2 flex-1 flex flex-col min-h-0">
                   <div className="relative shrink-0">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                     <input
                       type="text"
                       placeholder={`Search ${vaultItems.length} items...`}
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full pl-9 pr-8 py-2 bg-white border border-slate-900/10 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition shadow-xs"
+                      className="w-full pl-9 pr-8 py-2 bg-white border border-slate-900/10 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition shadow-xs"
                     />
                     {searchTerm && (
                       <button
                         onClick={() => setSearchTerm('')}
                         className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-700 cursor-pointer"
                       >
-                        <X className="w-3.5 h-3.5" />
+                        <X className="w-4 h-4" />
                       </button>
                     )}
                   </div>
@@ -1778,7 +1843,7 @@ export const PopupApp: React.FC = () => {
                     <div className="flex items-center gap-1 overflow-x-auto pb-1 custom-scrollbar shrink-0">
                       <button
                         onClick={() => setCategoryFilter('all')}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer shrink-0 border ${categoryFilter === 'all'
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer shrink-0 border ${categoryFilter === 'all'
                             ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
                             : 'bg-white/80 text-slate-600 border-slate-900/10 hover:bg-white'
                           }`}
@@ -1793,7 +1858,7 @@ export const PopupApp: React.FC = () => {
                             key={key}
                             onClick={() => !empty && setCategoryFilter(key)}
                             disabled={empty}
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition shrink-0 border ${categoryFilter === key
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition shrink-0 border ${categoryFilter === key
                                 ? 'bg-slate-900 text-white border-slate-900 cursor-pointer shadow-xs'
                                 : empty
                                   ? 'bg-transparent text-slate-300 border-slate-900/5 cursor-default'
@@ -1829,8 +1894,8 @@ export const PopupApp: React.FC = () => {
                           <ItemAvatar label={item.label} url={item.url} category={item.category} size="w-7 h-7 text-xs" />
 
                           <div className="min-w-0 flex-1">
-                            <div className="text-xs font-bold text-slate-800 truncate leading-tight group-hover:text-brand-cyan transition">{item.label}</div>
-                            <div className="text-[9px] text-slate-500 font-mono truncate mt-0.5">{getItemSubtitle(item)}</div>
+                            <div className="text-sm font-bold text-slate-800 truncate leading-tight group-hover:text-brand-cyan transition">{item.label}</div>
+                            <div className="text-xs text-slate-500 font-mono truncate mt-0.5">{getItemSubtitle(item)}</div>
                           </div>
 
                           <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -1872,8 +1937,8 @@ export const PopupApp: React.FC = () => {
             {tab === 'generate' && (
               <div className="space-y-3 animate-fade-in">
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl space-y-3 shadow-xs">
-                  <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Generated Password</div>
-                  <div className="font-mono text-sm leading-relaxed tracking-wider break-all min-h-[44px] p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg select-all">
+                  <div className="text-xs uppercase tracking-wider font-bold text-slate-400">Generated Password</div>
+                  <div className="font-mono text-base leading-relaxed tracking-wider break-all min-h-[48px] p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg select-all">
                     {renderStyledPassword(generated)}
                   </div>
 
@@ -1888,27 +1953,27 @@ export const PopupApp: React.FC = () => {
                         }}
                       />
                     </div>
-                    <span className="text-[10px] font-bold" style={{ color: strengthColor }}>
+                    <span className="text-xs font-bold" style={{ color: strengthColor }}>
                       {strength.label}
                     </span>
-                    <span className="text-[9px] text-slate-400 tabular-nums">{bits} bits</span>
+                    <span className="text-xs text-slate-400 tabular-nums">{bits} bits</span>
                   </div>
 
                   <div className="flex items-center gap-2 pt-1">
                     <button
                       onClick={() => setGenerated(generatePassword(genOptions))}
-                      className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-sm flex items-center justify-center gap-2 transition cursor-pointer"
                     >
-                      <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+                      <RefreshCw className="w-4 h-4" /> Regenerate
                     </button>
                     <button
                       onClick={() => copyToClipboard(generated, 'generated', 'password')}
-                      className="btn-primary flex-1 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="btn-primary flex-1 py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer"
                     >
                       {copiedField?.id === 'generated' ? (
-                        <><Check className="w-3.5 h-3.5" /> Copied</>
+                        <><Check className="w-4 h-4" /> Copied</>
                       ) : (
-                        <><Copy className="w-3.5 h-3.5" /> Copy Password</>
+                        <><Copy className="w-4 h-4" /> Copy Password</>
                       )}
                     </button>
                   </div>
@@ -1917,8 +1982,8 @@ export const PopupApp: React.FC = () => {
                 {/* Generator Options */}
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl space-y-3 shadow-xs">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-800">Password Length</span>
-                    <span className="text-xs font-extrabold font-mono text-brand-cyan">{genOptions.length}</span>
+                    <span className="text-sm font-bold text-slate-800">Password Length</span>
+                    <span className="text-sm font-extrabold font-mono text-brand-cyan">{genOptions.length}</span>
                   </div>
 
                   {/* Preset Length Buttons */}
@@ -1927,7 +1992,7 @@ export const PopupApp: React.FC = () => {
                       <button
                         key={len}
                         onClick={() => updateGenOptions({ length: len })}
-                        className={`flex-1 py-1 rounded-lg text-[10px] font-mono font-bold border transition cursor-pointer ${genOptions.length === len
+                        className={`flex-1 py-1 rounded-lg text-xs font-mono font-bold border transition cursor-pointer ${genOptions.length === len
                             ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
                             : 'bg-slate-50 text-slate-600 border-slate-900/10 hover:bg-slate-100'
                           }`}
@@ -1953,7 +2018,7 @@ export const PopupApp: React.FC = () => {
                       ['digits', 'Digits (0-9)'],
                       ['symbols', 'Symbols (!@#$)'],
                     ] as const).map(([key, label]) => (
-                      <label key={key} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer font-medium">
+                      <label key={key} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer font-medium">
                         <input
                           type="checkbox"
                           checked={genOptions[key]}
@@ -1965,7 +2030,7 @@ export const PopupApp: React.FC = () => {
                     ))}
                   </div>
 
-                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer pt-2 border-t border-slate-900/8">
+                  <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer pt-2 border-t border-slate-900/8">
                     <input
                       type="checkbox"
                       checked={genOptions.avoidAmbiguous}
@@ -1992,16 +2057,16 @@ export const PopupApp: React.FC = () => {
                       />
                     </svg>
                     <div className="absolute inset-0 flex flex-col items-center justify-center">
-                      <span className="text-xl font-extrabold text-slate-900 leading-none">{health.score}</span>
-                      <span className="text-[8px] uppercase tracking-widest font-bold text-slate-400 mt-0.5">SCORE</span>
+                      <span className="text-2xl font-extrabold text-slate-900 leading-none">{health.score}</span>
+                      <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mt-0.5">SCORE</span>
                     </div>
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <TrendingUp className="w-4 h-4" style={{ color: scoreColor }} />
-                      <span className="text-sm font-extrabold" style={{ color: scoreColor }}>{tier.label}</span>
+                      <span className="text-base font-extrabold" style={{ color: scoreColor }}>{tier.label}</span>
                     </div>
-                    <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
+                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
                       {health.totalLogins === 0
                         ? 'No passwords saved to analyze health.'
                         : `${health.strong} of ${health.totalLogins} password${health.totalLogins > 1 ? 's are' : ' is'} classified strong.`}
@@ -2011,23 +2076,23 @@ export const PopupApp: React.FC = () => {
 
                 <div className="grid grid-cols-3 gap-2">
                   <div className="p-2.5 bg-white border border-slate-900/10 rounded-xl text-center shadow-xs">
-                    <div className="text-lg font-extrabold text-emerald-600 leading-none">{health.strong}</div>
-                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mt-1">Strong</div>
+                    <div className="text-xl font-extrabold text-emerald-600 leading-none">{health.strong}</div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mt-1">Strong</div>
                   </div>
                   <div className="p-2.5 bg-white border border-slate-900/10 rounded-xl text-center shadow-xs">
-                    <div className="text-lg font-extrabold text-amber-600 leading-none">{health.weak}</div>
-                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mt-1">Weak</div>
+                    <div className="text-xl font-extrabold text-amber-600 leading-none">{health.weak}</div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mt-1">Weak</div>
                   </div>
                   <div className="p-2.5 bg-white border border-slate-900/10 rounded-xl text-center shadow-xs">
-                    <div className="text-lg font-extrabold text-rose-600 leading-none">{health.reused}</div>
-                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mt-1">Reused</div>
+                    <div className="text-xl font-extrabold text-rose-600 leading-none">{health.reused}</div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mt-1">Reused</div>
                   </div>
                 </div>
 
                 {health.totalLogins > 0 && (
                   <div className="p-3 bg-white border border-slate-900/10 rounded-xl space-y-2 shadow-xs">
-                    <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                      <span className="flex items-center gap-1.5"><Activity className="w-3.5 h-3.5 text-brand-cyan" /> Overall Strength</span>
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-500 uppercase tracking-wider">
+                      <span className="flex items-center gap-1.5"><Activity className="w-4 h-4 text-brand-cyan" /> Overall Strength</span>
                       <span className="text-slate-700">{Math.round(health.strong / health.totalLogins * 100)}% Strong</span>
                     </div>
                     <div className="flex h-2.5 rounded-full overflow-hidden bg-slate-100 border border-slate-900/5">
@@ -2038,18 +2103,18 @@ export const PopupApp: React.FC = () => {
                 )}
 
                 <div className="p-3 bg-white border border-slate-900/10 rounded-xl space-y-2 shadow-xs">
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Category Breakdown</div>
+                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Category Breakdown</div>
                   {health.byCategory.length === 0 ? (
-                    <p className="text-[10px] text-slate-400">No items yet.</p>
+                    <p className="text-xs text-slate-400">No items yet.</p>
                   ) : (
                     <div className="space-y-1.5">
                       {health.byCategory.map((c) => (
                         <div key={c.category} className="flex items-center gap-2">
-                          <span className="w-16 text-[10px] text-slate-600 truncate font-semibold">{categoryLabel(c.category)}</span>
-                          <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                          <span className="w-20 text-xs text-slate-600 truncate font-semibold">{categoryLabel(c.category)}</span>
+                          <div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
                             <div className="h-full rounded-full" style={{ width: `${c.count / maxCat * 100}%`, background: categoryColor(c.category) }} />
                           </div>
-                          <span className="w-5 text-right text-[10px] font-bold text-slate-700">{c.count}</span>
+                          <span className="w-6 text-right text-xs font-bold text-slate-700">{c.count}</span>
                         </div>
                       ))}
                     </div>
@@ -2069,36 +2134,36 @@ export const PopupApp: React.FC = () => {
                       </span>
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="text-xs font-bold text-slate-900 font-mono truncate">{email || 'Not signed in'}</div>
-                      <div className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1 mt-0.5">
-                        <CheckCircle2 className="w-3 h-3" /> Signed in & active
+                      <div className="text-sm font-bold text-slate-900 font-mono truncate">{email || 'Not signed in'}</div>
+                      <div className="text-xs text-emerald-600 font-semibold flex items-center gap-1 mt-0.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Signed in & active
                       </div>
                     </div>
                   </div>
                   <button
                     onClick={openWebVault}
-                    className="w-full py-2 bg-slate-50 hover:bg-slate-100 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    className="w-full py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-sm flex items-center justify-center gap-2 transition cursor-pointer"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" /> Manage Account in Web Vault
+                    <ExternalLink className="w-4 h-4" /> Manage Account in Web Vault
                   </button>
                 </div>
 
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
-                  <div className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Security Preferences</div>
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">Security Preferences</div>
                   <div className="flex items-center justify-between gap-2">
                     <div>
-                      <div className="text-xs font-bold text-slate-800">Auto-lock Vault</div>
-                      <div className="text-[10px] text-slate-500">
+                      <div className="text-sm font-bold text-slate-800">Auto-lock Vault</div>
+                      <div className="text-xs text-slate-500">
                         {autoLockMinutes === 0
                           ? 'Locks when the browser restarts'
                           : 'Locks after this much idle time'}
                       </div>
                     </div>
                     <div className="relative inline-flex items-center">
-                      <select value={autoLockMinutes} onChange={(e) => changeAutoLock(Number(e.target.value))} className="w-28 appearance-none bg-slate-50 border border-slate-900/12 rounded-lg text-xs font-semibold text-slate-800 pl-2.5 pr-7 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0 truncate">
+                      <select value={autoLockMinutes} onChange={(e) => changeAutoLock(Number(e.target.value))} className="w-32 appearance-none bg-slate-50 border border-slate-900/12 rounded-lg text-sm font-semibold text-slate-800 pl-2.5 pr-7 py-1.5 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0 truncate">
                         {AUTO_LOCK_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
-                      <ChevronDown className="w-3.5 h-3.5 absolute right-2 pointer-events-none text-slate-400 shrink-0" />
+                      <ChevronDown className="w-4 h-4 absolute right-2 pointer-events-none text-slate-400 shrink-0" />
                     </div>
                   </div>
 
@@ -2107,8 +2172,8 @@ export const PopupApp: React.FC = () => {
                       clock that fires while you are sitting right there. */}
                   <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
                     <div className="min-w-0 pr-2">
-                      <div className="text-xs font-bold text-slate-800">Lock on Screen Lock</div>
-                      <div className="text-[10px] text-slate-500">
+                      <div className="text-sm font-bold text-slate-800">Lock on Screen Lock</div>
+                      <div className="text-xs text-slate-500">
                         Also lock when your computer locks, sleeps, or its
                         screensaver starts
                       </div>
@@ -2130,8 +2195,8 @@ export const PopupApp: React.FC = () => {
 
                   <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
                     <div className="min-w-0 pr-2">
-                      <div className="text-xs font-bold text-slate-800">Domain Risk Detection</div>
-                      <div className="text-[10px] text-slate-500">
+                      <div className="text-sm font-bold text-slate-800">Domain Risk Detection</div>
+                      <div className="text-xs text-slate-500">
                         {planAllowsDomainRisk
                           ? 'Warns or blocks autofill on phishing and lookalike sites'
                           : 'Not included in your current plan'}
@@ -2157,33 +2222,33 @@ export const PopupApp: React.FC = () => {
 
                   <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
                     <div>
-                      <div className="text-xs font-bold text-slate-800">Clear Clipboard</div>
-                      <div className="text-[10px] text-slate-500">Wipe copied password after</div>
+                      <div className="text-sm font-bold text-slate-800">Clear Clipboard</div>
+                      <div className="text-xs text-slate-500">Wipe copied password after</div>
                     </div>
                     <div className="relative inline-flex items-center">
-                      <select value={clipboardClearSeconds} onChange={(e) => changeClipboardClear(Number(e.target.value))} className="w-28 appearance-none bg-slate-50 border border-slate-900/12 rounded-lg text-xs font-semibold text-slate-800 pl-2.5 pr-7 py-1 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0 truncate">
+                      <select value={clipboardClearSeconds} onChange={(e) => changeClipboardClear(Number(e.target.value))} className="w-32 appearance-none bg-slate-50 border border-slate-900/12 rounded-lg text-sm font-semibold text-slate-800 pl-2.5 pr-7 py-1.5 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0 truncate">
                         {CLIPBOARD_CLEAR_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
-                      <ChevronDown className="w-3.5 h-3.5 absolute right-2 pointer-events-none text-slate-400 shrink-0" />
+                      <ChevronDown className="w-4 h-4 absolute right-2 pointer-events-none text-slate-400 shrink-0" />
                     </div>
                   </div>
                 </div>
 
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2">
-                  <div className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Session Controls</div>
-                  <button onClick={handleLock} className="w-full py-2 bg-slate-100 hover:bg-slate-200 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition cursor-pointer">
-                    <Lock className="w-3.5 h-3.5 text-slate-700" /> Lock Vault
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">Session Controls</div>
+                  <button onClick={handleLock} className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 border border-slate-900/10 text-slate-800 font-bold rounded-xl text-sm flex items-center justify-center gap-2 transition cursor-pointer">
+                    <Lock className="w-4 h-4 text-slate-700" /> Lock Vault
                   </button>
-                  <button onClick={handleLogout} className="w-full py-2 bg-brand-ruby/10 hover:bg-brand-ruby/20 border border-brand-ruby/20 text-brand-ruby font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition cursor-pointer">
-                    <LogOut className="w-3.5 h-3.5" /> Sign Out
+                  <button onClick={handleLogout} className="w-full py-2.5 bg-brand-ruby/10 hover:bg-brand-ruby/20 border border-brand-ruby/20 text-brand-ruby font-bold rounded-xl text-sm flex items-center justify-center gap-2 transition cursor-pointer">
+                    <LogOut className="w-4 h-4" /> Sign Out
                   </button>
-                  <p className="text-[9px] text-slate-400 leading-relaxed pt-1">
+                  <p className="text-xs text-slate-400 leading-relaxed pt-1">
                     Locking keeps local cached keys for offline access. Signing out removes your vault cache from this browser.
                   </p>
                 </div>
                 
                 <div className="flex justify-center pt-2">
-                  <span className="text-[10px] font-bold text-slate-400">
+                  <span className="text-xs font-bold text-slate-400">
                     Version {browser.runtime.getManifest().version}
                   </span>
                 </div>
@@ -2194,23 +2259,23 @@ export const PopupApp: React.FC = () => {
             {tab === 'ai' && (
               <div className="space-y-3.5 animate-fade-in flex-1 overflow-y-auto custom-scrollbar">
                 {/* AI Credential Firewall Banner Card */}
-                <div className="p-3 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden">
+                <div className="p-3.5 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden">
                   <div className="flex items-center justify-between relative z-10">
                     <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded-lg bg-brand-cyan/20 border border-brand-cyan/30 flex items-center justify-center text-brand-cyan">
-                        <ShieldAlert className="w-3.5 h-3.5" />
+                      <div className="w-7 h-7 rounded-lg bg-brand-cyan/20 border border-brand-cyan/30 flex items-center justify-center text-brand-cyan">
+                        <ShieldAlert className="w-4 h-4" />
                       </div>
-                      <h3 className="text-xs font-black tracking-tight text-white">AI Credential Firewall</h3>
+                      <h3 className="text-sm font-black tracking-tight text-white">AI Credential Firewall</h3>
                     </div>
                     <button
                       onClick={scanActiveAiTabs}
                       className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
                       title="Scan for open AI tabs"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${scanningTabs ? 'animate-spin' : ''}`} />
+                      <RefreshCw className={`w-4 h-4 ${scanningTabs ? 'animate-spin' : ''}`} />
                     </button>
                   </div>
-                  <p className="text-[10px] text-slate-300 leading-snug relative z-10">
+                  <p className="text-xs text-slate-300 leading-snug relative z-10">
                     Zero-Knowledge Protection: Real-time paste guard and exposure scanning for AI tools and web portals.
                   </p>
                 </div>
@@ -2218,17 +2283,17 @@ export const PopupApp: React.FC = () => {
                 {/* Secret Paste Guard */}
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
-                      <ShieldAlert className="w-3.5 h-3.5 text-brand-cyan" /> Secret Paste Guard
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      <ShieldAlert className="w-4 h-4 text-brand-cyan" /> Secret Paste Guard
                     </div>
-                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 uppercase">
+                    <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600 uppercase">
                       {!planAllowsPasteGuard
                         ? 'Unavailable'
                         : pasteMode === 'warn' ? 'Warning Mode' : pasteMode === 'block' ? 'Strict Blocking' : 'Disabled'}
                     </span>
                   </div>
 
-                  <p className="text-[10px] text-slate-500 leading-snug">
+                  <p className="text-xs text-slate-500 leading-snug">
                     {!planAllowsPasteGuard
                       ? 'Not included in your current plan.'
                       : pasteMode === 'warn'
@@ -2244,7 +2309,7 @@ export const PopupApp: React.FC = () => {
                         key={m}
                         disabled={!planAllowsPasteGuard}
                         onClick={() => changePasteMode(m)}
-                        className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold capitalize transition cursor-pointer disabled:cursor-not-allowed ${pasteMode === m
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold capitalize transition cursor-pointer disabled:cursor-not-allowed ${pasteMode === m
                             ? 'bg-slate-900 text-white shadow-xs'
                             : 'text-slate-600 hover:text-slate-900 font-medium'
                           }`}
@@ -2258,11 +2323,11 @@ export const PopupApp: React.FC = () => {
                 {/* Active Sessions Section */}
                 <div className="space-y-2 pt-1">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
-                      <Globe className="w-3.5 h-3.5 text-slate-500" /> Active AI Sessions
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      <Globe className="w-4 h-4 text-slate-500" /> Active AI Sessions
                     </div>
                     {activeAiTabs.length > 0 && (
-                      <span className="px-1.5 py-0.2 text-[9px] font-extrabold rounded-full bg-brand-cyan/20 text-brand-cyan">
+                      <span className="px-2 py-0.5 text-xs font-extrabold rounded-full bg-brand-cyan/20 text-brand-cyan">
                         {activeAiTabs.length} active
                       </span>
                     )}
@@ -2273,8 +2338,8 @@ export const PopupApp: React.FC = () => {
                       <div className="w-8 h-8 rounded-full bg-slate-50 border border-slate-200/80 flex items-center justify-center mx-auto text-slate-400">
                         <ShieldCheck className="w-4 h-4 text-emerald-600" />
                       </div>
-                      <div className="text-xs font-bold text-slate-800">No AI Portals Open</div>
-                      <p className="text-[10px] text-slate-400">Paste Guard is active. It will monitor inputs when you open any supported AI tab.</p>
+                      <div className="text-sm font-bold text-slate-800">No AI Portals Open</div>
+                      <p className="text-xs text-slate-400">Paste Guard is active. It will monitor inputs when you open any supported AI tab.</p>
                     </div>
                   ) : (
                     activeAiTabs.map((t, idx) => {
@@ -2288,18 +2353,18 @@ export const PopupApp: React.FC = () => {
                               ) : (
                                 <Bot className="w-4 h-4 text-brand-cyan shrink-0" />
                               )}
-                              <span className="text-xs font-extrabold text-slate-900 truncate">{t.title}</span>
+                              <span className="text-sm font-extrabold text-slate-900 truncate">{t.title}</span>
                             </div>
-                            <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-md text-emerald-600 bg-emerald-50 border border-emerald-250/20">
+                            <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md text-emerald-600 bg-emerald-50 border border-emerald-250/20">
                               Guarded
                             </span>
                           </div>
 
                           <div className="flex items-center justify-between gap-2 pt-0.5">
-                            <p className="text-[9px] text-slate-500 font-mono truncate">{hostname}</p>
+                            <p className="text-xs text-slate-500 font-mono truncate">{hostname}</p>
                             <button
                               onClick={() => focusTab(t.id, t.windowId)}
-                              className="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-md text-[9px] font-bold transition cursor-pointer"
+                              className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-md text-xs font-bold transition cursor-pointer"
                             >
                               Focus Tab
                             </button>
@@ -2314,14 +2379,14 @@ export const PopupApp: React.FC = () => {
                     Reports / Requests) and a scrollable body, same data as
                     the web app's Domain Risk panel condensed for the popup. */}
                 <div className="space-y-2 pt-1">
-                  <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
-                    <ShieldAlert className="w-3.5 h-3.5 text-slate-500" /> Domain Risk Activity
+                  <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                    <ShieldAlert className="w-4 h-4 text-slate-500" /> Domain Risk Activity
                   </div>
                   <div className="bg-white border border-slate-900/10 rounded-xl shadow-xs overflow-hidden">
                     {!domainRiskSettingsLoaded ? null : !planAllowsDomainRisk ? (
                       <div className="py-6 text-center space-y-1">
                         <ShieldAlert className="w-5 h-5 text-slate-300 mx-auto" />
-                        <p className="text-[10px] text-slate-400 px-4">Not included in your current plan.</p>
+                        <p className="text-xs text-slate-400 px-4">Not included in your current plan.</p>
                       </div>
                     ) : (
                     <>
@@ -2336,7 +2401,7 @@ export const PopupApp: React.FC = () => {
                         <button
                           key={t.key}
                           onClick={() => setDomainRiskSubTab(t.key)}
-                          className={`px-2 py-1.5 text-[10px] font-bold border-b-2 transition cursor-pointer ${
+                          className={`px-2.5 py-1.5 text-xs font-bold border-b-2 transition cursor-pointer ${
                             domainRiskSubTab === t.key
                               ? 'border-brand-cyan text-brand-cyan'
                               : 'border-transparent text-slate-400 hover:text-slate-700'
@@ -2353,15 +2418,15 @@ export const PopupApp: React.FC = () => {
                         (domainRiskHistory.length === 0 ? (
                           <div className="py-6 text-center space-y-1">
                             <ShieldCheck className="w-5 h-5 text-emerald-600 mx-auto" />
-                            <p className="text-[10px] text-slate-400 px-4">No sites flagged yet.</p>
+                            <p className="text-xs text-slate-400 px-4">No sites flagged yet.</p>
                           </div>
                         ) : (
                           domainRiskHistory.map((ev) => (
                             <div key={ev.id} className="px-3 py-2.5 space-y-1">
                               <div className="flex items-center justify-between gap-2">
-                                <span className="text-[11px] font-extrabold text-slate-900 font-mono truncate">{ev.domain || 'Unknown site'}</span>
+                                <span className="text-xs font-extrabold text-slate-900 font-mono truncate">{ev.domain || 'Unknown site'}</span>
                                 <span
-                                  className={`shrink-0 text-[8px] font-black uppercase px-1.5 py-0.5 rounded-md border ${
+                                  className={`shrink-0 text-[10px] font-black uppercase px-2 py-0.5 rounded-md border ${
                                     DOMAIN_RISK_DECISION_STYLES[ev.event_type] || 'bg-slate-50 text-slate-500 border-slate-200'
                                   }`}
                                 >
@@ -2369,8 +2434,8 @@ export const PopupApp: React.FC = () => {
                                 </span>
                               </div>
                               <div className="flex items-center justify-between gap-2">
-                                <p className="text-[9px] text-slate-500 truncate flex-1">{ev.detail || 'Flagged by domain risk detection.'}</p>
-                                <span className="text-[9px] text-slate-400 shrink-0">{fmtRelativeShort(ev.timestamp)} ago</span>
+                                <p className="text-xs text-slate-500 truncate flex-1">{ev.detail || 'Flagged by domain risk detection.'}</p>
+                                <span className="text-xs text-slate-400 shrink-0">{fmtRelativeShort(ev.timestamp)} ago</span>
                               </div>
                             </div>
                           ))
@@ -2379,13 +2444,13 @@ export const PopupApp: React.FC = () => {
                       {domainRiskSubTab === 'reports' &&
                         (domainRiskReports.length === 0 ? (
                           <div className="py-6 text-center">
-                            <p className="text-[10px] text-slate-400 px-4">No phishing reports filed yet.</p>
+                            <p className="text-xs text-slate-400 px-4">No phishing reports filed yet.</p>
                           </div>
                         ) : (
                           domainRiskReports.map((r) => (
                             <div key={r.id} className="px-3 py-2.5 flex items-center justify-between gap-2">
-                              <span className="text-[11px] font-extrabold text-slate-900 font-mono truncate">{r.hostname}</span>
-                              <span className="text-[9px] text-slate-400 shrink-0">{fmtRelativeShort(r.reported_at)} ago</span>
+                              <span className="text-xs font-extrabold text-slate-900 font-mono truncate">{r.hostname}</span>
+                              <span className="text-xs text-slate-400 shrink-0">{fmtRelativeShort(r.reported_at)} ago</span>
                             </div>
                           ))
                         ))}
@@ -2393,14 +2458,14 @@ export const PopupApp: React.FC = () => {
                       {domainRiskSubTab === 'requests' &&
                         (domainRiskAllowlistRequests.length === 0 ? (
                           <div className="py-6 text-center">
-                            <p className="text-[10px] text-slate-400 px-4">No allowlist requests yet.</p>
+                            <p className="text-xs text-slate-400 px-4">No allowlist requests yet.</p>
                           </div>
                         ) : (
                           domainRiskAllowlistRequests.map((r) => (
                             <div key={r.id} className="px-3 py-2.5 flex items-center justify-between gap-2">
-                              <span className="text-[11px] font-extrabold text-slate-900 font-mono truncate">{r.hostname}</span>
+                              <span className="text-xs font-extrabold text-slate-900 font-mono truncate">{r.hostname}</span>
                               <span
-                                className={`shrink-0 text-[8px] font-black uppercase px-1.5 py-0.5 rounded-md border ${
+                                className={`shrink-0 text-[10px] font-black uppercase px-2 py-0.5 rounded-md border ${
                                   DOMAIN_RISK_REQUEST_STATUS_STYLES[r.status] || 'bg-slate-50 text-slate-500 border-slate-200'
                                 }`}
                               >
@@ -2428,7 +2493,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <LayoutGrid className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">Vault</span>
+              <span className="text-xs leading-none tracking-tight">Vault</span>
             </button>
 
             <button
@@ -2439,7 +2504,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <Wand2 className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">Generator</span>
+              <span className="text-xs leading-none tracking-tight">Generator</span>
             </button>
 
             <button
@@ -2450,7 +2515,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <Activity className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">Health</span>
+              <span className="text-xs leading-none tracking-tight">Health</span>
             </button>
 
             <button
@@ -2461,7 +2526,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <ShieldAlert className="w-4 h-4 mb-0.5 shrink-0 text-brand-cyan" />
-              <span className="text-[10px] leading-none tracking-tight">Firewall</span>
+              <span className="text-xs leading-none tracking-tight">Firewall</span>
               {activeAiTabs.length > 0 && (
                 <span className="absolute top-1 right-2 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-brand-cyan text-white text-[9px] font-bold shadow-xs animate-pulse">
                   {activeAiTabs.length}
@@ -2477,7 +2542,7 @@ export const PopupApp: React.FC = () => {
                 }`}
             >
               <Settings className="w-4 h-4 mb-0.5 shrink-0" />
-              <span className="text-[10px] leading-none tracking-tight">Settings</span>
+              <span className="text-xs leading-none tracking-tight">Settings</span>
             </button>
           </nav>
         </div>
