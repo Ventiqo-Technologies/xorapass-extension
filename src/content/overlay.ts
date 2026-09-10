@@ -30,6 +30,7 @@ export interface OverlayCredential {
   label: string;
   username: string;
   category: string;
+  hasTotp?: boolean;
 }
 
 export interface DropdownOptions {
@@ -142,12 +143,30 @@ const STYLES = `
   color: #2dd4bf;
   outline: none;
 }
+.menu-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
 .menu-item-label {
   font-weight: 600;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.menu-item-badge {
+  flex: none;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(45, 212, 191, 0.15);
+  color: #2dd4bf;
+  border: 1px solid rgba(45, 212, 191, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 .menu-item-user {
   font-size: 10px;
@@ -157,6 +176,43 @@ const STYLES = `
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  max-width: 340px;
+  background: #0f172a;
+  border: 1px solid rgba(45, 212, 191, 0.4);
+  border-radius: 12px;
+  box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5), 0 0 15px rgba(45,212,191,0.2);
+  padding: 12px 16px;
+  color: #f1f5f9;
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  z-index: 2147483647;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  animation: xp-slide-in 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: opacity 0.2s, transform 0.2s;
+}
+.toast-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #2dd4bf;
+}
+.toast-body {
+  flex: 1;
+}
+.toast-title {
+  font-weight: 700;
+  color: #2dd4bf;
+  margin-bottom: 2px;
 }
 .suggest {
   padding: 10px 12px;
@@ -1130,10 +1186,23 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
 
     // textContent throughout — no innerHTML, so no escaping needed and no way
     // for a crafted vault label to inject markup into the overlay.
+    const row = document.createElement('div');
+    row.className = 'menu-item-row';
+
     const label = document.createElement('div');
     label.className = 'menu-item-label';
     label.textContent = cred.label;
-    item.appendChild(label);
+    row.appendChild(label);
+
+    if (cred.hasTotp) {
+      const badge = document.createElement('span');
+      badge.className = 'menu-item-badge';
+      badge.textContent = '2FA';
+      badge.title = 'Generates 2FA code';
+      row.appendChild(badge);
+    }
+
+    item.appendChild(row);
 
     const user = document.createElement('div');
     user.className = 'menu-item-user';
@@ -1982,3 +2051,56 @@ export function clearAll(): void {
 export function hasIcon(input: HTMLInputElement): boolean {
   return registrations.some((r) => r.input === input);
 }
+
+let activeToastEl: HTMLDivElement | null = null;
+let toastTimeout: number | undefined;
+
+/**
+ * Displays a non-intrusive floating toast in the bottom-right corner of the page.
+ */
+export function showToast(title: string, message: string, durationMs = 4000): void {
+  if (activeToastEl) {
+    activeToastEl.remove();
+    activeToastEl = null;
+    window.clearTimeout(toastTimeout);
+  }
+
+  const root = ensureHost();
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+
+  const icon = document.createElement('div');
+  icon.className = 'toast-icon';
+  icon.innerHTML = SHIELD_SVG;
+  toast.appendChild(icon);
+
+  const body = document.createElement('div');
+  body.className = 'toast-body';
+
+  const tTitle = document.createElement('div');
+  tTitle.className = 'toast-title';
+  tTitle.textContent = title;
+  body.appendChild(tTitle);
+
+  const tMsg = document.createElement('div');
+  tMsg.textContent = message;
+  body.appendChild(tMsg);
+
+  toast.appendChild(body);
+  root.appendChild(toast);
+  activeToastEl = toast;
+
+  toastTimeout = window.setTimeout(() => {
+    if (activeToastEl === toast) {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(8px)';
+      setTimeout(() => {
+        if (activeToastEl === toast) {
+          toast.remove();
+          activeToastEl = null;
+        }
+      }, 200);
+    }
+  }, durationMs);
+}
+

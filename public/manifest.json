@@ -61,5 +61,28 @@
     "matches": [
       "https://app.xorapass.com/*"
     ]
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+X",
+        "mac": "Command+Shift+X"
+      },
+      "description": "Open XoraPass Vault Popup"
+    },
+    "autofill-active": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Autofill credentials on active page"
+    },
+    "generate-password": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+G",
+        "mac": "Command+Shift+G"
+      },
+      "description": "Generate and copy new strong password"
+    }
   }
 }

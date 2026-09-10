@@ -35,6 +35,8 @@ import {
 } from '../utils/clipboardPolicy';
 import { coercePolicy, DEFAULT_POLICY, PastePolicy } from '../utils/pasteGuard';
 import { base64ToBytes } from '../utils/crypto';
+import { generatePassword, DEFAULT_OPTIONS } from '../utils/passwordGenerator';
+import { generateTotp, parseTotpSecret } from '../utils/totp';
 
 // Logged on every service-worker (cold) start.
 //
@@ -321,6 +323,7 @@ interface VaultItem {
   notes?: string;
   organization?: string;
   accountId?: string;
+  totpSecret?: string;
 }
 
 // A credential submitted on a page, awaiting the user's decision. Keyed by tab
@@ -1252,6 +1255,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
           label: item.label,
           username: item.username,
           category: item.category || 'login',
+          hasTotp: !!item.totpSecret,
         })),
         disabled: false,
         lookalike,
@@ -1326,7 +1330,26 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
 
       void scheduleAutoLock(); // filling counts as activity
-      return { username: item.username, value: item.value, accountId: item.accountId };
+
+      let totpCode: string | undefined;
+      if (item.totpSecret) {
+        try {
+          const parsed = parseTotpSecret(item.totpSecret);
+          if (parsed) {
+            const totpResult = await generateTotp(parsed.secret);
+            totpCode = totpResult.code;
+          }
+        } catch (e) {
+          console.warn('[XoraPass] Failed to generate TOTP code on fill:', e);
+        }
+      }
+
+      return {
+        username: item.username,
+        value: item.value,
+        accountId: item.accountId,
+        totpCode,
+      };
     });
   }
 
@@ -1988,3 +2011,57 @@ if (api?.runtime?.onMessageExternal) {
   });
 }
 
+// ── Global Keyboard Shortcut Commands ──────────────────────────────────────
+browser.commands.onCommand.addListener(async (command: string) => {
+  if (command === 'autofill-active') {
+    try {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      const activeTab = tabs[0];
+      if (activeTab?.id) {
+        await browser.tabs.sendMessage(activeTab.id, { type: 'SHORTCUT_AUTOFILL' });
+      }
+    } catch (err) {
+      console.warn('[XoraPass] Failed to send shortcut autofill to active tab:', err);
+    }
+  } else if (command === 'generate-password') {
+    try {
+      const pw = generatePassword(DEFAULT_OPTIONS);
+      if (await ensureOffscreenDocument()) {
+        await browser.runtime.sendMessage({
+          target: OFFSCREEN_TARGET,
+          type: 'CLIPBOARD_WRITE',
+          text: pw,
+        });
+        const api = (globalThis as any).chrome;
+        try {
+          await api?.offscreen?.closeDocument?.();
+        } catch {
+          /* already closed */
+        }
+      } else {
+        if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(pw);
+        }
+      }
+
+      await scheduleClipboardClear();
+
+      const actionApi = (browser.action || (globalThis as any).chrome?.action);
+      if (actionApi?.setBadgeText) {
+        await actionApi.setBadgeText({ text: 'COPIED' });
+        if (actionApi.setBadgeBackgroundColor) {
+          await actionApi.setBadgeBackgroundColor({ color: '#10b981' });
+        }
+        setTimeout(async () => {
+          try {
+            await actionApi.setBadgeText({ text: '' });
+          } catch {
+            /* ignore */
+          }
+        }, 2000);
+      }
+    } catch (err) {
+      console.warn('[XoraPass] Generate password shortcut failed:', err);
+    }
+  }
+});
