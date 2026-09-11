@@ -350,6 +350,30 @@ input:-webkit-autofill:focus {
   border-color: transparent !important;
 }
 
+/* Tab and navigation button hover states in dark mode */
+.dark nav button:hover:not(.bg-slate-900) {
+  background-color: rgba(45, 212, 191, 0.08) !important;
+  color: #f0f5f3 !important;
+}
+
+/* Category filter chips hover in dark mode */
+.dark .hover\:bg-white:hover {
+  background-color: rgba(45, 212, 191, 0.08) !important;
+  border-color: rgba(45, 212, 191, 0.2) !important;
+  color: #f0f5f3 !important;
+}
+
+/* Subtabs and segmented tab hover in dark mode */
+.dark .border-b-2.border-transparent:hover {
+  color: #f0f5f3 !important;
+  border-color: rgba(45, 212, 191, 0.3) !important;
+}
+
+.dark div[class*="bg-slate-100"] button:hover:not(.bg-slate-900) {
+  background-color: rgba(45, 212, 191, 0.08) !important;
+  color: #f0f5f3 !important;
+}
+
 /* Form selects and inputs */
 .dark select {
   background-color: #0c1815 !important;
