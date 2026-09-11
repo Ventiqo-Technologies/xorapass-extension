@@ -19,11 +19,42 @@
         background-color: #f8fafc;
         font-size: 15px;
       }
+      html.dark, html.dark body {
+        color-scheme: dark;
+        background-color: #0a1412;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not(.light) {
+          color-scheme: dark;
+          background-color: #0a1412;
+        }
+        :root:not(.light) body {
+          color-scheme: dark;
+          background-color: #0a1412;
+        }
+      }
       #root {
         width: 380px;
         overflow: hidden;
       }
     </style>
+    <script>
+      try {
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.get(['themePreference'], function(res) {
+            var pref = res && res.themePreference ? res.themePreference : 'system';
+            var isDark = pref === 'dark' || (pref === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            if (isDark) {
+              document.documentElement.classList.add('dark');
+              document.documentElement.classList.remove('light');
+            } else {
+              document.documentElement.classList.remove('dark');
+              document.documentElement.classList.add('light');
+            }
+          });
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

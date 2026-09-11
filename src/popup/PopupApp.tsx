@@ -31,9 +31,14 @@ import {
   CheckCircle2,
   X,
   Bot,
-  ShieldAlert
+  ShieldAlert,
+  Sun,
+  Moon,
+  Plus,
+  Clock
 } from 'lucide-react';
-import { deriveMasterKey, splitMasterKey, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
+import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
+import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname, assessDomainRisk } from '../utils/siteTrust';
 import {
   mergeLocalAndRemoteRisk,
@@ -187,6 +192,8 @@ interface DecryptedItem {
   passphrase?: string;
   // AWS fields
   accountId?: string;
+  // 2FA TOTP secret / URI
+  totpSecret?: string;
 }
 
 const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; size?: string }> = ({
@@ -217,6 +224,103 @@ const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; siz
       style={{ backgroundColor: color }}
     >
       {initial}
+    </div>
+  );
+};
+
+const TotpCodeDisplay: React.FC<{
+  secretOrUri: string;
+  onCopy: (code: string) => void;
+  copied: boolean;
+}> = ({ secretOrUri, onCopy, copied }) => {
+  const [code, setCode] = useState('------');
+  const [remaining, setRemaining] = useState(30);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    const parsed = parseTotpSecret(secretOrUri);
+    if (!parsed) {
+      setError(true);
+      return;
+    }
+
+    let isMounted = true;
+
+    const update = async () => {
+      try {
+        const res = await generateTotp(parsed.secret);
+        if (isMounted) {
+          setCode(res.code);
+          setRemaining(res.remainingSeconds);
+          setError(false);
+        }
+      } catch (err) {
+        if (isMounted) setError(true);
+      }
+    };
+
+    update();
+    const interval = setInterval(update, 1000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [secretOrUri]);
+
+  if (error) {
+    return (
+      <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg text-xs text-slate-400">
+        Invalid TOTP secret
+      </div>
+    );
+  }
+
+  // Format code as "123 456" for readability
+  const formattedCode = code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
+  const progressPercent = Math.max(0, Math.min(100, (remaining / 30) * 100));
+  const isUrgent = remaining <= 5;
+
+  return (
+    <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1.5">
+      <div className="flex items-center justify-between text-xs uppercase tracking-wider font-bold text-slate-400">
+        <div className="flex items-center gap-1.5">
+          <Clock className="w-3.5 h-3.5 text-brand-cyan" />
+          <span>2FA Authenticator Code</span>
+        </div>
+        <span className={`font-mono font-bold text-xs ${isUrgent ? 'text-rose-500 animate-pulse' : 'text-slate-500'}`}>
+          {remaining}s
+        </span>
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-lg font-mono font-black tracking-wider text-slate-900 select-all">
+            {formattedCode}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => onCopy(code)}
+          className="p-1.5 hover:bg-slate-200 text-slate-600 rounded-lg transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+          title="Copy 2FA Code"
+        >
+          {copied ? (
+            <span className="text-brand-emerald flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Copied</span>
+          ) : (
+            <span className="flex items-center gap-1"><Copy className="w-3.5 h-3.5" /> Copy</span>
+          )}
+        </button>
+      </div>
+
+      {/* Countdown progress bar */}
+      <div className="w-full h-1 bg-slate-200 rounded-full overflow-hidden">
+        <div
+          className={`h-full transition-all duration-1000 ease-linear rounded-full ${
+            isUrgent ? 'bg-rose-500' : 'bg-brand-cyan'
+          }`}
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
     </div>
   );
 };
@@ -276,9 +380,70 @@ export const PopupApp: React.FC = () => {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
 
+  // Add Item Modal state
+  const [isAddingItem, setIsAddingItem] = useState(false);
+  const [addLabel, setAddLabel] = useState('');
+  const [addUsername, setAddUsername] = useState('');
+  const [addPassword, setAddPassword] = useState('');
+  const [addUrl, setAddUrl] = useState('');
+  const [addNotes, setAddNotes] = useState('');
+  const [addTotpSecret, setAddTotpSecret] = useState('');
+  const [addCategory, setAddCategory] = useState<string>('login');
+  const [addLoading, setAddLoading] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
   // Active AI browser tab sessions
   const [activeAiTabs, setActiveAiTabs] = useState<ActiveAiTab[]>([]);
   const [scanningTabs, setScanningTabs] = useState(false);
+
+  // Theme preference ('dark' | 'light' | 'system')
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
+  const [isDarkEffective, setIsDarkEffective] = useState(false);
+
+  useEffect(() => {
+    browser.storage.local.get(['themePreference']).then((res: any) => {
+      if (res?.themePreference === 'dark' || res?.themePreference === 'light' || res?.themePreference === 'system') {
+        setTheme(res.themePreference);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    const updateEffectiveDark = () => {
+      if (theme === 'dark') {
+        setIsDarkEffective(true);
+      } else if (theme === 'light') {
+        setIsDarkEffective(false);
+      } else {
+        const systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        setIsDarkEffective(systemDark);
+      }
+    };
+
+    updateEffectiveDark();
+
+    if (theme === 'system' && window.matchMedia) {
+      const media = window.matchMedia('(prefers-color-scheme: dark)');
+      const listener = (e: MediaQueryListEvent) => setIsDarkEffective(e.matches);
+      media.addEventListener('change', listener);
+      return () => media.removeEventListener('change', listener);
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    if (isDarkEffective) {
+      document.documentElement.classList.add('dark');
+      document.documentElement.classList.remove('light');
+    } else {
+      document.documentElement.classList.remove('dark');
+      document.documentElement.classList.add('light');
+    }
+  }, [isDarkEffective]);
+
+  const changeTheme = (newTheme: 'light' | 'dark' | 'system') => {
+    setTheme(newTheme);
+    browser.storage.local.set({ themePreference: newTheme });
+  };
 
   // Personal secret-paste-guard mode (stored locally; the background reads it as
   // the effective policy until a business/admin policy exists on the backend).
@@ -571,7 +736,8 @@ export const PopupApp: React.FC = () => {
           privateKey: parsed.privateKey || "",
           publicKey: parsed.publicKey || "",
           passphrase: parsed.passphrase || "",
-          accountId: parsed.accountId || ""
+          accountId: parsed.accountId || "",
+          totpSecret: parsed.totpSecret || parsed.totp || parsed.twoFactorSecret || ""
         };
       } catch (e) {
         console.error("Failed to decrypt entry:", entry.id, e);
@@ -689,6 +855,87 @@ export const PopupApp: React.FC = () => {
       }
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handleSaveNewItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!addLabel.trim() || !addPassword.trim()) {
+      setAddError('Label and Password are required.');
+      return;
+    }
+
+    const session = await browser.storage.session.get(['token', 'encKey', 'email']);
+    const token = session.token as string | undefined;
+    const encKeyHex = session.encKey as string | undefined;
+    const accountEmail = (session.email as string) || email;
+
+    if (!token || !encKeyHex) {
+      setAddError('Vault session key not available. Please unlock again.');
+      return;
+    }
+
+    setAddLoading(true);
+    setAddError(null);
+
+    try {
+      const encKey = hexToBytes(encKeyHex);
+      const payloadString = JSON.stringify({
+        label: addLabel.trim(),
+        username: addUsername.trim(),
+        value: addPassword,
+        notes: addNotes.trim(),
+        category: addCategory || 'login',
+        url: addUrl.trim(),
+        totpSecret: addTotpSecret.trim(),
+      });
+
+      const { ciphertext, tag, nonce, keyVersion } = encryptPayload(payloadString, encKey);
+
+      const res = await axios.post(
+        `${API_BASE_URL}/api/vault`,
+        {
+          encrypted_payload: { ciphertext, tag, keyVersion },
+          nonce,
+        },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      const newId = res.data?.id || 'entry-' + Date.now();
+      const newItem: DecryptedItem = {
+        id: newId,
+        label: addLabel.trim(),
+        username: addUsername.trim(),
+        value: addPassword,
+        notes: addNotes.trim(),
+        category: addCategory || 'login',
+        url: addUrl.trim(),
+        totpSecret: addTotpSecret.trim(),
+      };
+
+      const updatedVault = [newItem, ...vaultItems];
+      setVaultItems(updatedVault);
+      await storeSession(updatedVault, token, encKey, accountEmail);
+
+      // Reset form and close modal
+      setIsAddingItem(false);
+      setAddLabel('');
+      setAddUsername('');
+      setAddPassword('');
+      setAddUrl('');
+      setAddNotes('');
+      setAddTotpSecret('');
+      setAddCategory('login');
+
+      // Refresh vault in background to ensure sync
+      void refreshVault();
+    } catch (err: any) {
+      console.error('Failed to create vault entry:', err);
+      setAddError(err?.response?.data?.error || err?.message || 'Failed to save item');
+    } finally {
+      setAddLoading(false);
     }
   };
 
@@ -917,7 +1164,7 @@ export const PopupApp: React.FC = () => {
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
   return (
-    <div className={`w-[380px] ${unlocked ? 'h-[550px]' : 'min-h-[480px]'} text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50`}>
+    <div className={`w-[380px] ${unlocked ? 'h-[550px]' : 'min-h-[480px]'} ${isDarkEffective ? 'dark' : ''} text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50`}>
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
 
       {unlocked && (
@@ -937,6 +1184,13 @@ export const PopupApp: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => changeTheme(isDarkEffective ? 'light' : 'dark')}
+              className="p-1.5 bg-white/80 border border-slate-900/10 hover:bg-white text-slate-600 hover:text-slate-900 rounded-lg transition cursor-pointer flex items-center justify-center shadow-xs"
+              title={isDarkEffective ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            >
+              {isDarkEffective ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-slate-600" />}
+            </button>
             <button
               onClick={openWebVault}
               className="p-1.5 bg-white/80 border border-slate-900/10 hover:bg-white text-brand-cyan hover:text-brand-teal rounded-lg transition cursor-pointer flex items-center justify-center shadow-xs"
@@ -1262,8 +1516,133 @@ export const PopupApp: React.FC = () => {
               </div>
             )}
 
-            {/* ITEM DETAIL DRAWER VIEW */}
-            {selectedItem ? (
+            {/* ADD ITEM DRAWER VIEW */}
+            {isAddingItem ? (
+              <form onSubmit={handleSaveNewItem} className="flex-1 flex flex-col space-y-3 animate-slide-up">
+                <div className="flex items-center justify-between pb-1 border-b border-slate-900/8">
+                  <button
+                    type="button"
+                    onClick={() => { setIsAddingItem(false); setAddError(null); }}
+                    className="flex items-center gap-1.5 text-sm font-bold text-slate-600 hover:text-slate-900 transition cursor-pointer"
+                  >
+                    <ArrowLeft className="w-4 h-4" /> Cancel
+                  </button>
+                  <span className="text-xs font-bold uppercase tracking-wider text-brand-cyan">
+                    New Vault Item
+                  </span>
+                </div>
+
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl space-y-3 shadow-xs">
+                  {addError && (
+                    <div className="p-2.5 bg-brand-ruby/10 border border-brand-ruby/20 text-brand-ruby rounded-lg text-xs leading-relaxed">
+                      {addError}
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Item Label *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Google, GitHub, Netflix"
+                      value={addLabel}
+                      onChange={(e) => setAddLabel(e.target.value)}
+                      className="auth-input w-full px-3 py-2 rounded-lg text-sm text-slate-900 placeholder-slate-400"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Username or Email</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. user@example.com"
+                      value={addUsername}
+                      onChange={(e) => setAddUsername(e.target.value)}
+                      className="auth-input w-full px-3 py-2 rounded-lg text-sm text-slate-900 placeholder-slate-400"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Password *</label>
+                      <button
+                        type="button"
+                        onClick={() => setAddPassword(generatePassword(DEFAULT_OPTIONS))}
+                        className="text-[11px] text-brand-cyan hover:underline font-bold cursor-pointer"
+                      >
+                        Generate Strong
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Secret password"
+                      value={addPassword}
+                      onChange={(e) => setAddPassword(e.target.value)}
+                      className="auth-input w-full px-3 py-2 rounded-lg text-sm font-mono text-slate-900 placeholder-slate-400"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Website URL</label>
+                    <input
+                      type="url"
+                      placeholder="https://example.com"
+                      value={addUrl}
+                      onChange={(e) => setAddUrl(e.target.value)}
+                      className="auth-input w-full px-3 py-2 rounded-lg text-sm text-slate-900 placeholder-slate-400"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Category</label>
+                    <select
+                      value={addCategory}
+                      onChange={(e) => setAddCategory(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-900/12 rounded-lg text-sm font-semibold text-slate-800 px-2.5 py-2 focus:outline-none focus:border-brand-cyan cursor-pointer"
+                    >
+                      <option value="login">Login</option>
+                      <option value="card">Payment Card</option>
+                      <option value="note">Secure Note</option>
+                      <option value="other">API / Other</option>
+                      <option value="aws">AWS Account</option>
+                      <option value="sshkey">SSH Key</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">2FA Authenticator Key (Optional)</label>
+                    <input
+                      type="text"
+                      placeholder="Base32 secret or otpauth:// URI"
+                      value={addTotpSecret}
+                      onChange={(e) => setAddTotpSecret(e.target.value)}
+                      className="auth-input w-full px-3 py-2 rounded-lg text-sm font-mono text-slate-900 placeholder-slate-400"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Notes</label>
+                    <textarea
+                      rows={2}
+                      placeholder="Optional notes or security questions..."
+                      value={addNotes}
+                      onChange={(e) => setAddNotes(e.target.value)}
+                      className="auth-input w-full px-3 py-2 rounded-lg text-sm text-slate-900 placeholder-slate-400 resize-none"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={addLoading || !addLabel.trim() || !addPassword.trim()}
+                    className="btn-primary w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 font-bold"
+                  >
+                    {addLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    <span>Save to Zero-Knowledge Vault</span>
+                  </button>
+                </div>
+              </form>
+            ) : selectedItem ? (
               <div className="flex-1 flex flex-col space-y-3 animate-slide-up">
                 <div className="flex items-center justify-between pb-1 border-b border-slate-900/8">
                   <button
@@ -1620,6 +1999,15 @@ export const PopupApp: React.FC = () => {
                     </div>
                   )}
 
+                  {/* TOTP 2FA Authenticator Section */}
+                  {selectedItem.totpSecret && (
+                    <TotpCodeDisplay
+                      secretOrUri={selectedItem.totpSecret}
+                      onCopy={(code) => copyToClipboard(code, selectedItem.id, 'totp')}
+                      copied={copiedField?.id === selectedItem.id && copiedField?.field === 'totp'}
+                    />
+                  )}
+
                   {/* Notes Field */}
                   {selectedItem.notes && (
                     <div className="p-2.5 bg-slate-50 border border-slate-900/8 rounded-lg space-y-1">
@@ -1817,25 +2205,40 @@ export const PopupApp: React.FC = () => {
                   </div>
                 )}
 
-                {/* Vault Items Search Bar */}
+                {/* Vault Items Search Bar & Quick Add */}
                 <div className="space-y-2 flex-1 flex flex-col min-h-0">
-                  <div className="relative shrink-0">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder={`Search ${vaultItems.length} items...`}
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full pl-9 pr-8 py-2 bg-white border border-slate-900/10 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition shadow-xs"
-                    />
-                    {searchTerm && (
-                      <button
-                        onClick={() => setSearchTerm('')}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-700 cursor-pointer"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    )}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="relative flex-1 min-w-0">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        type="text"
+                        placeholder={`Search ${vaultItems.length} items...`}
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="w-full pl-9 pr-8 py-2 bg-white border border-slate-900/10 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-brand-cyan transition shadow-xs"
+                      />
+                      {searchTerm && (
+                        <button
+                          onClick={() => setSearchTerm('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => {
+                        setIsAddingItem(true);
+                        setAddLabel(currentHostname ? currentHostname.replace(/^www\./, '') : '');
+                        setAddUrl(currentHostname ? `https://${currentHostname}` : '');
+                        setAddPassword(generatePassword(DEFAULT_OPTIONS));
+                        setAddError(null);
+                      }}
+                      className="p-2 bg-brand-cyan hover:bg-brand-teal text-white rounded-xl shadow-xs transition cursor-pointer flex items-center justify-center shrink-0"
+                      title="Add New Item"
+                    >
+                      <Plus className="w-4 h-4 stroke-[2.5]" />
+                    </button>
                   </div>
 
                   {/* Category Filter Chips */}
@@ -2230,6 +2633,29 @@ export const PopupApp: React.FC = () => {
                         {CLIPBOARD_CLEAR_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
                       <ChevronDown className="w-4 h-4 absolute right-2 pointer-events-none text-slate-400 shrink-0" />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
+                    <div>
+                      <div className="text-sm font-bold text-slate-800">Appearance Theme</div>
+                      <div className="text-xs text-slate-500">
+                        {theme === 'system' ? 'Follows your operating system' : theme === 'dark' ? 'Always dark mode' : 'Always light mode'}
+                      </div>
+                    </div>
+                    <div className="flex gap-1 p-1 bg-slate-100 rounded-lg border border-slate-900/10 shrink-0">
+                      {(['system', 'light', 'dark'] as const).map((t) => (
+                        <button
+                          key={t}
+                          onClick={() => changeTheme(t)}
+                          className={`px-2 py-1 rounded text-xs font-bold capitalize transition cursor-pointer ${theme === t
+                              ? 'bg-brand-cyan text-white shadow-xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                        >
+                          {t}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>

@@ -36,6 +36,7 @@ import {
   closePhishingInterstitial,
   isInterstitialOpen,
   clearAll,
+  showToast,
   type OverlayCredential,
 } from './overlay';
 import { collectPageSignals, isWorthAssessing, type PageSignals } from '../utils/pageSignals';
@@ -468,9 +469,71 @@ browser.runtime.onMessage.addListener((message: any) => {
   if (!message || typeof message.type !== 'string') return undefined;
   if (message.type === 'AI_FILL_AVAILABLE') {
     renderAiBanner(message.payload as AiFillOffer);
+  } else if (message.type === 'SHORTCUT_AUTOFILL') {
+    void handleShortcutAutofill();
   }
   return undefined;
 });
+
+async function handleShortcutAutofill(): Promise<void> {
+  // If credentials are not loaded yet or empty, try a fast reload
+  if (activeCredentials.length === 0) {
+    loadCredentials();
+    return;
+  }
+
+  // Look for visible password field first, or AWS resolving input
+  const passwordInputs = (Array.from(
+    document.querySelectorAll('input[type="password"]')
+  ) as HTMLInputElement[]).filter(isFillable);
+
+  let targetInput: HTMLInputElement | null = passwordInputs[0] || null;
+
+  if (!targetInput && window.location.hostname.endsWith('aws.amazon.com')) {
+    const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const foundAws = awsInputs.find(el => isFillable(el) && looksLikeAwsAccountId({
+      type: el.type,
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label')
+    }));
+    if (foundAws) targetInput = foundAws;
+  }
+
+  if (!targetInput) {
+    // Look for any visible username input
+    const allInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const foundUser = allInputs.find(el => isFillable(el) && looksLikeUsername({
+      type: el.type,
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label')
+    }));
+    if (foundUser) targetInput = foundUser;
+  }
+
+  if (!targetInput) return;
+
+  if (activeCredentials.length === 1) {
+    if (targetInput.type === 'password') {
+      await handlePick(activeCredentials[0].id, targetInput);
+    } else {
+      // Username or AWS account input
+      const pairedPass = (Array.from(document.querySelectorAll('input[type="password"]')) as HTMLInputElement[]).find(isFillable);
+      if (pairedPass) {
+        await handlePick(activeCredentials[0].id, pairedPass);
+      } else {
+        // Dropdown if no password input found
+        activate(targetInput, targetInput);
+      }
+    }
+  } else if (activeCredentials.length > 1) {
+    // Multiple accounts: show dropdown so user can choose
+    activate(targetInput, targetInput);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Field detection
@@ -558,7 +621,7 @@ function scanForLoginFields(): void {
     type: 'GET_CREDENTIAL_SECRET',
     payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
   })
-              .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
+              .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
 
             if (!res || res.error) {
               handleFillRefusal(res?.error);
@@ -747,7 +810,7 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
     type: 'GET_CREDENTIAL_SECRET',
     payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
   })
-    .catch(() => null)) as { username?: string; value?: string; accountId?: string; error?: string } | null;
+    .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
 
   if (!res || res.error || typeof res.value !== 'string') {
     handleFillRefusal(res?.error);
@@ -793,14 +856,44 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
     }
     
     autofillField(passInput, res.value);
-    return;
+  } else {
+    const usernameEl = fieldPairs.get(passInput) ?? null;
+    if (usernameEl && usernameEl !== passInput && res.username) {
+      autofillField(usernameEl, res.username);
+    }
+    autofillField(passInput, res.value);
   }
 
-  const usernameEl = fieldPairs.get(passInput) ?? null;
-  if (usernameEl && usernameEl !== passInput && res.username) {
-    autofillField(usernameEl, res.username);
+  // ── 2FA TOTP Code Handling ──────────────────────────────────────────────────
+  if (res.totpCode) {
+    const code = res.totpCode;
+    // Look for any visible one-time code field on the page
+    const allInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const otpInput = allInputs.find((el) => {
+      if (!isFillable(el) || el.type === 'password' || el.type === 'hidden') return false;
+      const auto = (el.getAttribute('autocomplete') || '').toLowerCase();
+      if (auto.includes('one-time-code')) return true;
+      const hint = `${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`.toLowerCase();
+      return /\b(otp|totp|mfa|2fa|onetime|one-time|authcode|verificationcode)\b/.test(hint);
+    });
+
+    if (otpInput) {
+      autofillField(otpInput, code);
+      showToast('2FA Code Filled', `Filled verification code: ${code}`);
+    } else {
+      // Auto-copy to clipboard and notify user
+      try {
+        void navigator.clipboard.writeText(code);
+        void browser.runtime.sendMessage({
+          type: 'CLIPBOARD_COPIED',
+          payload: { secret: code, id, field: 'totp' },
+        }).catch(() => undefined);
+        showToast('2FA Code Copied', `Verification code ${code} copied to clipboard`);
+      } catch (e) {
+        console.warn('[XoraPass] Could not write TOTP to clipboard:', e);
+      }
+    }
   }
-  autofillField(passInput, res.value);
 }
 
 

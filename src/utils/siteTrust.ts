@@ -21,7 +21,7 @@
 // back to the last two labels, which is the stricter (safe) direction for the
 // ccTLD case — but note it is the UNSAFE direction for case 2, which is why
 // shared-hosting suffixes must be added here explicitly as they are adopted.
-const MULTI_PART_SUFFIXES = new Set([
+export const MULTI_PART_SUFFIXES = new Set([
   // ── ccTLD second-level registries ──────────────────────────────────────
   'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk', 'ltd.uk', 'plc.uk', 'net.uk', 'sch.uk',
   'co.jp', 'or.jp', 'ne.jp', 'ac.jp', 'go.jp', 'lg.jp',
