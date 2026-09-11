@@ -85,3 +85,38 @@ jobs:
           refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
           file-path: xorapass-extension-chrome.zip
           publish: true
+
+  package-opera:
+    name: Package Opera & Edge Release Bundles
+    needs: test-and-build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Extension
+        env:
+          VITE_API_BASE_URL: https://app.xorapass.com
+          VITE_WEB_APP_URL: https://app.xorapass.com
+        run: npm run build
+      - name: Create Clean POSIX Zip Packages
+        run: |
+          sed -i '/key/d' dist/manifest.json
+          VERSION=$(node -p "require('./package.json').version")
+          cd dist
+          zip -r -X ../xorapass-extension-opera-v${VERSION}.zip *
+          cp ../xorapass-extension-opera-v${VERSION}.zip ../xorapass-extension-edge-v${VERSION}.zip
+      - name: Upload Store Packages as Artifacts
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: store-packages
+          path: |
+            xorapass-extension-opera-*.zip
+            xorapass-extension-edge-*.zip
+          retention-days: 30
+
