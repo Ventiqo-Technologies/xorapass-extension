@@ -2712,7 +2712,7 @@ export const PopupApp: React.FC = () => {
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                        XoraPass Extension
+                        XoraPass
                       </div>
                       <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
                         <span className="font-semibold text-slate-600">v{browser.runtime.getManifest().version}</span>
