@@ -88,6 +88,9 @@ export const KNOWN_MESSAGE_TYPES = [
   // no secret, and the background scopes the resulting approval to the sender
   // tab's REAL hostname (never the payload's) with a short TTL.
   'RISK_APPROVE_DOMAIN',
+  // Web store update check and apply actions triggered by popup settings.
+  'CHECK_UPDATE',
+  'APPLY_UPDATE',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -99,6 +102,8 @@ export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
  */
 const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'UNLOCK_VAULT',
+  'CHECK_UPDATE',
+  'APPLY_UPDATE',
   // Allowlisting a domain suppresses the local phishing verdict for it, so a
   // content script able to send this could allowlist the page it is running on
   // and then walk straight through the GET_CREDENTIAL_SECRET risk re-check —
