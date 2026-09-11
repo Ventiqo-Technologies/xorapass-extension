@@ -38,6 +38,14 @@ import { base64ToBytes } from '../utils/crypto';
 import { generatePassword, DEFAULT_OPTIONS } from '../utils/passwordGenerator';
 import { generateTotp, parseTotpSecret } from '../utils/totp';
 
+// Apply store updates immediately once downloaded by the browser.
+// Calling runtime.reload() restarts the background service worker with the
+// newly installed version without requiring a full browser restart.
+browser.runtime.onUpdateAvailable?.addListener((details) => {
+  console.info('[XoraPass] Extension update available (version ' + details.version + '), applying reload immediately.');
+  browser.runtime.reload();
+});
+
 // Logged on every service-worker (cold) start.
 //
 // Note for anyone debugging "the vault locked itself": a worker restart does
