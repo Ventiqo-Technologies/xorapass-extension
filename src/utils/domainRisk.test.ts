@@ -164,5 +164,13 @@ describe('Domain Risk Assessment — Acceptance Criteria', () => {
     expect(res.riskLevel).toBe('safe');
     expect(res.reasons).toHaveLength(0);
   });
+
+  it('ALLOWS legitimate subdomains of major known platforms without saved credentials (e.g. learn.microsoft.com)', () => {
+    const res = assessDomainRisk('learn.microsoft.com', ['https://example.com'], [], 'https://learn.microsoft.com/en-us/defender-xdr/');
+    expect(res.decision).toBe('allow');
+    expect(res.riskScore).toBe(0);
+    expect(res.riskLevel).toBe('safe');
+    expect(res.reasons).toHaveLength(0);
+  });
 });
 

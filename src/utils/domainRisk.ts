@@ -18,6 +18,7 @@ import {
   isSubdomainOf,
   hasPunycode,
   stripPublicSuffix,
+  MULTI_PART_SUFFIXES,
 } from './siteTrust';
 
 export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
@@ -142,6 +143,33 @@ export const HIGH_RISK_TLDS = new Set([
   'trade',
   'accountant',
   'science',
+]);
+
+/**
+ * Verified primary registrable domains for major platforms and cloud ecosystems.
+ * Subdomains of these roots (e.g. learn.microsoft.com, docs.github.com) are recognized
+ * as legitimate unless hosted on shared-tenant suffixes or hijacking actions.
+ */
+export const KNOWN_LEGITIMATE_DOMAINS = new Set([
+  'microsoft.com',
+  'live.com',
+  'office.com',
+  'azure.com',
+  'windows.net',
+  'google.com',
+  'google.co.uk',
+  'google.de',
+  'google.fr',
+  'google.nl',
+  'apple.com',
+  'icloud.com',
+  'amazon.com',
+  'amazonaws.com',
+  'github.com',
+  'gitlab.com',
+  'paypal.com',
+  'stripe.com',
+  'cloudflare.com',
 ]);
 
 /**
@@ -535,6 +563,12 @@ export function assessDomainRisk(
       assessment.matchedTarget = registrableDomain(extractHostname(raw));
       return assessment; // 0 risk, safe match
     }
+  }
+
+  // 2b. Check for Legitimate Subdomain of Known Major Platforms
+  if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg) && !MULTI_PART_SUFFIXES.has(pageReg)) {
+    assessment.matchedTarget = pageReg;
+    return assessment; // Safe legitimate platform domain
   }
 
   // If there are no saved credentials to protect, return safe
