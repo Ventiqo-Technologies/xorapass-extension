@@ -289,4 +289,12 @@ describe('validateMessage — companion-device linking bridge', () => {
     const res = validateMessage({ type: 'WEB_BRIDGE_REQUEST_SESSION', payload: {} }, externalWebSender());
     expect(res.reason).toBe('bad-payload');
   });
+
+  it('allows CHECK_UPDATE and APPLY_UPDATE only from extension pages', () => {
+    expect(validateMessage({ type: 'CHECK_UPDATE' }, popupSender()).ok).toBe(true);
+    expect(validateMessage({ type: 'APPLY_UPDATE' }, popupSender()).ok).toBe(true);
+    expect(validateMessage({ type: 'CHECK_UPDATE' }, contentSender()).reason).toBe('privileged-from-content');
+    expect(validateMessage({ type: 'APPLY_UPDATE' }, contentSender()).reason).toBe('privileged-from-content');
+    expect(validateMessage({ type: 'CHECK_UPDATE' }, externalWebSender()).reason).toBe('unauthorized-external-type');
+  });
 });

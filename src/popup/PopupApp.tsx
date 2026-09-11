@@ -35,7 +35,8 @@ import {
   Sun,
   Moon,
   Plus,
-  Clock
+  Clock,
+  Sparkles
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
@@ -400,6 +401,10 @@ export const PopupApp: React.FC = () => {
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [isDarkEffective, setIsDarkEffective] = useState(false);
 
+  // Extension update checking state
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up_to_date' | 'available' | 'throttled'>('idle');
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+
   useEffect(() => {
     browser.storage.local.get(['themePreference']).then((res: any) => {
       if (res?.themePreference === 'dark' || res?.themePreference === 'light' || res?.themePreference === 'system') {
@@ -630,6 +635,34 @@ export const PopupApp: React.FC = () => {
   const changeClipboardClear = (seconds: number) => {
     setClipboardClearSeconds(seconds);
     browser.runtime.sendMessage({ type: 'SET_CLIPBOARD_CLEAR', payload: { seconds } });
+  };
+
+  const handleCheckUpdate = () => {
+    if (updateStatus === 'checking') return;
+    setUpdateStatus('checking');
+
+    browser.runtime
+      .sendMessage({ type: 'CHECK_UPDATE' })
+      .then((res: any) => {
+        if (res?.status === 'update_available') {
+          setUpdateStatus('available');
+          setUpdateVersion(res?.version || null);
+        } else if (res?.status === 'throttled') {
+          setUpdateStatus('throttled');
+          setTimeout(() => setUpdateStatus('idle'), 4000);
+        } else {
+          setUpdateStatus('up_to_date');
+          setTimeout(() => setUpdateStatus('idle'), 4000);
+        }
+      })
+      .catch(() => {
+        setUpdateStatus('up_to_date');
+        setTimeout(() => setUpdateStatus('idle'), 4000);
+      });
+  };
+
+  const handleApplyUpdate = () => {
+    browser.runtime.sendMessage({ type: 'APPLY_UPDATE' }).catch(() => {});
   };
 
   const scanActiveAiTabs = () => {
@@ -2673,10 +2706,55 @@ export const PopupApp: React.FC = () => {
                   </p>
                 </div>
                 
-                <div className="flex justify-center pt-2">
-                  <span className="text-xs font-bold text-slate-400">
-                    Version {browser.runtime.getManifest().version}
-                  </span>
+                {/* ABOUT & UPDATES CARD */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">About & Updates</div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                        XoraPass
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                        <span className="font-semibold text-slate-600">v{browser.runtime.getManifest().version}</span>
+                        {updateStatus === 'up_to_date' && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Up to date
+                          </span>
+                        )}
+                        {updateStatus === 'available' && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-cyan-600">
+                            <Sparkles className="w-3.5 h-3.5" /> {updateVersion ? `v${updateVersion} ready` : 'New version ready'}
+                          </span>
+                        )}
+                        {updateStatus === 'throttled' && (
+                          <span className="text-[11px] font-semibold text-amber-600">
+                            Rate limited by store
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="shrink-0">
+                      {updateStatus === 'available' ? (
+                        <button
+                          onClick={handleApplyUpdate}
+                          className="px-3 py-1.5 bg-brand-cyan hover:bg-brand-cyan/90 text-white font-bold rounded-lg text-xs flex items-center gap-1.5 shadow-xs transition cursor-pointer animate-pulse"
+                          title="Restart extension to apply new version"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" /> Update now {updateVersion ? `(v${updateVersion})` : ''}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={handleCheckUpdate}
+                          disabled={updateStatus === 'checking'}
+                          className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-900/10 text-slate-700 font-bold rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${updateStatus === 'checking' ? 'animate-spin' : ''}`} />
+                          {updateStatus === 'checking' ? 'Checking...' : 'Check for updates'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

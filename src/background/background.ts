@@ -1657,6 +1657,44 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return requestDomainAllowlist(hostname, globalThis.fetch, getJwt);
   }
 
+  if (type === 'CHECK_UPDATE') {
+    return new Promise<{ status: string; version?: string }>((resolve) => {
+      try {
+        const chromeApi = (globalThis as any).chrome;
+        const updateCheckFn =
+          (browser.runtime as any)?.requestUpdateCheck ||
+          (chromeApi?.runtime?.requestUpdateCheck);
+
+        if (typeof updateCheckFn === 'function') {
+          updateCheckFn.call(
+            (browser.runtime as any)?.requestUpdateCheck ? browser.runtime : chromeApi?.runtime,
+            (status: string, details?: { version?: string }) => {
+              resolve({
+                status: status || 'no_update',
+                version: details?.version,
+              });
+            }
+          );
+        } else {
+          resolve({ status: 'no_update' });
+        }
+      } catch (err) {
+        console.warn('[XoraPass] requestUpdateCheck failed:', err);
+        resolve({ status: 'no_update' });
+      }
+    });
+  }
+
+  if (type === 'APPLY_UPDATE') {
+    try {
+      browser.runtime.reload();
+      return Promise.resolve({ success: true });
+    } catch (err) {
+      console.warn('[XoraPass] runtime.reload failed:', err);
+      return Promise.resolve({ success: false });
+    }
+  }
+
   // ── Web Bridge messages from content script or internal pages ─────────
   if (
     type === 'WEB_BRIDGE_LOGIN' ||
