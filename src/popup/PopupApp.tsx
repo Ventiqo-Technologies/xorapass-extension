@@ -2967,27 +2967,27 @@ export const PopupApp: React.FC = () => {
                   )}
                 </div>
 
-                {/* Secret Paste Guard */}
+                {/* AI Secret Leak Protection */}
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                      <ShieldAlert className="w-4 h-4 text-brand-cyan" /> Secret Paste Guard
+                      <ShieldAlert className="w-4 h-4 text-brand-cyan" /> AI Secret Leak Protection
                     </div>
                     <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600 uppercase">
                       {!planAllowsPasteGuard
                         ? 'Unavailable'
-                        : pasteMode === 'warn' ? 'Warning Mode' : pasteMode === 'block' ? 'Strict Blocking' : 'Disabled'}
+                        : pasteMode === 'warn' ? 'Warning Mode' : pasteMode === 'block' ? 'Strict Blocking' : 'Off'}
                     </span>
                   </div>
 
                   <p className="text-xs text-slate-500 leading-snug">
                     {!planAllowsPasteGuard
-                      ? 'Not included in your current plan.'
+                      ? 'Included with Personal and Enterprise plans.'
                       : pasteMode === 'warn'
-                      ? 'Warns before pasting passwords or secret keys into AI prompts.'
+                      ? 'Warns you before pasting passwords, API keys, or private tokens into ChatGPT, Claude, or AI prompts.'
                       : pasteMode === 'block'
-                        ? 'Automatically blocks pasting passwords or secret keys into AI prompts.'
-                        : 'Secret paste detection is turned off.'}
+                        ? 'Strictly blocks pasting passwords, API keys, or private tokens into AI tools.'
+                        : 'Secret leak protection for AI prompts is currently turned off.'}
                   </p>
 
                   <div className={`flex gap-1 p-1 bg-slate-100 border border-slate-900/8 rounded-xl ${!planAllowsPasteGuard ? 'opacity-40' : ''}`}>
@@ -3001,21 +3001,21 @@ export const PopupApp: React.FC = () => {
                             : 'text-slate-600 hover:text-slate-900 font-medium'
                           }`}
                       >
-                        {m}
+                        {m === 'warn' ? 'Warn' : m === 'block' ? 'Block' : 'Off'}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {/* Active Sessions Section */}
+                {/* Guarded AI Portals */}
                 <div className="space-y-2 pt-1">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                      <Globe className="w-4 h-4 text-slate-500" /> Active AI Sessions
+                      <Globe className="w-4 h-4 text-slate-500" /> Guarded AI Portals
                     </div>
                     {activeAiTabs.length > 0 && (
                       <span className="px-2 py-0.5 text-xs font-extrabold rounded-full bg-brand-cyan/20 text-brand-cyan">
-                        {activeAiTabs.length} active
+                        {activeAiTabs.length} open
                       </span>
                     )}
                   </div>
@@ -3026,7 +3026,7 @@ export const PopupApp: React.FC = () => {
                         <ShieldCheck className="w-4 h-4 text-emerald-600" />
                       </div>
                       <div className="text-sm font-bold text-slate-800">No AI Portals Open</div>
-                      <p className="text-xs text-slate-400">Paste Guard is active. It will monitor inputs when you open any supported AI tab.</p>
+                      <p className="text-xs text-slate-400">Leak protection is active in the background for ChatGPT, Claude, and popular AI tools.</p>
                     </div>
                   ) : (
                     activeAiTabs.map((t, idx) => {
