@@ -165,6 +165,8 @@ export const KNOWN_LEGITIMATE_DOMAINS = new Set([
   'icloud.com',
   'amazon.com',
   'amazonaws.com',
+  'awsapps.com',
+  'signin.aws',
   'github.com',
   'gitlab.com',
   'paypal.com',

@@ -1386,13 +1386,31 @@ browser.runtime.onMessage.addListener((message, sender) => {
       if (!res.unlocked || disabled) return { prompt: false };
 
       const items = (res.vaultItems as VaultItem[]) || [];
+      const isAwsHost = (h: string) =>
+        h.endsWith('.awsapps.com') ||
+        h === 'awsapps.com' ||
+        h.endsWith('.signin.aws') ||
+        h === 'signin.aws' ||
+        h.endsWith('.aws.amazon.com') ||
+        h === 'aws.amazon.com';
+
+      const isAws = isAwsHost(hostname);
       const sameSite = items.filter((i) => !!i.url && isDomainMatch(hostname, i.url!));
-      const existing = sameSite.find((i) => i.username === username);
+
+      // Match exact username or base username (e.g. "ashan (959786390779)" matches "ashan")
+      const normalizeUser = (u: string) => u.replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
+      const targetUser = normalizeUser(username);
+
+      const existing = sameSite.find((i) => {
+        if (!i.username) return false;
+        if (i.username === username) return true;
+        if (targetUser && normalizeUser(i.username) === targetUser) return true;
+        return false;
+      }) || (isAws && sameSite.length === 1 ? sameSite[0] : undefined);
 
       // Already stored with this exact password: nothing worth asking about.
       if (existing && existing.value === password) return { prompt: false };
 
-      const isAws = hostname.endsWith('aws.amazon.com');
       let accountId = '';
       if (isAws) {
         const remembered = await getLastUsernames().then((m) => m[String(tabId)] || '');
@@ -1403,11 +1421,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
 
       const pending: PendingSave & { accountId?: string } = existing
-        ? { hostname, username, password, mode: 'update', entryId: existing.id }
+        ? { hostname, username: existing.username || username, password, mode: 'update', entryId: existing.id }
         : { hostname, username, password, mode: 'new' };
 
       if (isAws) {
-        pending.accountId = accountId;
+        pending.accountId = accountId || existing?.accountId || '';
       }
 
       await setPendingSave(tabId, pending);
@@ -1806,7 +1824,10 @@ async function savePendingCredential(
   const items = (session.vaultItems as VaultItem[]) || [];
   const existing = pending.entryId ? items.find((i) => i.id === pending.entryId) : undefined;
 
-  const isAws = pending.hostname.endsWith('aws.amazon.com');
+  const isAws =
+    pending.hostname.endsWith('aws.amazon.com') ||
+    pending.hostname.endsWith('awsapps.com') ||
+    pending.hostname.endsWith('signin.aws');
   const defaultCategory = isAws ? 'aws' : 'login';
   const accountIdVal = isAws ? (pending as any).accountId || '' : '';
 

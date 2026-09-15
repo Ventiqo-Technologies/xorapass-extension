@@ -271,8 +271,8 @@ function loadCredentials(): void {
       clearAll();
       scanForLoginFields();
     })
-    .catch(() => {
-      /* background unavailable â€“ nothing to fill */
+    .catch((err) => {
+      console.warn('[XoraPass Content] Error requesting credentials:', err);
     });
 }
 
@@ -592,9 +592,86 @@ function scanForLoginFields(): void {
     }
   }
 
+  // ── Multi-Step / Standalone Username Field Handling ─────────────────────────
+  // When no password input is currently visible (e.g. AWS SSO, Google, Microsoft Step 1)
+  // decorate any visible username/identifier input so the user can autofill their username.
+  if (visible.length === 0 && activeCredentials.length > 0) {
+    const allInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const fillableInputs = allInputs.filter(isFillable);
+
+    const standaloneUserInputs = fillableInputs.filter(el => {
+      // Find associated label text if present
+      let labelText = '';
+      if (el.id) {
+        const lbl = document.querySelector(`label[for="${el.id}"]`);
+        if (lbl) labelText = lbl.textContent || '';
+      }
+      if (!labelText && el.closest('label')) {
+        labelText = el.closest('label')?.textContent || '';
+      }
+      if (!labelText && el.parentElement) {
+        labelText = el.parentElement.textContent || '';
+      }
+
+      // If looksLikeUsername matches
+      if (looksLikeUsername({
+        type: el.type,
+        autocomplete: el.getAttribute('autocomplete'),
+        name: el.name,
+        id: el.id,
+        placeholder: el.getAttribute('placeholder'),
+        ariaLabel: el.getAttribute('aria-label'),
+        labelText,
+      })) {
+        return true;
+      }
+
+      // Fallback: If on AWS SSO / portal and there's only 1 visible editable text input, it's the username field
+      if (fillableInputs.length === 1 && (el.type === 'text' || el.type === 'email' || !el.type)) {
+        return true;
+      }
+
+      return false;
+    });
+
+    for (const userInput of standaloneUserInputs) {
+      if (hasIcon(userInput)) continue;
+
+      attachIcon(userInput, () => {
+        openDropdown(userInput, {
+          credentials: activeCredentials,
+          warning: getRiskWarningMessage(),
+          onPick: async (id) => {
+            const cred = activeCredentials.find((c) => c.id === id);
+            if (!cred) return;
+            const confirmed = await confirmFillIfNeeded(cred);
+            if (!confirmed) return;
+
+            const res = (await browser.runtime
+              .sendMessage({
+                type: 'GET_CREDENTIAL_SECRET',
+                payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
+              })
+              .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
+
+            if (!res || res.error) {
+              handleFillRefusal(res?.error);
+              return;
+            }
+
+            if (res.username) {
+              autofillField(userInput, res.username);
+            }
+          }
+        });
+      });
+      focusActivators.set(userInput, userInput);
+    }
+  }
+
   // ── AWS Console Account ID Specific Handling ────────────────────────────────
   // Decorate the initial Step 1 Account ID input (#resolving_input) when active
-  if (window.location.hostname.endsWith('aws.amazon.com') && activeCredentials.length > 0) {
+  if ((window.location.hostname.endsWith('aws.amazon.com') || window.location.hostname.endsWith('.signin.aws')) && activeCredentials.length > 0) {
     const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
     const accountInput = awsInputs.find(el => isFillable(el) && looksLikeAwsAccountId({
       type: el.type,

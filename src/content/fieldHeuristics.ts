@@ -10,6 +10,7 @@ export interface FieldAttrs {
   id?: string | null;
   placeholder?: string | null;
   ariaLabel?: string | null;
+  labelText?: string | null;
 }
 
 const USERNAME_HINT = /user|email|login|account|phone|mobile|identifier/i;
@@ -32,7 +33,11 @@ export function looksLikeUsername(attrs: FieldAttrs): boolean {
   if (ac.includes('username') || ac.includes('email')) return true;
   if (ac.includes('new-password')) return false;
 
-  const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel]
+  const id = (attrs.id || '').toLowerCase();
+  // AWS CloudScape Design System input: awsui-input-*
+  if (id.startsWith('awsui-input')) return true;
+
+  const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel, attrs.labelText]
     .filter(Boolean)
     .join(' ');
 

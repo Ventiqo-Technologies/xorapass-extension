@@ -2830,30 +2830,57 @@ export const PopupApp: React.FC = () => {
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                      <Zap className="w-4 h-4 text-brand-cyan" /> Site Scanner
+                      <Zap className={`w-4 h-4 ${isScanningSite ? 'text-brand-cyan animate-pulse' : 'text-brand-cyan'}`} /> Site Scanner
                     </div>
                     <button
                       onClick={scanCurrentSite}
                       disabled={isScanningSite}
-                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      className={`px-2.5 py-1 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-60 transition-all duration-200 ${
+                        isScanningSite
+                          ? 'bg-brand-cyan animate-pulse-ring shadow-[0_0_12px_rgba(13,148,136,0.5)]'
+                          : 'bg-slate-900 hover:bg-slate-700 hover:shadow-[0_0_8px_rgba(13,148,136,0.3)]'
+                      }`}
                     >
                       <RefreshCw className={`w-3 h-3 ${isScanningSite ? 'animate-spin' : ''}`} />
                       {isScanningSite ? 'Scanning...' : 'Scan this site'}
                     </button>
                   </div>
 
-                  {/* Active Tab Header */}
-                  <div className="flex items-center gap-2.5 p-2.5 bg-slate-50 border border-slate-900/5 rounded-lg">
+                  {/* Active Tab Header — with radar beam overlay while scanning */}
+                  <div className="relative flex items-center gap-2.5 p-2.5 bg-slate-50 border border-slate-900/5 rounded-lg overflow-hidden">
+                    {/* Scanline beam */}
+                    {isScanningSite && <div className="animate-scanner-beam rounded" />}
                     {activeTabFavIcon ? (
-                      <img src={activeTabFavIcon} alt="" className="w-5 h-5 object-contain shrink-0 rounded" onError={(e) => { (e.target as any).style.display = 'none'; }} />
+                      <img src={activeTabFavIcon} alt="" className="w-5 h-5 object-contain shrink-0 rounded relative z-10" onError={(e) => { (e.target as any).style.display = 'none'; }} />
                     ) : (
-                      <Globe className="w-5 h-5 text-slate-400 shrink-0" />
+                      <Globe className={`w-5 h-5 shrink-0 relative z-10 ${isScanningSite ? 'text-brand-cyan' : 'text-slate-400'}`} />
                     )}
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 relative z-10">
                       <div className="text-xs font-extrabold text-slate-900 truncate">{currentHostname || 'No active website'}</div>
                       <div className="text-[11px] text-slate-400 truncate">{activeTabTitle || activeTabUrl || 'about:blank'}</div>
                     </div>
+                    {isScanningSite && (
+                      <span className="text-[10px] font-bold text-brand-cyan animate-pulse shrink-0 relative z-10">SCANNING</span>
+                    )}
                   </div>
+
+                  {/* Shimmer skeleton shown while scanning and no prior report */}
+                  {isScanningSite && !siteReport && (
+                    <div className="space-y-2 pt-1 animate-pulse">
+                      <div className="h-14 bg-emerald-50 border border-emerald-100 rounded-xl" />
+                      <div className="divide-y divide-slate-100 border border-slate-900/5 rounded-xl overflow-hidden">
+                        {[0,1,2,3].map(i => (
+                          <div key={i} className="p-2.5 flex items-center justify-between gap-2">
+                            <div className="space-y-1.5">
+                              <div className="h-2.5 w-28 bg-slate-200 rounded" />
+                              <div className="h-2 w-40 bg-slate-100 rounded" />
+                            </div>
+                            <div className="h-5 w-12 bg-slate-200 rounded shrink-0" />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Scanner Report Breakdown */}
                   {siteReport ? (
@@ -2960,11 +2987,17 @@ export const PopupApp: React.FC = () => {
                         </div>
                       </div>
                     </div>
-                  ) : (
-                    <div className="py-4 text-center text-xs text-slate-400">
-                      Click "Scan this site" to perform a real-time safety inspection.
+                  ) : !isScanningSite ? (
+                    <div className="py-5 flex flex-col items-center gap-2 text-center">
+                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">
+                        <Zap className="w-4 h-4 text-slate-400" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-slate-600">No scan result yet</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">Click "Scan this site" to run a real-time safety check.</p>
+                      </div>
                     </div>
-                  )}
+                  ) : null}
                 </div>
 
                 {/* AI Secret Leak Protection */}
@@ -3067,7 +3100,7 @@ export const PopupApp: React.FC = () => {
                     the web app's Domain Risk panel condensed for the popup. */}
                 <div className="space-y-2 pt-1">
                   <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                    <ShieldAlert className="w-4 h-4 text-slate-500" /> Domain Risk Activity
+                    <ShieldAlert className="w-4 h-4 text-slate-500" /> Security Events
                   </div>
                   <div className="bg-white border border-slate-900/10 rounded-xl shadow-xs overflow-hidden">
                     {!domainRiskSettingsLoaded ? null : !planAllowsDomainRisk ? (
@@ -3121,7 +3154,7 @@ export const PopupApp: React.FC = () => {
                                 </span>
                               </div>
                               <div className="flex items-center justify-between gap-2">
-                                <p className="text-xs text-slate-500 truncate flex-1">{ev.detail || 'Flagged by domain risk detection.'}</p>
+                                <p className="text-xs text-slate-500 truncate flex-1">{ev.detail || 'Flagged by XoraPass security protection.'}</p>
                                 <span className="text-xs text-slate-400 shrink-0">{fmtRelativeShort(ev.timestamp)} ago</span>
                               </div>
                             </div>
