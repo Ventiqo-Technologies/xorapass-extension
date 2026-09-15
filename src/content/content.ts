@@ -628,9 +628,11 @@ function scanForLoginFields(): void {
               return;
             }
 
-            // Fill Account ID or fallback to IAM username
-            const fillValue = res.accountId || res.username || '';
-            autofillField(accountInput, fillValue);
+            // Fill Account ID / alias
+            const fillValue = res.accountId || '';
+            if (fillValue) {
+              autofillField(accountInput, fillValue);
+            }
 
             // Also fill Username and Password if they are visible on the same page
             const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
@@ -638,7 +640,14 @@ function scanForLoginFields(): void {
               el.id === 'username' || 
               el.name === 'username' ||
               el.id?.toLowerCase().includes('username') ||
-              el.name?.toLowerCase().includes('username')
+              el.name?.toLowerCase().includes('username') ||
+              looksLikeUsername({
+                type: el.type,
+                name: el.name,
+                id: el.id,
+                placeholder: el.getAttribute('placeholder'),
+                ariaLabel: el.getAttribute('aria-label')
+              })
             ));
             const passwordInput = awsInputs.find(el => el.type === 'password' && isFillable(el));
 

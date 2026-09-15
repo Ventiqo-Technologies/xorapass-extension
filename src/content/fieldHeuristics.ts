@@ -51,10 +51,12 @@ export function looksLikeAwsAccountId(attrs: FieldAttrs): boolean {
   const id = (attrs.id || '').toLowerCase();
   const name = (attrs.name || '').toLowerCase();
   const placeholder = (attrs.placeholder || '').toLowerCase();
+  const ariaLabel = (attrs.ariaLabel || '').toLowerCase();
   
   if (id === 'resolving_input') return true;
-  if (name === 'account' || name === 'accountid') return true;
-  if (placeholder.includes('account id') || placeholder.includes('account alias')) return true;
+  if (name === 'account' || name === 'accountid' || id === 'account' || id === 'accountid') return true;
+  if (placeholder.includes('account id') || placeholder.includes('account alias') || placeholder.includes('account')) return true;
+  if (ariaLabel.includes('account id') || ariaLabel.includes('account alias') || ariaLabel.includes('account')) return true;
 
   return false;
 }

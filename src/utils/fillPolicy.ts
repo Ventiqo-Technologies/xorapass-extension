@@ -19,7 +19,7 @@
 // is why this lives beside the domain checks rather than in the UI.
 
 /** Categories whose username/value pair really is a web login credential. */
-export const FILLABLE_CATEGORIES: ReadonlySet<string> = new Set(['login', 'other']);
+export const FILLABLE_CATEGORIES: ReadonlySet<string> = new Set(['login', 'other', 'aws']);
 
 /**
  * Whether an item may be offered for, or released to, an autofill.
