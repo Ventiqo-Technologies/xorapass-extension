@@ -17,6 +17,7 @@ import {
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
 import type { PageSignals } from '../utils/pageSignals';
+import { buildSiteSafetyReport } from '../utils/siteScanner';
 import { validateMessage } from '../utils/messageGuard';
 import {
   encryptPayload,
@@ -1628,6 +1629,75 @@ browser.runtime.onMessage.addListener((message, sender) => {
     ).then((result) => ({
       risk: result,
     }));
+  }
+
+  if (type === 'SCAN_SITE') {
+    return (async () => {
+      let targetUrl = msg.payload?.url;
+      let targetTitle = msg.payload?.title;
+      let targetFavIcon = msg.payload?.favIconUrl;
+
+      // If URL was not explicitly passed, query the active tab
+      if (!targetUrl) {
+        try {
+          const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+          if (tabs && tabs[0]) {
+            targetUrl = tabs[0].url || '';
+            targetTitle = tabs[0].title || '';
+            targetFavIcon = tabs[0].favIconUrl || '';
+          }
+        } catch {
+          /* tabs query fallback */
+        }
+      }
+
+      if (!targetUrl || targetUrl.startsWith('chrome://') || targetUrl.startsWith('moz-extension://') || targetUrl.startsWith('about:')) {
+        return {
+          report: buildSiteSafetyReport({
+            url: targetUrl || 'about:blank',
+            title: targetTitle || 'Internal Browser Page',
+            favIconUrl: targetFavIcon,
+            savedDomains: [],
+          }),
+        };
+      }
+
+      // Gather saved domains from cached vault items
+      const res = await browser.storage.session.get(['vaultItems']);
+      const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
+      const savedDomains: string[] = [];
+      if (Array.isArray(items)) {
+        for (const it of items) {
+          if (it.url) {
+            const h = extractHostname(it.url);
+            if (h) savedDomains.push(h);
+          }
+        }
+      }
+
+      // Run remote/cached domain risk check
+      const risk = await checkDomainRiskRemote(
+        targetUrl,
+        savedDomains[0] || '',
+        undefined,
+        undefined,
+        'standard',
+        globalThis.fetch,
+        getJwt,
+        msg.payload?.pageSignals
+      );
+
+      const report = buildSiteSafetyReport({
+        url: targetUrl,
+        title: targetTitle,
+        favIconUrl: targetFavIcon,
+        savedDomains,
+        riskAssessment: risk,
+        scriptCount: msg.payload?.pageSignals?.external_script_origins,
+      });
+
+      return { report };
+    })();
   }
 
   if (type === 'RISK_APPROVE_DOMAIN') {

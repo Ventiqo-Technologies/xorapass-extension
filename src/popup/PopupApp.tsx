@@ -36,11 +36,13 @@ import {
   Moon,
   Plus,
   Clock,
-  Sparkles
+  Sparkles,
+  Zap,
 } from 'lucide-react';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname, assessDomainRisk } from '../utils/siteTrust';
+import { type SiteSafetyReport } from '../utils/siteScanner';
 import {
   mergeLocalAndRemoteRisk,
   type RemoteDomainRiskResponse,
@@ -397,6 +399,13 @@ export const PopupApp: React.FC = () => {
   const [activeAiTabs, setActiveAiTabs] = useState<ActiveAiTab[]>([]);
   const [scanningTabs, setScanningTabs] = useState(false);
 
+  // XoraPass Shield - Site Scanner state
+  const [siteReport, setSiteReport] = useState<SiteSafetyReport | null>(null);
+  const [isScanningSite, setIsScanningSite] = useState(false);
+  const [activeTabUrl, setActiveTabUrl] = useState<string>('');
+  const [activeTabTitle, setActiveTabTitle] = useState<string>('');
+  const [activeTabFavIcon, setActiveTabFavIcon] = useState<string>('');
+
   // Theme preference ('dark' | 'light' | 'system')
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [isDarkEffective, setIsDarkEffective] = useState(false);
@@ -532,6 +541,9 @@ export const PopupApp: React.FC = () => {
     browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
       const activeTab = tabs[0];
       if (activeTab && activeTab.url) {
+        setActiveTabUrl(activeTab.url);
+        setActiveTabTitle(activeTab.title || '');
+        setActiveTabFavIcon(activeTab.favIconUrl || '');
         try {
           const url = new URL(activeTab.url);
           setCurrentHostname(url.hostname);
@@ -693,9 +705,36 @@ export const PopupApp: React.FC = () => {
     });
   };
 
+  const scanCurrentSite = () => {
+    setIsScanningSite(true);
+    browser.runtime
+      .sendMessage({
+        type: 'SCAN_SITE',
+        payload: {
+          url: activeTabUrl,
+          title: activeTabTitle,
+          favIconUrl: activeTabFavIcon,
+        },
+      })
+      .then((res: any) => {
+        if (res?.report) {
+          setSiteReport(res.report);
+        }
+      })
+      .catch((err) => {
+        console.warn('SCAN_SITE failed:', err);
+      })
+      .finally(() => {
+        setIsScanningSite(false);
+      });
+  };
+
   useEffect(() => {
-    if (unlocked && tab === 'ai') scanActiveAiTabs();
-  }, [unlocked, tab]);
+    if (unlocked && tab === 'ai') {
+      scanActiveAiTabs();
+      scanCurrentSite();
+    }
+  }, [unlocked, tab, activeTabUrl]);
 
   useEffect(() => {
     if (!unlocked || tab !== 'ai') return;
@@ -2759,29 +2798,173 @@ export const PopupApp: React.FC = () => {
               </div>
             )}
 
-            {/* AI ACCESS TAB */}
+            {/* SHIELD TAB (XORAPASS SHIELD & SITE SCANNER) */}
             {tab === 'ai' && (
               <div className="space-y-3.5 animate-fade-in flex-1 overflow-y-auto custom-scrollbar">
-                {/* AI Credential Firewall Banner Card */}
-                <div className="p-3.5 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden">
+                {/* XoraPass Shield Banner Card */}
+                <div className="p-3.5 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden border border-slate-800">
                   <div className="flex items-center justify-between relative z-10">
                     <div className="flex items-center gap-2">
                       <div className="w-7 h-7 rounded-lg bg-brand-cyan/20 border border-brand-cyan/30 flex items-center justify-center text-brand-cyan">
-                        <ShieldAlert className="w-4 h-4" />
+                        <ShieldCheck className="w-4 h-4" />
                       </div>
-                      <h3 className="text-sm font-black tracking-tight text-white">AI Credential Firewall</h3>
+                      <div>
+                        <h3 className="text-sm font-black tracking-tight text-white leading-none">XoraPass Shield</h3>
+                        <span className="text-[10px] text-brand-cyan font-bold tracking-wide uppercase">Active Browsing Defense</span>
+                      </div>
                     </div>
                     <button
-                      onClick={scanActiveAiTabs}
+                      onClick={() => { scanCurrentSite(); scanActiveAiTabs(); }}
                       className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-                      title="Scan for open AI tabs"
+                      title="Re-scan current website and tabs"
                     >
-                      <RefreshCw className={`w-4 h-4 ${scanningTabs ? 'animate-spin' : ''}`} />
+                      <RefreshCw className={`w-4 h-4 ${isScanningSite || scanningTabs ? 'animate-spin' : ''}`} />
                     </button>
                   </div>
                   <p className="text-xs text-slate-300 leading-snug relative z-10">
-                    Zero-Knowledge Protection: Real-time paste guard and exposure scanning for AI tools and web portals.
+                    Continuous zero-knowledge phishing defense, lookalike detection, and credential guard.
                   </p>
+                </div>
+
+                {/* 1. ON-DEMAND SITE SCANNER CARD */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      <Zap className="w-4 h-4 text-brand-cyan" /> Site Scanner
+                    </div>
+                    <button
+                      onClick={scanCurrentSite}
+                      disabled={isScanningSite}
+                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isScanningSite ? 'animate-spin' : ''}`} />
+                      {isScanningSite ? 'Scanning...' : 'Scan this site'}
+                    </button>
+                  </div>
+
+                  {/* Active Tab Header */}
+                  <div className="flex items-center gap-2.5 p-2.5 bg-slate-50 border border-slate-900/5 rounded-lg">
+                    {activeTabFavIcon ? (
+                      <img src={activeTabFavIcon} alt="" className="w-5 h-5 object-contain shrink-0 rounded" onError={(e) => { (e.target as any).style.display = 'none'; }} />
+                    ) : (
+                      <Globe className="w-5 h-5 text-slate-400 shrink-0" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-extrabold text-slate-900 truncate">{currentHostname || 'No active website'}</div>
+                      <div className="text-[11px] text-slate-400 truncate">{activeTabTitle || activeTabUrl || 'about:blank'}</div>
+                    </div>
+                  </div>
+
+                  {/* Scanner Report Breakdown */}
+                  {siteReport ? (
+                    <div className="space-y-2.5 pt-1">
+                      {/* Score Banner */}
+                      <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 ${
+                        siteReport.verdict === 'danger'
+                          ? 'bg-rose-50 border-rose-200 text-rose-900'
+                          : siteReport.verdict === 'caution'
+                          ? 'bg-amber-50 border-amber-200 text-amber-900'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      }`}>
+                        <div className="space-y-0.5 min-w-0">
+                          <div className="flex items-center gap-1.5 font-black text-xs uppercase tracking-wider">
+                            {siteReport.verdict === 'danger' ? (
+                              <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+                            ) : siteReport.verdict === 'caution' ? (
+                              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                            ) : (
+                              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                            )}
+                            <span>{siteReport.headline}</span>
+                          </div>
+                          <p className="text-[11px] opacity-90 leading-tight truncate">{siteReport.summary}</p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-xl font-black font-mono leading-none">
+                            {siteReport.riskScore}<span className="text-xs font-normal opacity-70">/100</span>
+                          </div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider block mt-0.5">
+                            {siteReport.riskLevel}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Checklist */}
+                      <div className="divide-y divide-slate-100 border border-slate-900/5 rounded-xl bg-slate-50/50 overflow-hidden text-xs">
+                        {/* Encryption */}
+                        <div className="p-2.5 flex items-start justify-between gap-2">
+                          <div className="space-y-0.5">
+                            <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                              <Lock className="w-3.5 h-3.5 text-slate-500" /> Connection Security
+                            </span>
+                            <p className="text-[11px] text-slate-500">{siteReport.encryption.detail}</p>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase shrink-0 ${
+                            siteReport.encryption.isHttps ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                          }`}>
+                            {siteReport.encryption.isHttps ? 'HTTPS' : 'INSECURE'}
+                          </span>
+                        </div>
+
+                        {/* Domain Authenticity */}
+                        <div className="p-2.5 flex items-start justify-between gap-2">
+                          <div className="space-y-0.5">
+                            <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                              <Globe className="w-3.5 h-3.5 text-slate-500" /> Domain Authenticity
+                            </span>
+                            <p className="text-[11px] text-slate-500">{siteReport.domainAuthenticity.detail}</p>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase shrink-0 ${
+                            siteReport.domainAuthenticity.status === 'match'
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : siteReport.domainAuthenticity.status === 'lookalike' || siteReport.domainAuthenticity.status === 'untrusted'
+                              ? 'bg-rose-100 text-rose-700'
+                              : 'bg-slate-200 text-slate-700'
+                          }`}>
+                            {siteReport.domainAuthenticity.status}
+                          </span>
+                        </div>
+
+                        {/* Threat Intel */}
+                        <div className="p-2.5 flex items-start justify-between gap-2">
+                          <div className="space-y-0.5">
+                            <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                              <Shield className="w-3.5 h-3.5 text-slate-500" /> Threat Intelligence
+                            </span>
+                            <p className="text-[11px] text-slate-500">{siteReport.threatIntel.detail}</p>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase shrink-0 ${
+                            siteReport.threatIntel.clean ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                          }`}>
+                            {siteReport.threatIntel.clean ? 'CLEAN' : 'ALERT'}
+                          </span>
+                        </div>
+
+                        {/* Credential Guard */}
+                        <div className="p-2.5 flex items-start justify-between gap-2">
+                          <div className="space-y-0.5">
+                            <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                              <Key className="w-3.5 h-3.5 text-slate-500" /> Credential Guard
+                            </span>
+                            <p className="text-[11px] text-slate-500">{siteReport.credentialGuard.detail}</p>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase shrink-0 ${
+                            siteReport.credentialGuard.status === 'autofill_blocked'
+                              ? 'bg-rose-100 text-rose-700'
+                              : siteReport.credentialGuard.status === 'autofill_allowed'
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-slate-200 text-slate-700'
+                          }`}>
+                            {siteReport.credentialGuard.status === 'autofill_blocked' ? 'BLOCKED' : 'ACTIVE'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="py-4 text-center text-xs text-slate-400">
+                      Click "Scan this site" to perform a real-time safety inspection.
+                    </div>
+                  )}
                 </div>
 
                 {/* Secret Paste Guard */}
@@ -3029,8 +3212,8 @@ export const PopupApp: React.FC = () => {
                   : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
                 }`}
             >
-              <ShieldAlert className="w-4 h-4 mb-0.5 shrink-0 text-brand-cyan" />
-              <span className="text-xs leading-none tracking-tight">Firewall</span>
+              <ShieldCheck className="w-4 h-4 mb-0.5 shrink-0 text-brand-cyan" />
+              <span className="text-xs leading-none tracking-tight">Shield</span>
               {activeAiTabs.length > 0 && (
                 <span className="absolute top-1 right-2 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-brand-cyan text-white text-[9px] font-bold shadow-xs animate-pulse">
                   {activeAiTabs.length}

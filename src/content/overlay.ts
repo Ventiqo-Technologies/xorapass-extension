@@ -1892,14 +1892,14 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
 
   const badge = document.createElement('div');
   badge.className = 'xp-int-badge';
-  badge.textContent = 'XoraPass \u2014 phishing site blocked';
+  badge.textContent = 'XoraPass Shield \u2014 Phishing Attempt Blocked';
   card.appendChild(badge);
 
   const title = document.createElement('h1');
   title.className = 'xp-int-title';
   title.textContent = opts.expectedDomain
-    ? `This page is impersonating ${opts.expectedDomain}`
-    : 'This page is trying to steal your credentials';
+    ? `XoraPass Shield blocked this site: Impersonating ${opts.expectedDomain}`
+    : 'XoraPass Shield blocked this site: Potential Phishing Detected';
   card.appendChild(title);
 
   const body = document.createElement('p');
@@ -1989,7 +1989,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
 
   const foot = document.createElement('div');
   foot.className = 'xp-int-foot';
-  foot.textContent = 'Your vault stayed locked. No credentials were released to this page.';
+  foot.textContent = 'Credential Guard Active: Your vault stayed locked and no credentials or secrets were released to this page.';
   card.appendChild(foot);
 
   shell.appendChild(card);

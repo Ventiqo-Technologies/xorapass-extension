@@ -91,6 +91,8 @@ export const KNOWN_MESSAGE_TYPES = [
   // Web store update check and apply actions triggered by popup settings.
   'CHECK_UPDATE',
   'APPLY_UPDATE',
+  // XoraPass Shield - Site Scanner on-demand report
+  'SCAN_SITE',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -407,6 +409,11 @@ export function validateMessage(
     case 'REQUEST_DOMAIN_ALLOWLIST':
     case 'RISK_APPROVE_DOMAIN':
       if (!payload || typeof payload.hostname !== 'string' || payload.hostname.length === 0) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'SCAN_SITE':
+      if (payload && payload.url !== undefined && typeof payload.url !== 'string') {
         return { ok: false, reason: 'bad-payload' };
       }
       break;
