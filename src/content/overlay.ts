@@ -41,8 +41,11 @@ export interface DropdownOptions {
   /** Present on sign-up fields: offers a generated password above the list. */
   suggestion?: {
     password: string;
+    length: number;
+    maxLength?: number;
+    minLength?: number;
     onUse: (password: string) => void;
-    onRegenerate: () => string;
+    onRegenerate: (len?: number) => string;
   };
 }
 
@@ -219,13 +222,65 @@ const STYLES = `
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(45, 212, 191, 0.06);
 }
+.suggest-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
 .suggest-label {
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #2dd4bf;
-  margin-bottom: 6px;
+}
+.suggest-length-badge {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.suggest-length-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+.suggest-chip {
+  flex: 1;
+  padding: 3px 0;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.04);
+  color: #94a3b8;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.suggest-chip:hover {
+  background: rgba(45, 212, 191, 0.12);
+  color: #2dd4bf;
+  border-color: rgba(45, 212, 191, 0.3);
+}
+.suggest-chip.active {
+  background: #2dd4bf;
+  color: #04231d;
+  border-color: #2dd4bf;
+}
+.suggest-limit-hint {
+  margin-top: 5px;
+  font-size: 9px;
+  color: #fbbf24;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .suggest-row { display: flex; align-items: center; gap: 8px; }
 .suggest-value {
@@ -1132,13 +1187,23 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
 
   if (opts.suggestion) {
     const sug = opts.suggestion;
+    let currentLength = sug.length || 20;
     const box = document.createElement('div');
     box.className = 'suggest';
+
+    const header = document.createElement('div');
+    header.className = 'suggest-header';
 
     const label = document.createElement('div');
     label.className = 'suggest-label';
     label.textContent = 'Suggested password';
-    box.appendChild(label);
+    header.appendChild(label);
+
+    const lengthBadge = document.createElement('div');
+    lengthBadge.className = 'suggest-length-badge';
+    lengthBadge.textContent = `${currentLength} chars`;
+    header.appendChild(lengthBadge);
+    box.appendChild(header);
 
     const row = document.createElement('div');
     row.className = 'suggest-row';
@@ -1157,10 +1222,62 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
     refresh.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      value.textContent = sug.onRegenerate();
+      value.textContent = sug.onRegenerate(currentLength);
+      lengthBadge.textContent = `${value.textContent.length} chars`;
     });
     row.appendChild(refresh);
     box.appendChild(row);
+
+    // Length chips (e.g. 12, 16, 20, 24, 32)
+    const chipsRow = document.createElement('div');
+    chipsRow.className = 'suggest-length-chips';
+
+    const rawPresets = [12, 16, 20, 24, 32];
+    const maxConstraint = sug.maxLength && sug.maxLength > 4 ? sug.maxLength : undefined;
+    const minConstraint = sug.minLength && sug.minLength > 0 ? sug.minLength : 8;
+
+    // Filter presets that fit within constraints
+    let availableLengths = rawPresets.filter(
+      (l) => (!maxConstraint || l <= maxConstraint) && l >= minConstraint
+    );
+    if (maxConstraint && !availableLengths.includes(maxConstraint) && maxConstraint >= minConstraint) {
+      availableLengths.push(maxConstraint);
+      availableLengths.sort((a, b) => a - b);
+    }
+    if (availableLengths.length === 0) {
+      availableLengths = [maxConstraint || 20];
+    }
+
+    const chipButtons: HTMLButtonElement[] = [];
+
+    availableLengths.forEach((len) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `suggest-chip${len === currentLength ? ' active' : ''}`;
+      chip.textContent = len === maxConstraint && maxConstraint < 32 ? `${len} (max)` : `${len}`;
+      chip.setAttribute('aria-label', `${len} characters`);
+      chip.addEventListener('mousedown', (e) => e.preventDefault());
+      chip.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        currentLength = len;
+        chipButtons.forEach((c) => c.classList.remove('active'));
+        chip.classList.add('active');
+        value.textContent = sug.onRegenerate(len);
+        lengthBadge.textContent = `${value.textContent.length} chars`;
+      });
+      chipButtons.push(chip);
+      chipsRow.appendChild(chip);
+    });
+
+    box.appendChild(chipsRow);
+
+    if (maxConstraint && maxConstraint < 32) {
+      const hint = document.createElement('div');
+      hint.className = 'suggest-limit-hint';
+      hint.textContent = `ⓘ Field limited to max ${maxConstraint} characters by website`;
+      box.appendChild(hint);
+    }
 
     const use = document.createElement('button');
     use.type = 'button';

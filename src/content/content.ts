@@ -835,12 +835,27 @@ function getRiskWarningMessage(): string | null {
   return null;
 }
 
-// Opens the credential menu for `passInput`, positioned at `anchor` â€” the field
+let preferredSuggestionLength = 20;
+
+// Opens the credential menu for `passInput`, positioned at `anchor` — the field
 // the user actually clicked or focused, so the menu appears where they are
 // looking. On a sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
   const isNew = newPasswordFields.get(passInput) === true;
   const warning = getRiskWarningMessage();
+
+  // Inspect website password field constraints if present
+  const fieldMaxLength = passInput.maxLength > 0 && passInput.maxLength < 500 ? passInput.maxLength : undefined;
+  const fieldMinLength = passInput.minLength > 0 && passInput.minLength < 500 ? passInput.minLength : undefined;
+
+  // If the site restricts maxLength below our preferred length, cap it to the site's limit
+  let initialLength = preferredSuggestionLength;
+  if (fieldMaxLength && initialLength > fieldMaxLength) {
+    initialLength = fieldMaxLength;
+  }
+  if (fieldMinLength && initialLength < fieldMinLength) {
+    initialLength = fieldMinLength;
+  }
 
   openDropdown(anchor, {
     credentials: activeCredentials,
@@ -848,8 +863,15 @@ function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
     onPick: (id) => void handlePick(id, passInput),
     suggestion: isNew
       ? {
-          password: generatePassword(),
-          onRegenerate: () => generatePassword(),
+          password: generatePassword({ length: initialLength }),
+          length: initialLength,
+          maxLength: fieldMaxLength,
+          minLength: fieldMinLength,
+          onRegenerate: (len?: number) => {
+            const targetLen = len || initialLength;
+            preferredSuggestionLength = targetLen;
+            return generatePassword({ length: targetLen });
+          },
           onUse: (pw) => applyGeneratedPassword(passInput, pw),
         }
       : undefined,
