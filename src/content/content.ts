@@ -857,11 +857,15 @@ function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
     initialLength = fieldMinLength;
   }
 
+  // Only offer password suggestions on the actual password input itself, never on email/username fields
+  const isPasswordField = anchor.type === 'password';
+  const showSuggestion = isNew && isPasswordField;
+
   openDropdown(anchor, {
     credentials: activeCredentials,
     warning,
     onPick: (id) => void handlePick(id, passInput),
-    suggestion: isNew
+    suggestion: showSuggestion
       ? {
           password: generatePassword({ length: initialLength }),
           length: initialLength,
