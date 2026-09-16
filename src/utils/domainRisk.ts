@@ -18,7 +18,6 @@ import {
   isSubdomainOf,
   hasPunycode,
   stripPublicSuffix,
-  MULTI_PART_SUFFIXES,
 } from './siteTrust';
 
 export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
@@ -164,6 +163,15 @@ export const KNOWN_LEGITIMATE_DOMAINS = new Set([
   'apple.com',
   'icloud.com',
   'amazon.com',
+  'amazon.co.uk',
+  'amazon.de',
+  'amazon.fr',
+  'amazon.it',
+  'amazon.es',
+  'amazon.in',
+  'amazon.ca',
+  'amazon.co.jp',
+  'amazon.com.au',
   'amazonaws.com',
   'awsapps.com',
   'signin.aws',
@@ -568,7 +576,7 @@ export function assessDomainRisk(
   }
 
   // 2b. Check for Legitimate Subdomain of Known Major Platforms
-  if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg) && !MULTI_PART_SUFFIXES.has(pageReg)) {
+  if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg)) {
     assessment.matchedTarget = pageReg;
     return assessment; // Safe legitimate platform domain
   }
@@ -582,7 +590,8 @@ export function assessDomainRisk(
   const pageParts = pageHostname.split('.');
   const pageTld = pageParts.slice(pageParts.length > 2 ? -2 : -1).join('.');
   const pageBaseTld = pageParts[pageParts.length - 1] || '';
-  const pageSld = pageParts.length >= 2 ? pageParts[pageParts.length - 2] : pageHostname;
+  // When pageReg is available, extract the brand part (e.g. for amazon.co.uk, pageSld is "amazon")
+  const pageSld = pageReg ? stripPublicSuffix(pageReg) : (pageParts.length >= 2 ? pageParts[pageParts.length - 2] : pageHostname);
 
   const isPuny = hasPunycode(pageHostname);
   assessment.signals.hasPunycode = isPuny;

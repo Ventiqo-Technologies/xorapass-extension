@@ -93,6 +93,8 @@ export const KNOWN_MESSAGE_TYPES = [
   'APPLY_UPDATE',
   // XoraPass Shield - Site Scanner on-demand report
   'SCAN_SITE',
+  // XoraPass Shield - Installed Extension Security Checkup
+  'AUDIT_EXTENSIONS',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -142,6 +144,8 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'AI_DECIDE_REQUEST',
   'AI_LIST_SESSIONS',
   'SET_CLIPBOARD_CLEAR',
+  // Extension checkup: privileged call reserved for popup
+  'AUDIT_EXTENSIONS',
   // A page has no business arming (or re-arming, and so postponing) the
   // clipboard clear; only the popup copies passwords.
   'CLIPBOARD_COPIED',

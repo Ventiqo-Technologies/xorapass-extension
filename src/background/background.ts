@@ -18,6 +18,7 @@ import {
 import { isFillableCategory } from '../utils/fillPolicy';
 import type { PageSignals } from '../utils/pageSignals';
 import { buildSiteSafetyReport } from '../utils/siteScanner';
+import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
 import {
   encryptPayload,
@@ -1783,6 +1784,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
     }
   }
 
+  if (type === 'AUDIT_EXTENSIONS') {
+    return auditInstalledExtensions();
+  }
+
   // ── Web Bridge messages from content script or internal pages ─────────
   if (
     type === 'WEB_BRIDGE_LOGIN' ||
@@ -2200,5 +2205,168 @@ browser.commands.onCommand.addListener(async (command: string) => {
     } catch (err) {
       console.warn('[XoraPass] Generate password shortcut failed:', err);
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Context Menu: "Inspect Link with XoraPass" (Link Guard)
+// ---------------------------------------------------------------------------
+const INSPECT_LINK_MENU_ID = 'xorapass-inspect-link';
+
+function setupContextMenus() {
+  const menusApi = (browser.contextMenus || (globalThis as any).chrome?.contextMenus);
+  if (!menusApi?.create) return;
+
+  try {
+    const removeRes = menusApi.removeAll();
+    if (removeRes && typeof removeRes.then === 'function') {
+      removeRes.then(() => {
+        menusApi.create({
+          id: INSPECT_LINK_MENU_ID,
+          title: 'Inspect Link with XoraPass',
+          contexts: ['link'],
+        });
+      }).catch(() => {});
+    } else {
+      menusApi.create({
+        id: INSPECT_LINK_MENU_ID,
+        title: 'Inspect Link with XoraPass',
+        contexts: ['link'],
+      });
+    }
+  } catch (err) {
+    console.warn('[XoraPass] Failed to register context menu:', err);
+  }
+}
+
+// Register on install and startup
+browser.runtime.onInstalled?.addListener(() => {
+  setupContextMenus();
+});
+browser.runtime.onStartup?.addListener(() => {
+  setupContextMenus();
+});
+setupContextMenus();
+
+// Resolve destination by following HEAD/GET redirects safely in background
+async function unwindRedirects(initialUrl: string): Promise<{ finalUrl: string; hops: number; isCustomScheme: boolean }> {
+  let current = initialUrl;
+  let hops = 0;
+  const maxHops = 6;
+
+  // Non-HTTP links (magnet:, mailto:, tel:, ftp:) cannot be HTTP-fetched
+  if (!/^https?:\/\//i.test(initialUrl)) {
+    return { finalUrl: initialUrl, hops: 0, isCustomScheme: true };
+  }
+
+  try {
+    while (hops < maxHops) {
+      // Use redirect: 'manual' to catch 301/302/307/308 and examine Location header
+      const res = await fetch(current, {
+        method: 'HEAD',
+        mode: 'cors',
+        credentials: 'omit',
+        redirect: 'manual',
+        cache: 'no-store',
+      });
+
+      // Check for manual redirect location
+      const redirectLocation = res.headers?.get('location');
+      if (redirectLocation) {
+        try {
+          const resolved = new URL(redirectLocation, current).href;
+          if (resolved !== current) {
+            current = resolved;
+            hops++;
+            continue;
+          }
+        } catch {
+          /* invalid location header */
+        }
+      }
+
+      // Fallback: If browser auto-resolved res.url to something different
+      if (res.url && res.url !== current) {
+        current = res.url;
+        hops++;
+      } else {
+        break;
+      }
+    }
+  } catch {
+    // If HEAD fails due to CORS or server blocking HEAD, try one safe GET request with abort timeout
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const getRes = await fetch(current, {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'omit',
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      clearTimeout(timer);
+      if (getRes.url && getRes.url !== current) {
+        current = getRes.url;
+        hops++;
+      }
+    } catch {
+      /* network failure or cross-origin restrictions */
+    }
+  }
+
+  return { finalUrl: current, hops, isCustomScheme: false };
+}
+
+// Handle context menu click
+const menusApi = (browser.contextMenus || (globalThis as any).chrome?.contextMenus);
+menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
+  if (info.menuItemId !== INSPECT_LINK_MENU_ID || !info.linkUrl || !tab?.id) return;
+
+  const originalUrl = info.linkUrl;
+  console.info('[XoraPass] Inspecting link destination:', originalUrl);
+
+  try {
+    const { finalUrl, hops } = await unwindRedirects(originalUrl);
+    const destHost = extractHostname(finalUrl);
+
+    // Retrieve saved vault domains to check for lookalike impersonation
+    let knownVaultHosts: string[] = [];
+    try {
+      const cache = await browser.storage.local.get(['vaultCache']);
+      if (cache?.vaultCache?.entries) {
+        knownVaultHosts = cache.vaultCache.entries.map((e: any) => e.url || e.label).filter(Boolean);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const assessment = assessDomainRisk(destHost, knownVaultHosts);
+    const threats: string[] = [];
+
+    if (assessment.signals.hasPunycode) threats.push('Punycode / Homograph domain structure');
+    if (assessment.signals.brandAbuse) threats.push(`Brand impersonation of ${assessment.signals.brandAbuse.brand}`);
+    if (assessment.signals.typosquatTarget) threats.push(`Mimics saved domain ${assessment.signals.typosquatTarget}`);
+    if (assessment.signals.isHighRiskTld) threats.push('Registered under high-risk phishing TLD');
+    if (/^http:\/\//i.test(finalUrl)) threats.push('Unencrypted HTTP connection');
+
+    let verdict: 'safe' | 'suspicious' | 'high_risk' = 'safe';
+    if (assessment.riskScore >= 70) verdict = 'high_risk';
+    else if (assessment.riskScore >= 35 || hops > 2) verdict = 'suspicious';
+
+    // Dispatch message to active tab's content script to render floating inspection card
+    await browser.tabs.sendMessage(tab.id, {
+      type: 'SHOW_LINK_INSPECTION',
+      payload: {
+        originalUrl,
+        finalUrl,
+        redirectsCount: hops,
+        riskScore: assessment.riskScore,
+        verdict,
+        threats,
+      },
+    });
+  } catch (err) {
+    console.warn('[XoraPass] Failed to inspect link:', err);
   }
 });

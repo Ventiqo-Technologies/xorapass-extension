@@ -38,7 +38,12 @@ import {
   Clock,
   Sparkles,
   Zap,
+  Star,
+  HelpCircle,
+  Puzzle,
 } from 'lucide-react';
+import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptSafety';
+import { type ExtensionAuditSummary } from '../utils/extensionAudit';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname, assessDomainRisk } from '../utils/siteTrust';
@@ -139,6 +144,16 @@ const AUTO_LOCK_OPTIONS = [
   { label: '30 min', value: 30 },
   { label: '1 hour', value: 60 },
 ];
+
+const STORE_REVIEW_URLS = {
+  chrome: 'https://chromewebstore.google.com/detail/xorapass-zero-knowledge-v/ihmllddhpagnabjggkplfiaaaccmbljh/reviews',
+  firefox: 'https://addons.mozilla.org/en-US/firefox/addon/xorapass-zero-knowledge-vault/',
+};
+
+function getStoreReviewUrl(): string {
+  const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent);
+  return isFirefox ? STORE_REVIEW_URLS.firefox : STORE_REVIEW_URLS.chrome;
+}
 
 // Domain Risk history badge — same decision set as the web app's Domain
 // Risk panel, condensed for this popup's tighter visual density.
@@ -406,6 +421,15 @@ export const PopupApp: React.FC = () => {
   const [activeTabTitle, setActiveTabTitle] = useState<string>('');
   const [activeTabFavIcon, setActiveTabFavIcon] = useState<string>('');
 
+  // XoraPass Shield - "Is This Safe?" Analyzer state
+  const [promptQuery, setPromptQuery] = useState('');
+  const [promptResult, setPromptResult] = useState<PromptAnalysisResult | null>(null);
+  const [isAnalyzingPrompt, setIsAnalyzingPrompt] = useState(false);
+
+  // XoraPass Shield - Installed Extension Security Checkup state
+  const [extensionAudit, setExtensionAudit] = useState<ExtensionAuditSummary | null>(null);
+  const [isAuditingExtensions, setIsAuditingExtensions] = useState(false);
+
   // Theme preference ('dark' | 'light' | 'system')
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [isDarkEffective, setIsDarkEffective] = useState(false);
@@ -414,10 +438,20 @@ export const PopupApp: React.FC = () => {
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up_to_date' | 'available' | 'throttled'>('idle');
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 
+  // XoraPass Shield Settings
+  const [checkoutGuardEnabled, setCheckoutGuardEnabled] = useState(true);
+  const [webmailGuardEnabled, setWebmailGuardEnabled] = useState(true);
+
   useEffect(() => {
-    browser.storage.local.get(['themePreference']).then((res: any) => {
+    browser.storage.local.get(['themePreference', 'checkoutGuardEnabled', 'webmailGuardEnabled']).then((res: any) => {
       if (res?.themePreference === 'dark' || res?.themePreference === 'light' || res?.themePreference === 'system') {
         setTheme(res.themePreference);
+      }
+      if (typeof res?.checkoutGuardEnabled === 'boolean') {
+        setCheckoutGuardEnabled(res.checkoutGuardEnabled);
+      }
+      if (typeof res?.webmailGuardEnabled === 'boolean') {
+        setWebmailGuardEnabled(res.webmailGuardEnabled);
       }
     });
   }, []);
@@ -624,6 +658,46 @@ export const PopupApp: React.FC = () => {
     browser.tabs.create({ url: target });
   };
 
+  const handleAnalyzePrompt = (customText?: string) => {
+    const textToAnalyze = (customText !== undefined ? customText : promptQuery).trim();
+    if (!textToAnalyze) return;
+
+    setIsAnalyzingPrompt(true);
+    // Gather known hosts from user vault items for lookalike / credential impersonation context
+    const vaultHosts = vaultItems.map((item) => item.url || item.label).filter(Boolean);
+
+    // Simulate brief scan animation for premium UX
+    setTimeout(() => {
+      try {
+        const result = analyzePromptSafety(textToAnalyze, vaultHosts);
+        setPromptResult(result);
+      } catch (err) {
+        console.error('Failed to analyze prompt safety', err);
+      } finally {
+        setIsAnalyzingPrompt(false);
+      }
+    }, 450);
+  };
+
+  const handleScanCurrentUrlToPrompt = () => {
+    if (!activeTabUrl) return;
+    setPromptQuery(activeTabUrl);
+    handleAnalyzePrompt(activeTabUrl);
+  };
+
+  const handleAuditExtensions = () => {
+    setIsAuditingExtensions(true);
+    browser.runtime
+      .sendMessage({ type: 'AUDIT_EXTENSIONS' })
+      .then((res: any) => {
+        if (res && typeof res.overallHealthScore === 'number') {
+          setExtensionAudit(res);
+        }
+      })
+      .catch((err) => console.error('Failed to audit extensions', err))
+      .finally(() => setIsAuditingExtensions(false));
+  };
+
   const changeAutoLock = (minutes: number) => {
     setAutoLockMinutes(minutes);
     browser.runtime.sendMessage({ type: 'SET_AUTO_LOCK', payload: { minutes } });
@@ -642,6 +716,16 @@ export const PopupApp: React.FC = () => {
         if (!r?.success) setDomainRiskEnabled(!enabled);
       })
       .catch(() => setDomainRiskEnabled(!enabled));
+  };
+
+  const changeCheckoutGuardEnabled = (enabled: boolean) => {
+    setCheckoutGuardEnabled(enabled);
+    browser.storage.local.set({ checkoutGuardEnabled: enabled });
+  };
+
+  const changeWebmailGuardEnabled = (enabled: boolean) => {
+    setWebmailGuardEnabled(enabled);
+    browser.storage.local.set({ webmailGuardEnabled: enabled });
   };
 
   const changeClipboardClear = (seconds: number) => {
@@ -2669,18 +2753,44 @@ export const PopupApp: React.FC = () => {
                   </div>
 
                   <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
+                    <div>
+                      <div className="text-sm font-bold text-slate-800">Clear Clipboard</div>
+                      <div className="text-xs text-slate-500">Wipe copied password after</div>
+                    </div>
+                    <div className="relative inline-flex items-center">
+                      <select value={clipboardClearSeconds} onChange={(e) => changeClipboardClear(Number(e.target.value))} className="w-32 appearance-none bg-slate-50 border border-slate-900/12 rounded-lg text-sm font-semibold text-slate-800 pl-2.5 pr-7 py-1.5 focus:outline-none focus:border-brand-cyan cursor-pointer shrink-0 truncate">
+                        {CLIPBOARD_CLEAR_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                      <ChevronDown className="w-4 h-4 absolute right-2 pointer-events-none text-slate-400 shrink-0" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* XORAPASS SHIELD & BROWSING PROTECTION CARD */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                      <Shield className="w-3.5 h-3.5 text-brand-cyan" /> XoraPass Shield Protection
+                    </div>
+                    <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/20 uppercase tracking-wider">
+                      Zero-Knowledge
+                    </span>
+                  </div>
+
+                  {/* 1. Phishing & Lookalike Shield */}
+                  <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0 pr-2">
-                      <div className="text-sm font-bold text-slate-800">Domain Risk Detection</div>
+                      <div className="text-sm font-bold text-slate-800">Phishing & Lookalike Shield</div>
                       <div className="text-xs text-slate-500">
                         {planAllowsDomainRisk
-                          ? 'Warns or blocks autofill on phishing and lookalike sites'
+                          ? 'Warns or blocks autofill on fake, typosquat, and lookalike domains'
                           : 'Not included in your current plan'}
                       </div>
                     </div>
                     <button
                       role="switch"
                       aria-checked={domainRiskEnabled}
-                      aria-label="Enable Domain Risk detection"
+                      aria-label="Enable Phishing & Lookalike Shield"
                       disabled={!planAllowsDomainRisk || !domainRiskSettingsLoaded}
                       onClick={() => changeDomainRiskEnabled(!domainRiskEnabled)}
                       className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
@@ -2690,6 +2800,56 @@ export const PopupApp: React.FC = () => {
                       <span
                         className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transform transition-transform ${
                           domainRiskEnabled && planAllowsDomainRisk ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* 2. Checkout & Card Protection */}
+                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
+                    <div className="min-w-0 pr-2">
+                      <div className="text-sm font-bold text-slate-800">Checkout & Card Protection</div>
+                      <div className="text-xs text-slate-500">
+                        Warns before entering payment card details on unverified or suspicious merchants
+                      </div>
+                    </div>
+                    <button
+                      role="switch"
+                      aria-checked={checkoutGuardEnabled}
+                      aria-label="Enable Checkout & Card Protection"
+                      onClick={() => changeCheckoutGuardEnabled(!checkoutGuardEnabled)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan cursor-pointer ${
+                        checkoutGuardEnabled ? 'bg-brand-cyan' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transform transition-transform ${
+                          checkoutGuardEnabled ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* 3. Email Phishing Guard (On-Device) */}
+                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-900/8">
+                    <div className="min-w-0 pr-2">
+                      <div className="text-sm font-bold text-slate-800">Email Phishing Guard (On-Device)</div>
+                      <div className="text-xs text-slate-500">
+                        Flags sender display-name spoofing in Gmail & Outlook. Runs 100% locally in your browser
+                      </div>
+                    </div>
+                    <button
+                      role="switch"
+                      aria-checked={webmailGuardEnabled}
+                      aria-label="Enable Email Phishing Guard"
+                      onClick={() => changeWebmailGuardEnabled(!webmailGuardEnabled)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan cursor-pointer ${
+                        webmailGuardEnabled ? 'bg-brand-cyan' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transform transition-transform ${
+                          webmailGuardEnabled ? 'translate-x-5' : 'translate-x-1'
                         }`}
                       />
                     </button>
@@ -2793,6 +2953,29 @@ export const PopupApp: React.FC = () => {
                         </button>
                       )}
                     </div>
+                  </div>
+
+                  {/* Review Extension Action */}
+                  <div className="pt-2 border-t border-slate-900/8 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                        Enjoying XoraPass?
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Help us grow by rating us on the web store
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const url = getStoreReviewUrl();
+                        browser.tabs.create({ url });
+                      }}
+                      className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 font-bold rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer shadow-2xs shrink-0"
+                      title="Rate & Review Extension"
+                    >
+                      <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-400" />
+                      <span>Review</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -3000,6 +3183,136 @@ export const PopupApp: React.FC = () => {
                   ) : null}
                 </div>
 
+                {/* 2. AI "IS THIS SAFE?" SCANNER CARD */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      <HelpCircle className="w-4 h-4 text-brand-cyan" /> AI "Is This Safe?"
+                    </div>
+                    {activeTabUrl && (
+                      <button
+                        onClick={handleScanCurrentUrlToPrompt}
+                        disabled={isAnalyzingPrompt}
+                        className="text-[11px] font-bold text-brand-cyan hover:underline cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                        title="Scan current tab link"
+                      >
+                        Paste current link
+                      </button>
+                    )}
+                  </div>
+
+                  <p className="text-xs text-slate-500 leading-snug">
+                    Paste any suspicious link, SMS message, or email snippet to analyze lookalike risks, urgent phishing traps, or scam lures.
+                  </p>
+
+                  <div className="relative">
+                    <textarea
+                      value={promptQuery}
+                      onChange={(e) => setPromptQuery(e.target.value)}
+                      placeholder="e.g. 'Your Netflix account is suspended. Confirm billing here: netflix-billing-update.xyz' or any link..."
+                      rows={3}
+                      className="w-full text-xs p-2.5 pr-8 bg-slate-50 border border-slate-900/10 rounded-xl focus:outline-none focus:border-brand-cyan resize-none placeholder:text-slate-400 text-slate-800"
+                    />
+                    {promptQuery && (
+                      <button
+                        onClick={() => { setPromptQuery(''); setPromptResult(null); }}
+                        className="absolute top-2 right-2 p-1 text-slate-400 hover:text-slate-600 rounded-full cursor-pointer"
+                        title="Clear"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-400 font-medium">
+                      🔒 Zero-Knowledge: Analyzed locally against vault context.
+                    </span>
+                    <button
+                      onClick={() => handleAnalyzePrompt()}
+                      disabled={isAnalyzingPrompt || !promptQuery.trim()}
+                      className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs shrink-0"
+                    >
+                      {isAnalyzingPrompt ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Analyzing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-3.5 h-3.5 text-brand-cyan" />
+                          <span>Analyze Safety</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Analysis Result Card */}
+                  {promptResult && (
+                    <div className="pt-2.5 border-t border-slate-900/10 space-y-2.5 animate-fade-in">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`w-2.5 h-2.5 rounded-full ${
+                              promptResult.verdict === 'phishing'
+                                ? 'bg-rose-500 animate-pulse'
+                                : promptResult.verdict === 'suspicious'
+                                ? 'bg-amber-500'
+                                : 'bg-emerald-500'
+                            }`}
+                          />
+                          <span className="text-xs font-bold text-slate-900">{promptResult.title}</span>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
+                            promptResult.verdict === 'phishing'
+                              ? 'bg-rose-100 text-rose-700 border border-rose-200'
+                              : promptResult.verdict === 'suspicious'
+                              ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                              : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                          }`}
+                        >
+                          Risk: {promptResult.riskScore}/100
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-2 rounded-lg border border-slate-900/5">
+                        {promptResult.summary}
+                      </p>
+
+                      {/* Threat signals list */}
+                      {promptResult.threatSignals.length > 0 && (
+                        <div className="space-y-1">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Threat Indicators</div>
+                          <div className="space-y-1">
+                            {promptResult.threatSignals.map((sig, idx) => (
+                              <div key={idx} className="text-[11px] text-rose-700 bg-rose-50 border border-rose-100 px-2 py-1 rounded-md flex items-start gap-1.5">
+                                <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-500 mt-0.5" />
+                                <span className="flex-1">{sig}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Actionable recommendations */}
+                      {promptResult.recommendations.length > 0 && (
+                        <div className="space-y-1">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Recommended Action</div>
+                          <div className="space-y-1">
+                            {promptResult.recommendations.map((rec, idx) => (
+                              <div key={idx} className="text-[11px] text-slate-700 bg-slate-100/80 px-2 py-1 rounded-md flex items-start gap-1.5">
+                                <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-brand-cyan mt-0.5" />
+                                <span className="flex-1">{rec}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 {/* AI Secret Leak Protection */}
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5">
                   <div className="flex items-center justify-between">
@@ -3038,6 +3351,124 @@ export const PopupApp: React.FC = () => {
                       </button>
                     ))}
                   </div>
+                </div>
+
+                {/* 3. INSTALLED EXTENSION SECURITY CHECKUP CARD */}
+                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      <Puzzle className="w-4 h-4 text-brand-cyan" /> Extension Checkup
+                    </div>
+                    <button
+                      onClick={handleAuditExtensions}
+                      disabled={isAuditingExtensions}
+                      className={`px-2.5 py-1 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-60 transition-all duration-200 ${
+                        isAuditingExtensions ? 'bg-brand-cyan animate-pulse' : 'bg-slate-900 hover:bg-slate-700'
+                      }`}
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isAuditingExtensions ? 'animate-spin' : ''}`} />
+                      {isAuditingExtensions ? 'Auditing...' : 'Audit Extensions'}
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-slate-500 leading-snug">
+                    Audits other installed browser extensions for broad or elevated permissions (e.g. reading all website traffic or clipboard access).
+                  </p>
+
+                  {extensionAudit ? (
+                    <div className="space-y-2.5 pt-1">
+                      {/* Overall Health Row */}
+                      <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-900/5 rounded-xl">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs ${
+                              extensionAudit.highRiskCount > 0
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-emerald-100 text-emerald-800'
+                            }`}
+                          >
+                            {extensionAudit.overallHealthScore}%
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-slate-900">
+                              {extensionAudit.highRiskCount > 0 ? 'Review Recommended' : 'Extension Health Good'}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              {extensionAudit.enabledExtensions} active extension(s) scanned
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                          {extensionAudit.highRiskCount > 0 && (
+                            <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-700">
+                              {extensionAudit.highRiskCount} Elevated
+                            </span>
+                          )}
+                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">
+                            {extensionAudit.safeCount} Low/Safe
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Extensions List (Top 4) */}
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar pr-0.5">
+                        {extensionAudit.extensions.length === 0 ? (
+                          <p className="text-xs text-slate-400 text-center py-2">No other extensions installed.</p>
+                        ) : (
+                          extensionAudit.extensions.slice(0, 6).map((ext) => (
+                            <div
+                              key={ext.id}
+                              className={`p-2 rounded-lg border text-xs flex items-start justify-between gap-2 ${
+                                ext.riskLevel === 'high'
+                                  ? 'bg-rose-50/50 border-rose-200/80'
+                                  : ext.riskLevel === 'low'
+                                  ? 'bg-amber-50/40 border-amber-200/60'
+                                  : 'bg-slate-50/50 border-slate-200/60'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="font-bold text-slate-800 truncate flex items-center gap-1.5">
+                                  <span>{ext.name}</span>
+                                  {!ext.enabled && (
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-200 text-slate-600 uppercase font-semibold">
+                                      Disabled
+                                    </span>
+                                  )}
+                                </div>
+                                {ext.threatReasons.length > 0 ? (
+                                  <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
+                                    {ext.threatReasons[0]}
+                                  </p>
+                                ) : (
+                                  <p className="text-[11px] text-emerald-600 mt-0.5">Normal permissions</p>
+                                )}
+                              </div>
+
+                              <span
+                                className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded shrink-0 ${
+                                  ext.riskLevel === 'high'
+                                    ? 'bg-rose-100 text-rose-700'
+                                    : ext.riskLevel === 'low'
+                                    ? 'bg-amber-100 text-amber-700'
+                                    : 'bg-slate-200 text-slate-600'
+                                }`}
+                              >
+                                {ext.riskLevel === 'high' ? 'Elevated' : ext.riskLevel === 'low' ? 'Moderate' : 'Safe'}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="py-4 flex flex-col items-center gap-1.5 text-center">
+                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">
+                        <Puzzle className="w-4 h-4 text-slate-400" />
+                      </div>
+                      <p className="text-xs text-slate-500 font-medium">Click "Audit Extensions" to verify other installed addons.</p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Guarded AI Portals */}

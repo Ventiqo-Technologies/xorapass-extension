@@ -37,8 +37,16 @@ import {
   isInterstitialOpen,
   clearAll,
   showToast,
+  showLinkInspectionModal,
+  showCheckoutProtectionBanner,
+  closeCheckoutProtectionBanner,
+  showWebmailPhishingBanner,
+  closeWebmailPhishingBanner,
+  initOverlayTheme,
   type OverlayCredential,
 } from './overlay';
+import { looksLikeCardNumber, looksLikeCvv, looksLikeCardExpiry } from './cardGuard';
+import { isSupportedWebmail, analyzeEmailSender } from '../utils/webmailGuard';
 import { collectPageSignals, isWorthAssessing, type PageSignals } from '../utils/pageSignals';
 import { WEB_APP_URL } from '../utils/config';
 
@@ -270,6 +278,8 @@ function loadCredentials(): void {
       // sign-up field still gets an icon so a password can be generated.
       clearAll();
       scanForLoginFields();
+      scanForPaymentFields();
+      scanWebmailMessages();
     })
     .catch((err) => {
       console.warn('[XoraPass Content] Error requesting credentials:', err);
@@ -754,6 +764,146 @@ function scanForLoginFields(): void {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Checkout & Card Protection
+// ---------------------------------------------------------------------------
+let hasWarnedCheckoutOnPage = false;
+let checkoutGuardEnabled = true;
+let webmailGuardEnabled = true;
+
+// Load initial Shield toggles
+try {
+  browser.storage.local.get(['checkoutGuardEnabled', 'webmailGuardEnabled']).then((res: any) => {
+    if (typeof res?.checkoutGuardEnabled === 'boolean') checkoutGuardEnabled = res.checkoutGuardEnabled;
+    if (typeof res?.webmailGuardEnabled === 'boolean') webmailGuardEnabled = res.webmailGuardEnabled;
+  });
+} catch {}
+
+function scanForPaymentFields(): void {
+  if (!checkoutGuardEnabled || hasWarnedCheckoutOnPage) return;
+
+  const isInsecure = isInsecureContext();
+  const riskScore = domainRisk?.riskScore ?? 0;
+  const isSuspicious = riskScore >= 25 || !!lookalikeWarning || isInsecure;
+
+  if (!isSuspicious) return;
+
+  const inputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+  const fillable = inputs.filter(isFillable);
+  if (fillable.length === 0) return;
+
+  const hasCard = fillable.some((el) =>
+    looksLikeCardNumber({
+      type: el.type,
+      autocomplete: el.getAttribute('autocomplete'),
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label'),
+    })
+  );
+
+  const hasCsc = fillable.some((el) =>
+    looksLikeCvv({
+      type: el.type,
+      autocomplete: el.getAttribute('autocomplete'),
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label'),
+    })
+  );
+
+  const hasExp = fillable.some((el) =>
+    looksLikeCardExpiry({
+      type: el.type,
+      autocomplete: el.getAttribute('autocomplete'),
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label'),
+    })
+  );
+
+  if (hasCard || (hasCsc && hasExp)) {
+    hasWarnedCheckoutOnPage = true;
+    const reasons: string[] = [];
+    if (isInsecure) reasons.push('Unencrypted connection (HTTP) transmits card details in plaintext.');
+    if (lookalikeWarning) reasons.push(`Domain closely mimics known brand: ${lookalikeWarning.target}`);
+    if (domainRisk?.reasons) reasons.push(...domainRisk.reasons);
+
+    showCheckoutProtectionBanner({
+      hostname: window.location.hostname,
+      riskScore: isInsecure ? 90 : Math.max(riskScore, 50),
+      reasons: reasons.slice(0, 3),
+      isInsecureHttp: isInsecure,
+      onProceedAnyway: () => {
+        hasWarnedCheckoutOnPage = true;
+      },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Email Webmail Phishing Guard (Gmail & Outlook)
+// ---------------------------------------------------------------------------
+const warnedSendersOnPage = new Set<string>();
+
+function scanWebmailMessages(): void {
+  if (!webmailGuardEnabled || !isSupportedWebmail(window.location.hostname)) return;
+
+  // Gmail: sender name usually in span[email] or .gD; email in [email] attribute
+  // Outlook: sender name in .b80yQ or [data-testid="SenderDetails"]
+  const candidates: { displayName: string; email: string; raw: string }[] = [];
+
+  // Gmail parsing: Only target the open email view header (.hP, .gE, table.cf)
+  // to avoid false alerts on inbox row list previews.
+  if (window.location.hostname === 'mail.google.com') {
+    // Check if an email conversation is actually open
+    const openEmailContainer = document.querySelector('.nH.hx, [role="main"] .adn');
+    if (!openEmailContainer) return;
+
+    const senderEls = Array.from(openEmailContainer.querySelectorAll('.gD, span[email]')) as HTMLElement[];
+    for (const el of senderEls) {
+      const email = el.getAttribute('email') || '';
+      const displayName = el.getAttribute('name') || el.textContent || '';
+      if (email && email !== displayName) {
+        candidates.push({ displayName: displayName.trim(), email: email.trim(), raw: `${displayName} <${email}>` });
+      }
+    }
+  }
+
+  // Outlook Web parsing
+  if (window.location.hostname.includes('outlook.')) {
+    const senderEls = Array.from(document.querySelectorAll('[data-testid="SenderDetails"], [aria-label*="@"]')) as HTMLElement[];
+    for (const el of senderEls) {
+      const text = el.textContent || el.getAttribute('aria-label') || '';
+      if (text.includes('@')) {
+        candidates.push({ displayName: text, email: text, raw: text });
+      }
+    }
+  }
+
+  for (const c of candidates) {
+    if (warnedSendersOnPage.has(c.raw)) continue;
+    const analysis = analyzeEmailSender(c.raw);
+    if (analysis.isImpersonation && analysis.riskScore >= 70) {
+      warnedSendersOnPage.add(c.raw);
+      showWebmailPhishingBanner({
+        displayName: analysis.claimedBrand ? `${analysis.claimedBrand.toUpperCase()} (Claimed)` : c.displayName,
+        senderEmail: analysis.senderEmail,
+        reasons: analysis.reasons,
+        riskScore: analysis.riskScore,
+        onDismiss: () => {
+          warnedSendersOnPage.add(c.raw);
+        },
+      });
+      break; // Show one prioritized banner at a time to prevent popup floods
+    }
+  }
+}
+
 
 // Attempts to locate the username/email field preceding a password input.
 // Searches the enclosing <form> when present, otherwise the whole document, in
@@ -1394,12 +1544,24 @@ function watchForFocus(): void {
       if (isDropdownOpen()) return;
 
       // Only auto-open on an empty field. A field with a value means the user is
-      // editing, not looking for a credential â€” and because focusin fires once
+      // editing, not looking for a credential — and because focusin fires once
       // per focus, a menu they dismiss with Escape or an outside click does not
       // reopen while focus stays on the same field.
       if (el.value) return;
 
       activate(passInput, el);
+    },
+    true
+  );
+
+  // If the user clicks the password box while the dropdown is already open, close it
+  document.addEventListener(
+    'click',
+    (e) => {
+      const el = e.target;
+      if (el instanceof HTMLInputElement && focusActivators.has(el) && isDropdownOpen()) {
+        closeDropdown();
+      }
     },
     true
   );
@@ -1927,6 +2089,7 @@ function initPasteGuard(): void {
 const frame = assessFrame();
 if (frame.isTop || !frame.isCrossOriginFrame) {
   // Only run in the top frame or in a same-origin (first-party) sub-frame.
+  initOverlayTheme();
   initPasteGuard();
   initWebBridge();
   loadCredentials();
@@ -1955,6 +2118,8 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     }
     if (!structural) return;
     scanForLoginFields();
+    scanForPaymentFields();
+    scanWebmailMessages();
     scheduleReposition();
   });
 
@@ -1971,11 +2136,15 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   window.addEventListener('focus', () => {
     loadCredentials();
     checkAiFill();
+    scanWebmailMessages();
   });
 
   // A tab returning from the background may have been locked in the meantime.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) loadCredentials();
+    if (!document.hidden) {
+      loadCredentials();
+      scanWebmailMessages();
+    }
   });
 
   // Never leave a menu floating over a page the user navigated away from.
@@ -1983,7 +2152,32 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     closeDropdown();
     closeSavePrompt();
     closeRiskWarning();
+    closeCheckoutProtectionBanner();
+    closeWebmailPhishingBanner();
   });
+
+  // Listen for link inspection results triggered via right-click context menu
+  browser.runtime.onMessage.addListener((message: any) => {
+    if (message?.type === 'SHOW_LINK_INSPECTION' && message.payload) {
+      showLinkInspectionModal(message.payload);
+    }
+  });
+
+  // Listen for real-time Shield toggle changes from popup settings
+  try {
+    browser.storage.onChanged.addListener((changes: any, area: string) => {
+      if (area === 'local') {
+        if (changes?.checkoutGuardEnabled) {
+          checkoutGuardEnabled = !!changes.checkoutGuardEnabled.newValue;
+          if (!checkoutGuardEnabled) closeCheckoutProtectionBanner();
+        }
+        if (changes?.webmailGuardEnabled) {
+          webmailGuardEnabled = !!changes.webmailGuardEnabled.newValue;
+          if (!webmailGuardEnabled) closeWebmailPhishingBanner();
+        }
+      }
+    });
+  } catch {}
 } else {
   // Third-party iframe: autofill deliberately blocked, and so is AI-approved
   // fill -- the same framing attack this guard exists for applies equally.
