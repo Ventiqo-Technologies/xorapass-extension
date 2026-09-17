@@ -15,7 +15,7 @@
 // and a warning is shown. All detection is on-device -- the pasted text is
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
-import { looksLikeUsername, looksLikeNewPassword, looksLikeAwsAccountId } from './fieldHeuristics';
+import { looksLikeUsername, looksLikeNewPassword, looksLikeAwsAccountId, collectFormContext as collectSignupFormContext, inferFormIntent } from './fieldHeuristics';
 import { generatePassword } from '../utils/passwordGenerator';
 import { scanForSecrets, redact, type ScanResult, type SecretType } from '../utils/secretScan';
 import { coercePolicy, DEFAULT_POLICY, isAiSite, shouldGuard, type PastePolicy } from '../utils/pasteGuard';
@@ -569,7 +569,7 @@ function scanForLoginFields(): void {
   const hasSibling = visible.length > 1;
 
   for (const passInput of visible) {
-    const isNew = looksLikeNewPassword(
+    let isNew = looksLikeNewPassword(
       {
         autocomplete: passInput.getAttribute('autocomplete'),
         name: passInput.name,
@@ -581,9 +581,19 @@ function scanForLoginFields(): void {
       window.location.href
     );
 
+    // Last-resort: when field attrs, sibling count, and URL path all give no
+    // signal, read the surrounding form's DOM context — button text, heading,
+    // page title, cross-links, terms checkbox, field count — to infer intent.
+    // This handles any site automatically without per-site code changes.
+    if (!isNew) {
+      const intent = inferFormIntent(collectSignupFormContext(passInput));
+      if (intent === 'signup') isNew = true;
+    }
+
     // Sign-up fields are worth decorating even with an empty vault — that is
     // exactly when there is nothing to fill but a password to generate.
     if (!isNew && activeCredentials.length === 0) continue;
+
     if (hasIcon(passInput)) continue;
 
     newPasswordFields.set(passInput, isNew);

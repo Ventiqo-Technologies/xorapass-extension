@@ -55,7 +55,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["xorapass_logo_horizontal.png", "xorapass_logo_mark.png"],
+      "resources": ["xorapass_logo_horizontal.png", "xorapass_logo_mark.png", "icons/icon16.png"],
       "matches": ["<all_urls>"]
     }
   ],

@@ -1233,6 +1233,20 @@ const STYLES = `
 }
 `;
 
+// The field overlay icon uses the real XoraPass logo mark rather than a
+// generic shield, so the extension is immediately recognisable in any field.
+// We build the img at call-time so browser.runtime.getURL resolves correctly.
+function makeLogoIcon(): string {
+  try {
+    const url = browser.runtime.getURL('icons/icon16.png');
+    return `<img src="${url}" width="16" height="16" alt="XoraPass" style="display:block;pointer-events:none;image-rendering:auto;" />`;
+  } catch {
+    // Fallback to the teal shield if getURL is unavailable (unit test env, etc.)
+    return SHIELD_SVG;
+  }
+}
+
+// Used in modal headers, save-prompt, brand fallback, and risk banners.
 const SHIELD_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" ' +
   'fill="none" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
@@ -1347,7 +1361,7 @@ export function attachIcon(input: HTMLInputElement, onActivate: () => void): boo
   icon.type = 'button';
   icon.className = 'icon';
   icon.setAttribute('aria-label', 'XoraPass autofill');
-  icon.innerHTML = SHIELD_SVG; // static trusted markup, no interpolation
+  icon.innerHTML = makeLogoIcon(); // XoraPass logo mark via runtime URL
 
   icon.addEventListener('mousedown', (e) => {
     // Prevent the input losing focus before we read it.
@@ -1365,6 +1379,7 @@ export function attachIcon(input: HTMLInputElement, onActivate: () => void): boo
   reposition();
   return true;
 }
+
 
 // Elements the page has placed at or near a field's right edge that our icon
 // must not sit on top of — reveal-password eyes, clear buttons, spinners. The
