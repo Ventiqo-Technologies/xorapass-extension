@@ -18,7 +18,6 @@ import {
   isSubdomainOf,
   hasPunycode,
   stripPublicSuffix,
-  MULTI_PART_SUFFIXES,
 } from './siteTrust';
 
 export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
@@ -151,25 +150,119 @@ export const HIGH_RISK_TLDS = new Set([
  * as legitimate unless hosted on shared-tenant suffixes or hijacking actions.
  */
 export const KNOWN_LEGITIMATE_DOMAINS = new Set([
+  // Tech Giants & Cloud Providers
   'microsoft.com',
   'live.com',
   'office.com',
   'azure.com',
   'windows.net',
+  'microsoftonline.com',
   'google.com',
   'google.co.uk',
   'google.de',
   'google.fr',
   'google.nl',
+  'google.ca',
+  'google.com.au',
+  'google.co.in',
+  'google.co.jp',
   'apple.com',
   'icloud.com',
   'amazon.com',
+  'amazon.co.uk',
+  'amazon.de',
+  'amazon.fr',
+  'amazon.it',
+  'amazon.es',
+  'amazon.in',
+  'amazon.ca',
+  'amazon.co.jp',
+  'amazon.com.au',
   'amazonaws.com',
+  'awsapps.com',
+  'signin.aws',
   'github.com',
   'gitlab.com',
+  'bitbucket.org',
   'paypal.com',
   'stripe.com',
   'cloudflare.com',
+  'digitalocean.com',
+  'linode.com',
+  'vultr.com',
+  'oracle.com',
+  'ibm.com',
+
+
+  // Major Enterprise, Productivity & SaaS Suites
+  'zoho.com',
+  'zoho.eu',
+  'zoho.in',
+  'salesforce.com',
+  'force.com',
+  'atlassian.com',
+  'slack.com',
+  'notion.so',
+  'figma.com',
+  'adobe.com',
+  'dropbox.com',
+  'box.com',
+  'zoom.us',
+  'webex.com',
+  'canva.com',
+  'hubspot.com',
+  'zendesk.com',
+  'intercom.com',
+  'asana.com',
+  'trello.com',
+  'monday.com',
+  'airtable.com',
+  'docusign.com',
+  'docusign.net',
+  'intuit.com',
+  'quickbooks.com',
+
+  // Developer & DevOps
+  'docker.com',
+  'npmjs.com',
+  'pypi.org',
+  'stackoverflow.com',
+  'sentry.io',
+  'datadoghq.com',
+  'grafana.com',
+  'postman.com',
+  'vercel.com',
+  'netlify.com',
+  'heroku.com',
+
+  // Social, Media & Streaming
+  'linkedin.com',
+  'twitter.com',
+  'x.com',
+  'facebook.com',
+  'meta.com',
+  'instagram.com',
+  'reddit.com',
+  'discord.com',
+  'spotify.com',
+  'netflix.com',
+  'twitch.tv',
+  'youtube.com',
+  'vimeo.com',
+  'medium.com',
+  'quora.com',
+  'pinterest.com',
+
+  // Major Global Financial & Commerce
+  'shopify.com',
+  'ebay.com',
+  'etsy.com',
+  'walmart.com',
+  'target.com',
+  'chase.com',
+  'bankofamerica.com',
+  'wellsfargo.com',
+  'citigroup.com',
 ]);
 
 /**
@@ -566,7 +659,7 @@ export function assessDomainRisk(
   }
 
   // 2b. Check for Legitimate Subdomain of Known Major Platforms
-  if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg) && !MULTI_PART_SUFFIXES.has(pageReg)) {
+  if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg)) {
     assessment.matchedTarget = pageReg;
     return assessment; // Safe legitimate platform domain
   }
@@ -580,7 +673,8 @@ export function assessDomainRisk(
   const pageParts = pageHostname.split('.');
   const pageTld = pageParts.slice(pageParts.length > 2 ? -2 : -1).join('.');
   const pageBaseTld = pageParts[pageParts.length - 1] || '';
-  const pageSld = pageParts.length >= 2 ? pageParts[pageParts.length - 2] : pageHostname;
+  // When pageReg is available, extract the brand part (e.g. for amazon.co.uk, pageSld is "amazon")
+  const pageSld = pageReg ? stripPublicSuffix(pageReg) : (pageParts.length >= 2 ? pageParts[pageParts.length - 2] : pageHostname);
 
   const isPuny = hasPunycode(pageHostname);
   assessment.signals.hasPunycode = isPuny;

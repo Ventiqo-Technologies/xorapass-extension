@@ -172,5 +172,13 @@ describe('Domain Risk Assessment — Acceptance Criteria', () => {
     expect(res.riskLevel).toBe('safe');
     expect(res.reasons).toHaveLength(0);
   });
+
+  it('ALLOWS legitimate SaaS subdomains with auth keywords without false warnings (e.g. accounts.zoho.com, accounts.google.com)', () => {
+    const resZoho = assessDomainRisk('accounts.zoho.com', ['https://example.com'], [], 'https://accounts.zoho.com/signin');
+    expect(resZoho.decision).toBe('allow');
+    expect(resZoho.riskScore).toBe(0);
+    expect(resZoho.riskLevel).toBe('safe');
+    expect(resZoho.reasons).toHaveLength(0);
+  });
 });
 

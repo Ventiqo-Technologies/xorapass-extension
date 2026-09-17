@@ -154,7 +154,23 @@ export function isDomainMatch(pageHost: string, credInput: string): boolean {
 
   const rp = registrableDomain(page);
   const rc = registrableDomain(cred);
-  return !!rp && !!rc && rp === rc;
+  if (rp && rc && rp === rc) return true;
+
+  // AWS SSO / IAM Identity Center cross-domain compatibility:
+  // AWS SSO portals live on *.awsapps.com, *.signin.aws, and *.aws.amazon.com
+  const isAwsDomain = (h: string) =>
+    h.endsWith('.awsapps.com') ||
+    h === 'awsapps.com' ||
+    h.endsWith('.signin.aws') ||
+    h === 'signin.aws' ||
+    h.endsWith('.aws.amazon.com') ||
+    h === 'aws.amazon.com';
+
+  if (isAwsDomain(page) && isAwsDomain(cred)) {
+    return true;
+  }
+
+  return false;
 }
 
 export interface FrameContext {

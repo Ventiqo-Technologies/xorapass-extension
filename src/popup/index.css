@@ -410,3 +410,58 @@ input:-webkit-autofill:focus {
     linear-gradient(to bottom, var(--security-grid-color) 1px, transparent 1px);
 }
 
+/* Site Scanner Radar & Beam Animations */
+@keyframes scanner-sweep {
+  0% {
+    top: -10%;
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.9;
+  }
+  80% {
+    opacity: 0.9;
+  }
+  100% {
+    top: 110%;
+    opacity: 0;
+  }
+}
+
+.animate-scanner-beam {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 18px;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(13, 148, 136, 0.25) 50%,
+    rgba(45, 212, 191, 0.75) 90%,
+    #2dd4bf 100%
+  );
+  box-shadow: 0 0 14px rgba(45, 212, 191, 0.65);
+  animation: scanner-sweep 1.4s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 20;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.5);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 8px rgba(13, 148, 136, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(13, 148, 136, 0);
+  }
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 1.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+

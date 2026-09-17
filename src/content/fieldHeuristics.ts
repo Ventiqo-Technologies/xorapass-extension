@@ -10,13 +10,16 @@ export interface FieldAttrs {
   id?: string | null;
   placeholder?: string | null;
   ariaLabel?: string | null;
+  labelText?: string | null;
+  role?: string | null;
+  className?: string | null;
 }
 
 const USERNAME_HINT = /user|email|login|account|phone|mobile|identifier/i;
 
 // Fields that look username-ish by name but must never receive a username —
 // checked before the positive hints so "search-user" style inputs stay excluded.
-const NEGATIVE_HINT = /search|query|coupon|promo|captcha|otp|token|code|zip|postal/i;
+const NEGATIVE_HINT = /search|query|filter|find|lookup|keyword|coupon|promo|captcha|otp|token|code|zip|postal/i;
 
 /**
  * Heuristic for "is this the username/email input paired with a password
@@ -25,14 +28,21 @@ const NEGATIVE_HINT = /search|query|coupon|promo|captcha|otp|token|code|zip|post
  */
 export function looksLikeUsername(attrs: FieldAttrs): boolean {
   const type = (attrs.type || 'text').toLowerCase();
-  if (type === 'password' || type === 'hidden' || type === 'submit') return false;
+  if (type === 'password' || type === 'hidden' || type === 'submit' || type === 'search') return false;
+
+  const role = (attrs.role || '').toLowerCase();
+  if (role === 'searchbox') return false;
 
   const ac = (attrs.autocomplete || '').toLowerCase();
   // An explicit autocomplete token is authoritative in both directions.
   if (ac.includes('username') || ac.includes('email')) return true;
   if (ac.includes('new-password')) return false;
 
-  const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel]
+  const id = (attrs.id || '').toLowerCase();
+  // AWS CloudScape Design System input: awsui-input-*
+  if (id.startsWith('awsui-input')) return true;
+
+  const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel, attrs.labelText, attrs.className]
     .filter(Boolean)
     .join(' ');
 
@@ -51,15 +61,23 @@ export function looksLikeAwsAccountId(attrs: FieldAttrs): boolean {
   const id = (attrs.id || '').toLowerCase();
   const name = (attrs.name || '').toLowerCase();
   const placeholder = (attrs.placeholder || '').toLowerCase();
+  const ariaLabel = (attrs.ariaLabel || '').toLowerCase();
   
   if (id === 'resolving_input') return true;
-  if (name === 'account' || name === 'accountid') return true;
-  if (placeholder.includes('account id') || placeholder.includes('account alias')) return true;
+  if (name === 'account' || name === 'accountid' || id === 'account' || id === 'accountid') return true;
+  if (placeholder.includes('account id') || placeholder.includes('account alias') || placeholder.includes('account')) return true;
+  if (ariaLabel.includes('account id') || ariaLabel.includes('account alias') || ariaLabel.includes('account')) return true;
 
   return false;
 }
 
 const NEW_PASSWORD_HINT = /new|signup|sign-up|register|create|confirm|repeat|retype|verify/i;
+
+// URL path/search tokens that reliably indicate a sign-up or account-creation
+// page, used as a page-level fallback when field attributes give no signal
+// (e.g. Zoho signup.html uses id="password", no autocomplete, no placeholder).
+const SIGNUP_URL_HINT =
+  /signup|sign-up|register|join|create[_-]?account|new[_-]?account|enroll|onboarding/i;
 
 /**
  * Whether a password field is being used to choose a *new* password (sign-up,
@@ -69,8 +87,18 @@ const NEW_PASSWORD_HINT = /new|signup|sign-up|register|create|confirm|repeat|ret
  *
  * `hasSibling` should be true when the page has more than one password field,
  * which on its own is a strong sign of a "password + confirm" pair.
+ *
+ * `pageUrl` (optional) is the full page URL. When the path/search contains a
+ * signup/register keyword, a lone generic password field is treated as new.
+ *
+ * When field attrs and URL give no signal, pass the password field's owning
+ * `<form>` element (or null) to `inferFormIntent` and use that result.
  */
-export function looksLikeNewPassword(attrs: FieldAttrs, hasSibling = false): boolean {
+export function looksLikeNewPassword(
+  attrs: FieldAttrs,
+  hasSibling = false,
+  pageUrl?: string
+): boolean {
   const ac = (attrs.autocomplete || '').toLowerCase();
   if (ac.includes('new-password')) return true;
   if (ac.includes('current-password')) return false;
@@ -80,7 +108,188 @@ export function looksLikeNewPassword(attrs: FieldAttrs, hasSibling = false): boo
     .join(' ');
 
   if (NEW_PASSWORD_HINT.test(hints)) return true;
-  return hasSibling;
+  if (hasSibling) return true;
+
+  // Page-level URL fallback: if the path or query string signals a sign-up
+  // flow, treat the field as new so a generate-password option is offered.
+  if (pageUrl) {
+    try {
+      const url = new URL(pageUrl);
+      const pathAndSearch = url.pathname + url.search;
+      if (SIGNUP_URL_HINT.test(pathAndSearch)) return true;
+    } catch {
+      // Malformed URL — ignore.
+    }
+  }
+
+  return false;
+}
+
+// ─── Form Intent Scorer ───────────────────────────────────────────────────────
+//
+// Instead of maintaining per-site lists, we read the surrounding DOM the same
+// way a human would to answer "is this a signup or login form?".  Seven
+// independent signals are scored; the sum decides the intent.
+//
+// Score > 0  → signup   (generate-password offered)
+// Score < 0  → login    (only autofill offered)
+// Score = 0  → unknown  (caller falls back to its own logic)
+
+/** Signals observed about a form from its surrounding DOM. */
+export interface FormContext {
+  /** Text content of the submit button(s) inside / nearest to the form. */
+  submitButtonText: string;
+  /** Combined text of the nearest h1 / h2 / h3 visible on the page. */
+  headingText: string;
+  /** document.title */
+  pageTitle: string;
+  /** The form's action attribute (URL or path), if present. */
+  formAction: string;
+  /** Text of links near the form (e.g. "Already have an account? Sign in"). */
+  nearbyLinkText: string;
+  /** True when a checkbox whose label/name mentions terms/privacy is present in the form. */
+  hasTermsCheckbox: boolean;
+  /** Number of non-password, non-hidden inputs visible inside the same form. */
+  nonPasswordInputCount: number;
+}
+
+export type FormIntent = 'signup' | 'login' | 'unknown';
+
+// Words that strongly suggest the form's purpose is account creation.
+const SIGNUP_WORDS =
+  /\b(sign[ -]?up|create|register|join|get started|start free|new account|open account|enrol{1,2}|onboard)\b/i;
+
+// Words that strongly suggest the form's purpose is authentication.
+const LOGIN_WORDS =
+  /\b(sign[ -]?in|log[ -]?in|login|continue|enter|access|unlock|welcome back)\b/i;
+
+// "Already have an account?" style cross-links appear on signup pages.
+// Note: avoid bare "have an account" which is a substring of "Don't have an account".
+const HAVE_ACCOUNT_LINK = /already.{0,20}account|back to (sign|log)/i;
+
+// "Don't have an account?" / "New here?" style cross-links appear on login pages.
+const NO_ACCOUNT_LINK = /don.t have|no account|new (here|user|to)|create.{0,10}account|sign.?up/i;
+
+/**
+ * Scores the surrounding DOM context of a password field to determine whether
+ * its containing form is a sign-up form or a sign-in form.
+ *
+ * All DOM reading is done by the caller (content.ts), which passes a plain
+ * `FormContext` object so this function stays pure and fully unit-testable.
+ *
+ * Returns 'signup', 'login', or 'unknown' when the evidence is inconclusive.
+ */
+export function inferFormIntent(ctx: FormContext): FormIntent {
+  let score = 0;
+
+  // ① Submit button text  (strongest single signal, weight ±3)
+  if (SIGNUP_WORDS.test(ctx.submitButtonText)) score += 3;
+  if (LOGIN_WORDS.test(ctx.submitButtonText))  score -= 3;
+
+  // ② Page heading (h1/h2/h3)  (weight ±2)
+  if (SIGNUP_WORDS.test(ctx.headingText)) score += 2;
+  if (LOGIN_WORDS.test(ctx.headingText))  score -= 2;
+
+  // ③ Page <title>  (weight ±1 — titles are less reliable)
+  if (SIGNUP_WORDS.test(ctx.pageTitle)) score += 1;
+  if (LOGIN_WORDS.test(ctx.pageTitle))  score -= 1;
+
+  // ④ Form action URL  (weight ±2)
+  if (SIGNUP_URL_HINT.test(ctx.formAction)) score += 2;
+  if (/login|signin|sign-in|auth|session/i.test(ctx.formAction)) score -= 2;
+
+  // ⑤ Cross-links near the form  (weight ±2)
+  //    "Already have an account? Sign in" → we are on a signup page
+  //    "Don't have an account? Sign up"   → we are on a login page
+  if (HAVE_ACCOUNT_LINK.test(ctx.nearbyLinkText)) score += 2;
+  if (NO_ACCOUNT_LINK.test(ctx.nearbyLinkText))   score -= 2;
+
+  // ⑥ Terms / privacy checkbox (weight +2 — almost never on login forms)
+  if (ctx.hasTermsCheckbox) score += 2;
+
+  // ⑦ Field count: signup forms usually have 3+ inputs (name, email, phone…)
+  //    login forms usually have 1–2 (email + password)
+  if (ctx.nonPasswordInputCount >= 3) score += 1;
+  if (ctx.nonPasswordInputCount <= 1) score -= 1;
+
+  if (score > 0) return 'signup';
+  if (score < 0) return 'login';
+  return 'unknown';
+}
+
+/**
+ * Reads the DOM context around `field` and returns a FormContext object that
+ * can be passed directly to `inferFormIntent`. Call this from content.ts where
+ * live DOM access is available.
+ */
+export function collectFormContext(field: HTMLInputElement): FormContext {
+  // Walk up to the closest <form>; fall back to document.body so the
+  // heuristic still works on formless pages (many SPA login widgets).
+  const form: HTMLElement = field.closest('form') ?? document.body;
+
+  // ① Submit button text — the button that submits this form.
+  const buttons = Array.from(
+    form.querySelectorAll<HTMLElement>(
+      'button[type="submit"], input[type="submit"], button:not([type="reset"])'
+    )
+  );
+  const submitButtonText = buttons.map((b) => b.textContent || '').join(' ').trim();
+
+  // ② Heading — nearest h1/h2/h3 anywhere in the form or on the whole page.
+  const headingEl =
+    form.querySelector('h1,h2,h3') ??
+    document.querySelector('h1,h2,h3');
+  const headingText = (headingEl?.textContent ?? '').trim();
+
+  // ③ Page title.
+  const pageTitle = document.title;
+
+  // ④ Form action URL.
+  const formEl = field.closest('form');
+  const formAction = formEl?.getAttribute('action') ?? '';
+
+  // ⑤ Nearby link text — links inside the form + up to one parent container.
+  const linkContainer: HTMLElement =
+    (form === document.body
+      ? field.closest('section,div,main') ?? document.body
+      : form) as HTMLElement;
+  const links = Array.from(linkContainer.querySelectorAll<HTMLAnchorElement>('a'));
+  const nearbyLinkText = links.map((a) => a.textContent || '').join(' ').trim();
+
+  // ⑥ Terms/privacy checkbox — any checkbox whose name, id, or associated
+  //    label mentions terms, privacy, or agree.
+  const checkboxes = Array.from(form.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+  const hasTermsCheckbox = checkboxes.some((cb) => {
+    const label =
+      cb.labels?.[0]?.textContent ??
+      document.querySelector(`label[for="${cb.id}"]`)?.textContent ?? '';
+    const hint = [cb.name, cb.id, label].join(' ').toLowerCase();
+    return /terms|privacy|agree|consent|gdpr/i.test(hint);
+  });
+
+  // ⑦ Non-password, non-hidden, visible inputs.
+  const allInputs = Array.from(
+    form.querySelectorAll<HTMLInputElement>('input')
+  );
+  const nonPasswordInputCount = allInputs.filter(
+    (i) =>
+      i.type !== 'password' &&
+      i.type !== 'hidden' &&
+      i.type !== 'submit' &&
+      i.type !== 'checkbox' &&
+      i.type !== 'radio' &&
+      i.offsetParent !== null
+  ).length;
+
+  return {
+    submitButtonText,
+    headingText,
+    pageTitle,
+    formAction,
+    nearbyLinkText,
+    hasTermsCheckbox,
+    nonPasswordInputCount,
+  };
 }
 
 /** Minimal rectangle shape — matches the fields we need from a DOMRect. */
@@ -191,7 +400,7 @@ export function computeDropdownPosition(
  * decorating. Zero-size rects mean the field is hidden by CSS.
  */
 export function isRectVisible(rect: Rect, viewport: Viewport): boolean {
-  if (rect.width < 24 || rect.height < 12) return false;
+  if (rect.width < 50 || rect.height < 20) return false;
   if (rect.top + rect.height < 0 || rect.top > viewport.height) return false;
   if (rect.left + rect.width < 0 || rect.left > viewport.width) return false;
   return true;

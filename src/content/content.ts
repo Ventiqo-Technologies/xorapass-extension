@@ -15,7 +15,7 @@
 // and a warning is shown. All detection is on-device -- the pasted text is
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
-import { looksLikeUsername, looksLikeNewPassword, looksLikeAwsAccountId } from './fieldHeuristics';
+import { looksLikeUsername, looksLikeNewPassword, looksLikeAwsAccountId, collectFormContext as collectSignupFormContext, inferFormIntent } from './fieldHeuristics';
 import { generatePassword } from '../utils/passwordGenerator';
 import { scanForSecrets, redact, type ScanResult, type SecretType } from '../utils/secretScan';
 import { coercePolicy, DEFAULT_POLICY, isAiSite, shouldGuard, type PastePolicy } from '../utils/pasteGuard';
@@ -37,8 +37,16 @@ import {
   isInterstitialOpen,
   clearAll,
   showToast,
+  showLinkInspectionModal,
+  showCheckoutProtectionBanner,
+  closeCheckoutProtectionBanner,
+  showWebmailPhishingBanner,
+  closeWebmailPhishingBanner,
+  initOverlayTheme,
   type OverlayCredential,
 } from './overlay';
+import { looksLikeCardNumber, looksLikeCvv, looksLikeCardExpiry } from './cardGuard';
+import { isSupportedWebmail, analyzeEmailSender } from '../utils/webmailGuard';
 import { collectPageSignals, isWorthAssessing, type PageSignals } from '../utils/pageSignals';
 import { WEB_APP_URL } from '../utils/config';
 
@@ -270,9 +278,11 @@ function loadCredentials(): void {
       // sign-up field still gets an icon so a password can be generated.
       clearAll();
       scanForLoginFields();
+      scanForPaymentFields();
+      scanWebmailMessages();
     })
-    .catch(() => {
-      /* background unavailable â€“ nothing to fill */
+    .catch((err) => {
+      console.warn('[XoraPass Content] Error requesting credentials:', err);
     });
 }
 
@@ -539,10 +549,44 @@ async function handleShortcutAutofill(): Promise<void> {
 // Field detection
 // ---------------------------------------------------------------------------
 
+// Checks if an element is hidden by an ancestor with overflow: hidden/clip and 0/tiny height
+function isClippedByAncestor(el: HTMLElement): boolean {
+  let parent = el.parentElement;
+  while (parent && parent !== document.body && parent !== document.documentElement) {
+    const parentRect = parent.getBoundingClientRect();
+    if (parentRect.height < 10 || parentRect.width < 10) {
+      const style = window.getComputedStyle(parent);
+      if (style.overflow === 'hidden' || style.overflowY === 'hidden' || style.overflow === 'clip' || style.overflowY === 'clip') {
+        return true;
+      }
+    }
+    parent = parent.parentElement;
+  }
+  return false;
+}
+
 // An input is fillable if it's visible and user-editable.
 function isFillable(el: HTMLInputElement): boolean {
   if (!el || el.type === 'hidden' || el.disabled || el.readOnly) return false;
-  return el.offsetParent !== null || el.getClientRects().length > 0;
+  if (el.offsetParent === null && el.offsetWidth === 0 && el.offsetHeight === 0) return false;
+
+  const rect = el.getBoundingClientRect();
+  if (rect.width < 50 || rect.height < 20) return false;
+
+  if (typeof (el as any).checkVisibility === 'function') {
+    try {
+      if (!(el as any).checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+    } catch {}
+  }
+
+  try {
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  } catch {}
+
+  if (isClippedByAncestor(el)) return false;
+
+  return true;
 }
 
 /**
@@ -559,7 +603,7 @@ function scanForLoginFields(): void {
   const hasSibling = visible.length > 1;
 
   for (const passInput of visible) {
-    const isNew = looksLikeNewPassword(
+    let isNew = looksLikeNewPassword(
       {
         autocomplete: passInput.getAttribute('autocomplete'),
         name: passInput.name,
@@ -567,12 +611,23 @@ function scanForLoginFields(): void {
         placeholder: passInput.getAttribute('placeholder'),
         ariaLabel: passInput.getAttribute('aria-label'),
       },
-      hasSibling
+      hasSibling,
+      window.location.href
     );
+
+    // Last-resort: when field attrs, sibling count, and URL path all give no
+    // signal, read the surrounding form's DOM context — button text, heading,
+    // page title, cross-links, terms checkbox, field count — to infer intent.
+    // This handles any site automatically without per-site code changes.
+    if (!isNew) {
+      const intent = inferFormIntent(collectSignupFormContext(passInput));
+      if (intent === 'signup') isNew = true;
+    }
 
     // Sign-up fields are worth decorating even with an empty vault — that is
     // exactly when there is nothing to fill but a password to generate.
     if (!isNew && activeCredentials.length === 0) continue;
+
     if (hasIcon(passInput)) continue;
 
     newPasswordFields.set(passInput, isNew);
@@ -592,9 +647,90 @@ function scanForLoginFields(): void {
     }
   }
 
+  // ── Multi-Step / Standalone Username Field Handling ─────────────────────────
+  // When no password input is currently visible (e.g. AWS SSO, Google, Microsoft Step 1)
+  // decorate any visible username/identifier input so the user can autofill their username.
+  if (visible.length === 0 && activeCredentials.length > 0) {
+    const allInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const fillableInputs = allInputs.filter(isFillable);
+
+    const standaloneUserInputs = fillableInputs.filter(el => {
+      // Find associated label text if present
+      let labelText = '';
+      if (el.id) {
+        const lbl = document.querySelector(`label[for="${el.id}"]`);
+        if (lbl) labelText = lbl.textContent || '';
+      }
+      if (!labelText && el.closest('label')) {
+        labelText = el.closest('label')?.textContent || '';
+      }
+      if (!labelText && el.parentElement) {
+        labelText = el.parentElement.textContent || '';
+      }
+
+      // If looksLikeUsername matches
+      if (looksLikeUsername({
+        type: el.type,
+        autocomplete: el.getAttribute('autocomplete'),
+        name: el.name,
+        id: el.id,
+        placeholder: el.getAttribute('placeholder'),
+        ariaLabel: el.getAttribute('aria-label'),
+        labelText,
+        role: el.getAttribute('role'),
+        className: el.className,
+      })) {
+        return true;
+      }
+
+      // Specific AWS Sign-in fallback: only on AWS domains if the field is the primary resolving input or username
+      const hostname = window.location.hostname;
+      if ((hostname.includes('aws.amazon.com') || hostname.includes('signin.aws')) &&
+          fillableInputs.length === 1 && (el.type === 'text' || el.type === 'email' || !el.type)) {
+        return true;
+      }
+
+      return false;
+    });
+
+    for (const userInput of standaloneUserInputs) {
+      if (hasIcon(userInput)) continue;
+
+      attachIcon(userInput, () => {
+        openDropdown(userInput, {
+          credentials: activeCredentials,
+          warning: getRiskWarningMessage(),
+          onPick: async (id) => {
+            const cred = activeCredentials.find((c) => c.id === id);
+            if (!cred) return;
+            const confirmed = await confirmFillIfNeeded(cred);
+            if (!confirmed) return;
+
+            const res = (await browser.runtime
+              .sendMessage({
+                type: 'GET_CREDENTIAL_SECRET',
+                payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
+              })
+              .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
+
+            if (!res || res.error) {
+              handleFillRefusal(res?.error);
+              return;
+            }
+
+            if (res.username) {
+              autofillField(userInput, res.username);
+            }
+          }
+        });
+      });
+      focusActivators.set(userInput, userInput);
+    }
+  }
+
   // ── AWS Console Account ID Specific Handling ────────────────────────────────
   // Decorate the initial Step 1 Account ID input (#resolving_input) when active
-  if (window.location.hostname.endsWith('aws.amazon.com') && activeCredentials.length > 0) {
+  if ((window.location.hostname.endsWith('aws.amazon.com') || window.location.hostname.endsWith('.signin.aws')) && activeCredentials.length > 0) {
     const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
     const accountInput = awsInputs.find(el => isFillable(el) && looksLikeAwsAccountId({
       type: el.type,
@@ -628,9 +764,11 @@ function scanForLoginFields(): void {
               return;
             }
 
-            // Fill Account ID or fallback to IAM username
-            const fillValue = res.accountId || res.username || '';
-            autofillField(accountInput, fillValue);
+            // Fill Account ID / alias
+            const fillValue = res.accountId || '';
+            if (fillValue) {
+              autofillField(accountInput, fillValue);
+            }
 
             // Also fill Username and Password if they are visible on the same page
             const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
@@ -638,7 +776,14 @@ function scanForLoginFields(): void {
               el.id === 'username' || 
               el.name === 'username' ||
               el.id?.toLowerCase().includes('username') ||
-              el.name?.toLowerCase().includes('username')
+              el.name?.toLowerCase().includes('username') ||
+              looksLikeUsername({
+                type: el.type,
+                name: el.name,
+                id: el.id,
+                placeholder: el.getAttribute('placeholder'),
+                ariaLabel: el.getAttribute('aria-label')
+              })
             ));
             const passwordInput = awsInputs.find(el => el.type === 'password' && isFillable(el));
 
@@ -668,6 +813,190 @@ function scanForLoginFields(): void {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Checkout & Card Protection
+// ---------------------------------------------------------------------------
+let hasWarnedCheckoutOnPage = false;
+let checkoutGuardEnabled = true;
+let webmailGuardEnabled = true;
+
+// Load initial Shield toggles
+try {
+  browser.storage.local.get(['checkoutGuardEnabled', 'webmailGuardEnabled']).then((res: any) => {
+    if (typeof res?.checkoutGuardEnabled === 'boolean') checkoutGuardEnabled = res.checkoutGuardEnabled;
+    if (typeof res?.webmailGuardEnabled === 'boolean') webmailGuardEnabled = res.webmailGuardEnabled;
+  });
+} catch {}
+
+function scanForPaymentFields(): void {
+  if (!checkoutGuardEnabled || hasWarnedCheckoutOnPage) return;
+
+  const isInsecure = isInsecureContext();
+  const riskScore = domainRisk?.riskScore ?? 0;
+  const isSuspicious = riskScore >= 25 || !!lookalikeWarning || isInsecure;
+
+  if (!isSuspicious) return;
+
+  const inputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+  const fillable = inputs.filter(isFillable);
+  if (fillable.length === 0) return;
+
+  const hasCard = fillable.some((el) =>
+    looksLikeCardNumber({
+      type: el.type,
+      autocomplete: el.getAttribute('autocomplete'),
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label'),
+    })
+  );
+
+  const hasCsc = fillable.some((el) =>
+    looksLikeCvv({
+      type: el.type,
+      autocomplete: el.getAttribute('autocomplete'),
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label'),
+    })
+  );
+
+  const hasExp = fillable.some((el) =>
+    looksLikeCardExpiry({
+      type: el.type,
+      autocomplete: el.getAttribute('autocomplete'),
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label'),
+    })
+  );
+
+  if (hasCard || (hasCsc && hasExp)) {
+    hasWarnedCheckoutOnPage = true;
+    const reasons: string[] = [];
+    if (isInsecure) reasons.push('Unencrypted connection (HTTP) transmits card details in plaintext.');
+    if (lookalikeWarning) reasons.push(`Domain closely mimics known brand: ${lookalikeWarning.target}`);
+    if (domainRisk?.reasons) reasons.push(...domainRisk.reasons);
+
+    showCheckoutProtectionBanner({
+      hostname: window.location.hostname,
+      riskScore: isInsecure ? 90 : Math.max(riskScore, 50),
+      reasons: reasons.slice(0, 3),
+      isInsecureHttp: isInsecure,
+      onProceedAnyway: () => {
+        hasWarnedCheckoutOnPage = true;
+      },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Email Webmail Phishing Guard (Gmail & Outlook)
+// ---------------------------------------------------------------------------
+const warnedSendersOnPage = new Set<string>();
+
+function scanWebmailMessages(): void {
+  if (!webmailGuardEnabled || !isSupportedWebmail(window.location.hostname)) return;
+
+  // Gmail: sender name usually in span[email] or .gD; email in [email] attribute
+  // Outlook: sender name in .b80yQ or [data-testid="SenderDetails"]
+  const candidates: { displayName: string; email: string; raw: string }[] = [];
+
+  // Gmail parsing: Only target the open email view header (.hP, .gE, table.cf)
+  // to avoid false alerts on inbox row list previews.
+  if (window.location.hostname === 'mail.google.com') {
+    // Check if an email conversation is actually open
+    const openEmailContainer = document.querySelector('.nH.hx, [role="main"] .adn');
+    if (!openEmailContainer) return;
+
+    const senderEls = Array.from(openEmailContainer.querySelectorAll('.gD, span[email]')) as HTMLElement[];
+    for (const el of senderEls) {
+      const email = el.getAttribute('email') || '';
+      const displayName = el.getAttribute('name') || el.textContent || '';
+      if (email && email !== displayName) {
+        candidates.push({ displayName: displayName.trim(), email: email.trim(), raw: `${displayName} <${email}>` });
+      }
+    }
+  }
+
+  // Outlook Web parsing
+  if (window.location.hostname.includes('outlook.')) {
+    const senderEls = Array.from(document.querySelectorAll('[data-testid="SenderDetails"], [aria-label*="@"]')) as HTMLElement[];
+    for (const el of senderEls) {
+      const text = el.textContent || el.getAttribute('aria-label') || '';
+      if (text.includes('@')) {
+        candidates.push({ displayName: text, email: text, raw: text });
+      }
+    }
+  }
+
+  // Yahoo & AOL Mail parsing
+  // Yahoo and AOL share the same mail rendering engine (Oath/Verizon Media)
+  if (window.location.hostname.includes('mail.yahoo.com') || window.location.hostname.includes('mail.aol.com')) {
+    // Target message view header
+    const senderContainer = document.querySelector('[data-test-id="message-view-sender"], [data-test-id="message-header-item"]');
+    if (senderContainer) {
+      const nameEl = senderContainer.querySelector('[data-test-id="sender-name"], .sender-name, span[role="gridcell"]');
+      const emailEl = senderContainer.querySelector('[data-test-id="sender-address"], .sender-address, [role="link"][href^="mailto:"]');
+      const displayName = (nameEl?.textContent || '').trim();
+      const rawEmail = (emailEl?.textContent || emailEl?.getAttribute('title') || emailEl?.getAttribute('href') || '').replace(/^mailto:/i, '').trim();
+      if (rawEmail && rawEmail.includes('@')) {
+        candidates.push({ displayName: displayName || rawEmail, email: rawEmail, raw: displayName ? `${displayName} <${rawEmail}>` : rawEmail });
+      }
+    }
+  }
+
+  // Proton Mail parsing
+  if (window.location.hostname.includes('proton.')) {
+    const senderContainer = document.querySelector('.message-header, [data-testid="message-header"]');
+    if (senderContainer) {
+      const nameEl = senderContainer.querySelector('[data-testid="message-header:sender-name"], .sender-name');
+      const emailEl = senderContainer.querySelector('[data-testid="message-header:sender-address"], .sender-address');
+      const displayName = (nameEl?.textContent || '').trim();
+      const rawEmail = (emailEl?.textContent || emailEl?.getAttribute('title') || '').replace(/[<>]/g, '').trim();
+      if (rawEmail && rawEmail.includes('@')) {
+        candidates.push({ displayName: displayName || rawEmail, email: rawEmail, raw: displayName ? `${displayName} <${rawEmail}>` : rawEmail });
+      }
+    }
+  }
+
+  // Zoho Mail parsing
+  if (window.location.hostname.includes('mail.zoho.')) {
+    const senderContainer = document.querySelector('.zmSender, .zmSenderDetails, .zmMailHeader');
+    if (senderContainer) {
+      const nameEl = senderContainer.querySelector('.zmSenderName, [data-zm-sender]');
+      const emailEl = senderContainer.querySelector('.zmSenderEmail, [data-zm-email], [email]');
+      const displayName = (nameEl?.textContent || '').trim();
+      const rawEmail = (emailEl?.getAttribute('email') || emailEl?.textContent || '').replace(/[<>]/g, '').trim();
+      if (rawEmail && rawEmail.includes('@')) {
+        candidates.push({ displayName: displayName || rawEmail, email: rawEmail, raw: displayName ? `${displayName} <${rawEmail}>` : rawEmail });
+      }
+    }
+  }
+
+  for (const c of candidates) {
+    if (warnedSendersOnPage.has(c.raw)) continue;
+    const analysis = analyzeEmailSender(c.raw);
+    if (analysis.isImpersonation && analysis.riskScore >= 70) {
+      warnedSendersOnPage.add(c.raw);
+      showWebmailPhishingBanner({
+        displayName: analysis.claimedBrand ? `${analysis.claimedBrand.toUpperCase()} (Claimed)` : c.displayName,
+        senderEmail: analysis.senderEmail,
+        reasons: analysis.reasons,
+        riskScore: analysis.riskScore,
+        onDismiss: () => {
+          warnedSendersOnPage.add(c.raw);
+        },
+      });
+      break; // Show one prioritized banner at a time to prevent popup floods
+    }
+  }
+}
+
 
 // Attempts to locate the username/email field preceding a password input.
 // Searches the enclosing <form> when present, otherwise the whole document, in
@@ -699,6 +1028,8 @@ function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null
       id: el.id,
       placeholder: el.getAttribute('placeholder'),
       ariaLabel: el.getAttribute('aria-label'),
+      role: el.getAttribute('role'),
+      className: el.className,
     });
     if (matches) return el;
   }
@@ -749,21 +1080,47 @@ function getRiskWarningMessage(): string | null {
   return null;
 }
 
-// Opens the credential menu for `passInput`, positioned at `anchor` â€” the field
+let preferredSuggestionLength = 20;
+
+// Opens the credential menu for `passInput`, positioned at `anchor` — the field
 // the user actually clicked or focused, so the menu appears where they are
 // looking. On a sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
   const isNew = newPasswordFields.get(passInput) === true;
   const warning = getRiskWarningMessage();
 
+  // Inspect website password field constraints if present
+  const fieldMaxLength = passInput.maxLength > 0 && passInput.maxLength < 500 ? passInput.maxLength : undefined;
+  const fieldMinLength = passInput.minLength > 0 && passInput.minLength < 500 ? passInput.minLength : undefined;
+
+  // If the site restricts maxLength below our preferred length, cap it to the site's limit
+  let initialLength = preferredSuggestionLength;
+  if (fieldMaxLength && initialLength > fieldMaxLength) {
+    initialLength = fieldMaxLength;
+  }
+  if (fieldMinLength && initialLength < fieldMinLength) {
+    initialLength = fieldMinLength;
+  }
+
+  // Only offer password suggestions on the actual password input itself, never on email/username fields
+  const isPasswordField = anchor.type === 'password';
+  const showSuggestion = isNew && isPasswordField;
+
   openDropdown(anchor, {
     credentials: activeCredentials,
     warning,
     onPick: (id) => void handlePick(id, passInput),
-    suggestion: isNew
+    suggestion: showSuggestion
       ? {
-          password: generatePassword(),
-          onRegenerate: () => generatePassword(),
+          password: generatePassword({ length: initialLength }),
+          length: initialLength,
+          maxLength: fieldMaxLength,
+          minLength: fieldMinLength,
+          onRegenerate: (len?: number) => {
+            const targetLen = len || initialLength;
+            preferredSuggestionLength = targetLen;
+            return generatePassword({ length: targetLen });
+          },
           onUse: (pw) => applyGeneratedPassword(passInput, pw),
         }
       : undefined,
@@ -791,7 +1148,8 @@ function applyGeneratedPassword(passInput: HTMLInputElement, password: string): 
         placeholder: other.getAttribute('placeholder'),
         ariaLabel: other.getAttribute('aria-label'),
       },
-      true
+      true,
+      window.location.href
     );
     if (isNew) autofillField(other, password);
   }
@@ -1282,12 +1640,24 @@ function watchForFocus(): void {
       if (isDropdownOpen()) return;
 
       // Only auto-open on an empty field. A field with a value means the user is
-      // editing, not looking for a credential â€” and because focusin fires once
+      // editing, not looking for a credential — and because focusin fires once
       // per focus, a menu they dismiss with Escape or an outside click does not
       // reopen while focus stays on the same field.
       if (el.value) return;
 
       activate(passInput, el);
+    },
+    true
+  );
+
+  // If the user clicks the password box while the dropdown is already open, close it
+  document.addEventListener(
+    'click',
+    (e) => {
+      const el = e.target;
+      if (el instanceof HTMLInputElement && focusActivators.has(el) && isDropdownOpen()) {
+        closeDropdown();
+      }
     },
     true
   );
@@ -1815,6 +2185,7 @@ function initPasteGuard(): void {
 const frame = assessFrame();
 if (frame.isTop || !frame.isCrossOriginFrame) {
   // Only run in the top frame or in a same-origin (first-party) sub-frame.
+  initOverlayTheme();
   initPasteGuard();
   initWebBridge();
   loadCredentials();
@@ -1843,6 +2214,8 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     }
     if (!structural) return;
     scanForLoginFields();
+    scanForPaymentFields();
+    scanWebmailMessages();
     scheduleReposition();
   });
 
@@ -1859,11 +2232,15 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   window.addEventListener('focus', () => {
     loadCredentials();
     checkAiFill();
+    scanWebmailMessages();
   });
 
   // A tab returning from the background may have been locked in the meantime.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) loadCredentials();
+    if (!document.hidden) {
+      loadCredentials();
+      scanWebmailMessages();
+    }
   });
 
   // Never leave a menu floating over a page the user navigated away from.
@@ -1871,7 +2248,32 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     closeDropdown();
     closeSavePrompt();
     closeRiskWarning();
+    closeCheckoutProtectionBanner();
+    closeWebmailPhishingBanner();
   });
+
+  // Listen for link inspection results triggered via right-click context menu
+  browser.runtime.onMessage.addListener((message: any) => {
+    if (message?.type === 'SHOW_LINK_INSPECTION' && message.payload) {
+      showLinkInspectionModal(message.payload);
+    }
+  });
+
+  // Listen for real-time Shield toggle changes from popup settings
+  try {
+    browser.storage.onChanged.addListener((changes: any, area: string) => {
+      if (area === 'local') {
+        if (changes?.checkoutGuardEnabled) {
+          checkoutGuardEnabled = !!changes.checkoutGuardEnabled.newValue;
+          if (!checkoutGuardEnabled) closeCheckoutProtectionBanner();
+        }
+        if (changes?.webmailGuardEnabled) {
+          webmailGuardEnabled = !!changes.webmailGuardEnabled.newValue;
+          if (!webmailGuardEnabled) closeWebmailPhishingBanner();
+        }
+      }
+    });
+  } catch {}
 } else {
   // Third-party iframe: autofill deliberately blocked, and so is AI-approved
   // fill -- the same framing attack this guard exists for applies equally.

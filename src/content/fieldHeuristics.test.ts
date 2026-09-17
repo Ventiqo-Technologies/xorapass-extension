@@ -3,6 +3,8 @@ import {
   looksLikeUsername,
   looksLikeNewPassword,
   looksLikeAwsAccountId,
+  inferFormIntent,
+  type FormContext,
   computeIconPosition,
   computeTrailingOffset,
   computeDropdownPosition,
@@ -31,6 +33,9 @@ describe('looksLikeUsername', () => {
 
   it('rejects search and one-time-code fields that mention user/login', () => {
     expect(looksLikeUsername({ type: 'text', name: 'user_search' })).toBe(false);
+    expect(looksLikeUsername({ type: 'search', name: 'user' })).toBe(false);
+    expect(looksLikeUsername({ type: 'text', role: 'searchbox', name: 'user' })).toBe(false);
+    expect(looksLikeUsername({ type: 'text', className: 'zgh-search-field' })).toBe(false);
     expect(looksLikeUsername({ type: 'text', id: 'login-otp' })).toBe(false);
     expect(looksLikeUsername({ type: 'text', name: 'account', placeholder: 'Promo code' })).toBe(false);
   });
@@ -90,6 +95,113 @@ describe('looksLikeNewPassword', () => {
   it('leaves an ordinary login password alone', () => {
     expect(looksLikeNewPassword({ name: 'password', id: 'login-pw' })).toBe(false);
     expect(looksLikeNewPassword({ autocomplete: 'current-password' })).toBe(false);
+  });
+
+  it('uses page URL path as a fallback when field attrs are generic', () => {
+    // Zoho signup.html — id="password", no autocomplete, no sibling
+    expect(looksLikeNewPassword({ name: 'password', id: 'password' }, false, 'https://zoho.com/signup.html')).toBe(true);
+    // GitHub join page
+    expect(looksLikeNewPassword({ name: 'user[password]', id: 'user_password' }, false, 'https://github.com/join')).toBe(true);
+    // Generic /register path
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://example.com/register')).toBe(true);
+    // create-account in path
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://example.com/create-account')).toBe(true);
+    // onboarding flow
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://app.example.com/onboarding')).toBe(true);
+    // Ordinary login page should NOT be affected
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://accounts.zoho.com/signin')).toBe(false);
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://login.github.com/')).toBe(false);
+  });
+});
+
+// Helper to build a minimal FormContext, overriding only the keys under test.
+function ctx(overrides: Partial<FormContext> = {}): FormContext {
+  return {
+    submitButtonText: '',
+    headingText: '',
+    pageTitle: '',
+    formAction: '',
+    nearbyLinkText: '',
+    hasTermsCheckbox: false,
+    nonPasswordInputCount: 2,
+    ...overrides,
+  };
+}
+
+describe('inferFormIntent', () => {
+  it('classifies signup by submit button text alone (weight ±3)', () => {
+    expect(inferFormIntent(ctx({ submitButtonText: 'Sign Up' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Create account' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Register' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Join now' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Get Started' }))).toBe('signup');
+  });
+
+  it('classifies login by submit button text alone', () => {
+    expect(inferFormIntent(ctx({ submitButtonText: 'Sign In' }))).toBe('login');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Log in' }))).toBe('login');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Continue' }))).toBe('login');
+  });
+
+  it('classifies signup by heading text (weight ±2)', () => {
+    expect(inferFormIntent(ctx({ headingText: 'Create your free account' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ headingText: 'Welcome back' }))).toBe('login');
+  });
+
+  it('uses page title as a weak signal (weight ±1)', () => {
+    // Title alone is not enough to tip score — needs a second signal
+    expect(inferFormIntent(ctx({ pageTitle: 'Sign Up | Zoho', nonPasswordInputCount: 3 }))).toBe('signup');
+    expect(inferFormIntent(ctx({ pageTitle: 'Sign In | GitHub', nonPasswordInputCount: 1 }))).toBe('login');
+  });
+
+  it('classifies by form action URL (weight ±2)', () => {
+    expect(inferFormIntent(ctx({ formAction: '/api/signup' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ formAction: '/auth/login' }))).toBe('login');
+    expect(inferFormIntent(ctx({ formAction: '/session/new' }))).toBe('login');
+  });
+
+  it('reads cross-links correctly (weight ±2)', () => {
+    // "Already have an account?" appears on signup pages
+    expect(inferFormIntent(ctx({ nearbyLinkText: 'Already have an account? Sign in' }))).toBe('signup');
+    // "Don't have an account?" appears on login pages
+    expect(inferFormIntent(ctx({ nearbyLinkText: "Don't have an account? Sign up" }))).toBe('login');
+  });
+
+  it('treats terms checkbox as a signup signal (weight +2)', () => {
+    expect(inferFormIntent(ctx({ hasTermsCheckbox: true }))).toBe('signup');
+  });
+
+  it('uses field count as a tiebreaker (weight ±1)', () => {
+    // 3+ inputs → signup bias
+    expect(inferFormIntent(ctx({ nonPasswordInputCount: 4 }))).toBe('signup');
+    // 1 input → login bias
+    expect(inferFormIntent(ctx({ nonPasswordInputCount: 1 }))).toBe('login');
+    // 2 inputs → neutral → unknown
+    expect(inferFormIntent(ctx({ nonPasswordInputCount: 2 }))).toBe('unknown');
+  });
+
+  it('combines signals — Zoho signup page scenario', () => {
+    // zoho.com/signup.html: title has "Sign up", terms checkbox present,
+    // nearby link "Already have a Zoho Account? SIGN IN", 3 inputs (email, phone, ...)
+    expect(inferFormIntent(ctx({
+      pageTitle: 'Create New Account | Sign up to Zoho',
+      nearbyLinkText: 'Already have a Zoho Account? SIGN IN',
+      hasTermsCheckbox: true,
+      nonPasswordInputCount: 3,
+    }))).toBe('signup');
+  });
+
+  it('combines signals — standard login page scenario', () => {
+    expect(inferFormIntent(ctx({
+      submitButtonText: 'Sign in',
+      headingText: 'Welcome back',
+      nearbyLinkText: "Don't have an account? Create one",
+      nonPasswordInputCount: 1,
+    }))).toBe('login');
+  });
+
+  it('returns unknown when evidence is evenly balanced', () => {
+    expect(inferFormIntent(ctx())).toBe('unknown');
   });
 });
 

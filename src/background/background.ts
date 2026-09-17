@@ -17,6 +17,8 @@ import {
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
 import type { PageSignals } from '../utils/pageSignals';
+import { buildSiteSafetyReport } from '../utils/siteScanner';
+import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
 import {
   encryptPayload,
@@ -1385,13 +1387,31 @@ browser.runtime.onMessage.addListener((message, sender) => {
       if (!res.unlocked || disabled) return { prompt: false };
 
       const items = (res.vaultItems as VaultItem[]) || [];
+      const isAwsHost = (h: string) =>
+        h.endsWith('.awsapps.com') ||
+        h === 'awsapps.com' ||
+        h.endsWith('.signin.aws') ||
+        h === 'signin.aws' ||
+        h.endsWith('.aws.amazon.com') ||
+        h === 'aws.amazon.com';
+
+      const isAws = isAwsHost(hostname);
       const sameSite = items.filter((i) => !!i.url && isDomainMatch(hostname, i.url!));
-      const existing = sameSite.find((i) => i.username === username);
+
+      // Match exact username or base username (e.g. "ashan (959786390779)" matches "ashan")
+      const normalizeUser = (u: string) => u.replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
+      const targetUser = normalizeUser(username);
+
+      const existing = sameSite.find((i) => {
+        if (!i.username) return false;
+        if (i.username === username) return true;
+        if (targetUser && normalizeUser(i.username) === targetUser) return true;
+        return false;
+      }) || (isAws && sameSite.length === 1 ? sameSite[0] : undefined);
 
       // Already stored with this exact password: nothing worth asking about.
       if (existing && existing.value === password) return { prompt: false };
 
-      const isAws = hostname.endsWith('aws.amazon.com');
       let accountId = '';
       if (isAws) {
         const remembered = await getLastUsernames().then((m) => m[String(tabId)] || '');
@@ -1402,11 +1422,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
 
       const pending: PendingSave & { accountId?: string } = existing
-        ? { hostname, username, password, mode: 'update', entryId: existing.id }
+        ? { hostname, username: existing.username || username, password, mode: 'update', entryId: existing.id }
         : { hostname, username, password, mode: 'new' };
 
       if (isAws) {
-        pending.accountId = accountId;
+        pending.accountId = accountId || existing?.accountId || '';
       }
 
       await setPendingSave(tabId, pending);
@@ -1630,6 +1650,75 @@ browser.runtime.onMessage.addListener((message, sender) => {
     }));
   }
 
+  if (type === 'SCAN_SITE') {
+    return (async () => {
+      let targetUrl = msg.payload?.url;
+      let targetTitle = msg.payload?.title;
+      let targetFavIcon = msg.payload?.favIconUrl;
+
+      // If URL was not explicitly passed, query the active tab
+      if (!targetUrl) {
+        try {
+          const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+          if (tabs && tabs[0]) {
+            targetUrl = tabs[0].url || '';
+            targetTitle = tabs[0].title || '';
+            targetFavIcon = tabs[0].favIconUrl || '';
+          }
+        } catch {
+          /* tabs query fallback */
+        }
+      }
+
+      if (!targetUrl || targetUrl.startsWith('chrome://') || targetUrl.startsWith('moz-extension://') || targetUrl.startsWith('about:')) {
+        return {
+          report: buildSiteSafetyReport({
+            url: targetUrl || 'about:blank',
+            title: targetTitle || 'Internal Browser Page',
+            favIconUrl: targetFavIcon,
+            savedDomains: [],
+          }),
+        };
+      }
+
+      // Gather saved domains from cached vault items
+      const res = await browser.storage.session.get(['vaultItems']);
+      const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
+      const savedDomains: string[] = [];
+      if (Array.isArray(items)) {
+        for (const it of items) {
+          if (it.url) {
+            const h = extractHostname(it.url);
+            if (h) savedDomains.push(h);
+          }
+        }
+      }
+
+      // Run remote/cached domain risk check
+      const risk = await checkDomainRiskRemote(
+        targetUrl,
+        savedDomains[0] || '',
+        undefined,
+        undefined,
+        'standard',
+        globalThis.fetch,
+        getJwt,
+        msg.payload?.pageSignals
+      );
+
+      const report = buildSiteSafetyReport({
+        url: targetUrl,
+        title: targetTitle,
+        favIconUrl: targetFavIcon,
+        savedDomains,
+        riskAssessment: risk,
+        scriptCount: msg.payload?.pageSignals?.external_script_origins,
+      });
+
+      return { report };
+    })();
+  }
+
   if (type === 'RISK_APPROVE_DOMAIN') {
     // The hostname is taken from the sender tab, never the payload — the same
     // discipline GET_CREDENTIAL_SECRET uses. A caller naming some other host
@@ -1695,6 +1784,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
     }
   }
 
+  if (type === 'AUDIT_EXTENSIONS') {
+    return auditInstalledExtensions();
+  }
+
   // ── Web Bridge messages from content script or internal pages ─────────
   if (
     type === 'WEB_BRIDGE_LOGIN' ||
@@ -1736,7 +1829,10 @@ async function savePendingCredential(
   const items = (session.vaultItems as VaultItem[]) || [];
   const existing = pending.entryId ? items.find((i) => i.id === pending.entryId) : undefined;
 
-  const isAws = pending.hostname.endsWith('aws.amazon.com');
+  const isAws =
+    pending.hostname.endsWith('aws.amazon.com') ||
+    pending.hostname.endsWith('awsapps.com') ||
+    pending.hostname.endsWith('signin.aws');
   const defaultCategory = isAws ? 'aws' : 'login';
   const accountIdVal = isAws ? (pending as any).accountId || '' : '';
 
@@ -2109,5 +2205,168 @@ browser.commands.onCommand.addListener(async (command: string) => {
     } catch (err) {
       console.warn('[XoraPass] Generate password shortcut failed:', err);
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Context Menu: "Inspect Link with XoraPass" (Link Guard)
+// ---------------------------------------------------------------------------
+const INSPECT_LINK_MENU_ID = 'xorapass-inspect-link';
+
+function setupContextMenus() {
+  const menusApi = (browser.contextMenus || (globalThis as any).chrome?.contextMenus);
+  if (!menusApi?.create) return;
+
+  try {
+    const removeRes = menusApi.removeAll();
+    if (removeRes && typeof removeRes.then === 'function') {
+      removeRes.then(() => {
+        menusApi.create({
+          id: INSPECT_LINK_MENU_ID,
+          title: 'Inspect Link with XoraPass',
+          contexts: ['link'],
+        });
+      }).catch(() => {});
+    } else {
+      menusApi.create({
+        id: INSPECT_LINK_MENU_ID,
+        title: 'Inspect Link with XoraPass',
+        contexts: ['link'],
+      });
+    }
+  } catch (err) {
+    console.warn('[XoraPass] Failed to register context menu:', err);
+  }
+}
+
+// Register on install and startup
+browser.runtime.onInstalled?.addListener(() => {
+  setupContextMenus();
+});
+browser.runtime.onStartup?.addListener(() => {
+  setupContextMenus();
+});
+setupContextMenus();
+
+// Resolve destination by following HEAD/GET redirects safely in background
+async function unwindRedirects(initialUrl: string): Promise<{ finalUrl: string; hops: number; isCustomScheme: boolean }> {
+  let current = initialUrl;
+  let hops = 0;
+  const maxHops = 6;
+
+  // Non-HTTP links (magnet:, mailto:, tel:, ftp:) cannot be HTTP-fetched
+  if (!/^https?:\/\//i.test(initialUrl)) {
+    return { finalUrl: initialUrl, hops: 0, isCustomScheme: true };
+  }
+
+  try {
+    while (hops < maxHops) {
+      // Use redirect: 'manual' to catch 301/302/307/308 and examine Location header
+      const res = await fetch(current, {
+        method: 'HEAD',
+        mode: 'cors',
+        credentials: 'omit',
+        redirect: 'manual',
+        cache: 'no-store',
+      });
+
+      // Check for manual redirect location
+      const redirectLocation = res.headers?.get('location');
+      if (redirectLocation) {
+        try {
+          const resolved = new URL(redirectLocation, current).href;
+          if (resolved !== current) {
+            current = resolved;
+            hops++;
+            continue;
+          }
+        } catch {
+          /* invalid location header */
+        }
+      }
+
+      // Fallback: If browser auto-resolved res.url to something different
+      if (res.url && res.url !== current) {
+        current = res.url;
+        hops++;
+      } else {
+        break;
+      }
+    }
+  } catch {
+    // If HEAD fails due to CORS or server blocking HEAD, try one safe GET request with abort timeout
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const getRes = await fetch(current, {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'omit',
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      clearTimeout(timer);
+      if (getRes.url && getRes.url !== current) {
+        current = getRes.url;
+        hops++;
+      }
+    } catch {
+      /* network failure or cross-origin restrictions */
+    }
+  }
+
+  return { finalUrl: current, hops, isCustomScheme: false };
+}
+
+// Handle context menu click
+const menusApi = (browser.contextMenus || (globalThis as any).chrome?.contextMenus);
+menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
+  if (info.menuItemId !== INSPECT_LINK_MENU_ID || !info.linkUrl || !tab?.id) return;
+
+  const originalUrl = info.linkUrl;
+  console.info('[XoraPass] Inspecting link destination:', originalUrl);
+
+  try {
+    const { finalUrl, hops } = await unwindRedirects(originalUrl);
+    const destHost = extractHostname(finalUrl);
+
+    // Retrieve saved vault domains to check for lookalike impersonation
+    let knownVaultHosts: string[] = [];
+    try {
+      const cache = await browser.storage.local.get(['vaultCache']);
+      if (cache?.vaultCache?.entries) {
+        knownVaultHosts = cache.vaultCache.entries.map((e: any) => e.url || e.label).filter(Boolean);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const assessment = assessDomainRisk(destHost, knownVaultHosts);
+    const threats: string[] = [];
+
+    if (assessment.signals.hasPunycode) threats.push('Punycode / Homograph domain structure');
+    if (assessment.signals.brandAbuse) threats.push(`Brand impersonation of ${assessment.signals.brandAbuse.brand}`);
+    if (assessment.signals.typosquatTarget) threats.push(`Mimics saved domain ${assessment.signals.typosquatTarget}`);
+    if (assessment.signals.isHighRiskTld) threats.push('Registered under high-risk phishing TLD');
+    if (/^http:\/\//i.test(finalUrl)) threats.push('Unencrypted HTTP connection');
+
+    let verdict: 'safe' | 'suspicious' | 'high_risk' = 'safe';
+    if (assessment.riskScore >= 70) verdict = 'high_risk';
+    else if (assessment.riskScore >= 35 || hops > 2) verdict = 'suspicious';
+
+    // Dispatch message to active tab's content script to render floating inspection card
+    await browser.tabs.sendMessage(tab.id, {
+      type: 'SHOW_LINK_INSPECTION',
+      payload: {
+        originalUrl,
+        finalUrl,
+        redirectsCount: hops,
+        riskScore: assessment.riskScore,
+        verdict,
+        threats,
+      },
+    });
+  } catch (err) {
+    console.warn('[XoraPass] Failed to inspect link:', err);
   }
 });

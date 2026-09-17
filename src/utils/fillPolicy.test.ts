@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { isFillableCategory } from './fillPolicy';
 
 describe('isFillableCategory', () => {
-  it('allows the two categories that really hold a web login', () => {
+  it('allows the categories that really hold a web login', () => {
     expect(isFillableCategory('login')).toBe(true);
     expect(isFillableCategory('other')).toBe(true);
+    expect(isFillableCategory('aws')).toBe(true);
   });
 
   it('refuses card entries', () => {

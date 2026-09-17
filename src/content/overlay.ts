@@ -41,8 +41,11 @@ export interface DropdownOptions {
   /** Present on sign-up fields: offers a generated password above the list. */
   suggestion?: {
     password: string;
+    length: number;
+    maxLength?: number;
+    minLength?: number;
     onUse: (password: string) => void;
-    onRegenerate: () => string;
+    onRegenerate: (len?: number) => string;
   };
 }
 
@@ -73,11 +76,44 @@ const STYLES = `
 .layer {
   position: fixed;
   inset: 0;
-  /* The layer itself must not swallow page clicks; only its children opt in. */
   pointer-events: none;
   z-index: 2147483647;
   font-family: Inter, system-ui, -apple-system, sans-serif;
+  --xp-bg-card: #0f172a;
+  --xp-border-card: rgba(255, 255, 255, 0.08);
+  --xp-text-main: #e2e8f0;
+  --xp-text-muted: #94a3b8;
+  --xp-text-sub: #64748b;
+  --xp-bg-header: #0a1412;
+  --xp-header-border: rgba(255, 255, 255, 0.05);
+  --xp-item-border: rgba(255, 255, 255, 0.03);
+  --xp-suggest-bg: rgba(45, 212, 191, 0.06);
+  --xp-suggest-border: rgba(255, 255, 255, 0.06);
+  --xp-badge-bg: rgba(255, 255, 255, 0.06);
+  --xp-slider-track: rgba(255, 255, 255, 0.15);
+  --xp-btn-border: rgba(255, 255, 255, 0.12);
+  --xp-btn-bg: transparent;
+  --xp-shadow: 0 10px 25px -5px rgba(0,0,0,0.5), 0 8px 24px rgba(45,212,191,0.15);
 }
+
+.layer.theme-light {
+  --xp-bg-card: #ffffff;
+  --xp-border-card: rgba(15, 23, 42, 0.12);
+  --xp-text-main: #0f172a;
+  --xp-text-muted: #475569;
+  --xp-text-sub: #64748b;
+  --xp-bg-header: #f0fdf4;
+  --xp-header-border: rgba(15, 23, 42, 0.06);
+  --xp-item-border: rgba(15, 23, 42, 0.05);
+  --xp-suggest-bg: rgba(13, 148, 136, 0.05);
+  --xp-suggest-border: rgba(13, 148, 136, 0.12);
+  --xp-badge-bg: rgba(15, 23, 42, 0.06);
+  --xp-slider-track: #e2e8f0;
+  --xp-btn-border: rgba(15, 23, 42, 0.15);
+  --xp-btn-bg: #f8fafc;
+  --xp-shadow: 0 10px 25px -5px rgba(15,23,42,0.12), 0 8px 20px rgba(13,148,136,0.1);
+}
+
 .icon {
   position: fixed;
   width: ${ICON_SIZE}px;
@@ -99,23 +135,27 @@ const STYLES = `
 .menu {
   position: fixed;
   width: ${MENU_WIDTH}px;
-  background-color: #0f172a;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background-color: var(--xp-bg-card);
+  border: 1px solid var(--xp-border-card);
   border-radius: 10px;
-  box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5), 0 8px 24px rgba(45,212,191,0.15);
+  box-shadow: var(--xp-shadow);
   overflow: hidden;
   pointer-events: auto;
-  color: #e2e8f0;
+  color: var(--xp-text-main);
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 .menu-header {
   padding: 8px 12px;
   font-size: 10px;
   font-weight: 700;
-  color: #2dd4bf;
+  color: #0d9488;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  border-bottom: 1px solid rgba(255,255,255,0.05);
-  background-color: #0a1412;
+  border-bottom: 1px solid var(--xp-header-border);
+  background-color: var(--xp-bg-header);
+}
+.layer:not(.theme-light) .menu-header {
+  color: #2dd4bf;
 }
 .menu-warning {
   padding: 8px 12px;
@@ -125,23 +165,32 @@ const STYLES = `
   background-color: rgba(220, 38, 38, 0.12);
   border-bottom: 1px solid rgba(220, 38, 38, 0.25);
 }
+.layer.theme-light .menu-warning {
+  color: #b91c1c;
+  background-color: #fef2f2;
+  border-bottom: 1px solid #fecaca;
+}
 .menu-item {
   width: 100%;
   padding: 10px 12px;
   background: none;
   border: none;
-  border-bottom: 1px solid rgba(255,255,255,0.03);
+  border-bottom: 1px solid var(--xp-item-border);
   cursor: pointer;
   display: block;
   text-align: left;
-  color: #e2e8f0;
+  color: var(--xp-text-main);
   font-family: inherit;
   transition: background-color 0.15s, color 0.15s;
 }
 .menu-item:hover, .menu-item:focus-visible {
-  background-color: rgba(45, 212, 191, 0.08);
-  color: #2dd4bf;
+  background-color: rgba(45, 212, 191, 0.1);
+  color: #0d9488;
   outline: none;
+}
+.layer:not(.theme-light) .menu-item:hover,
+.layer:not(.theme-light) .menu-item:focus-visible {
+  color: #2dd4bf;
 }
 .menu-item-row {
   display: flex;
@@ -216,16 +265,94 @@ const STYLES = `
 }
 .suggest {
   padding: 10px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(45, 212, 191, 0.06);
+  border-bottom: 1px solid var(--xp-suggest-border);
+  background: var(--xp-suggest-bg);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+.suggest-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
 }
 .suggest-label {
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  color: #0d9488;
+}
+.layer:not(.theme-light) .suggest-label {
   color: #2dd4bf;
-  margin-bottom: 6px;
+}
+.suggest-length-badge {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  color: var(--xp-text-muted);
+  background: var(--xp-badge-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.suggest-slider-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.suggest-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--xp-slider-track);
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+}
+.suggest-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #0d9488;
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(13, 148, 136, 0.4);
+  transition: transform 0.1s ease;
+}
+.layer:not(.theme-light) .suggest-slider::-webkit-slider-thumb {
+  background: #2dd4bf;
+  box-shadow: 0 0 6px rgba(45, 212, 191, 0.5);
+}
+.suggest-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+.suggest-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #0d9488;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 6px rgba(13, 148, 136, 0.4);
+}
+.layer:not(.theme-light) .suggest-slider::-moz-range-thumb {
+  background: #2dd4bf;
+  box-shadow: 0 0 6px rgba(45, 212, 191, 0.5);
+}
+.suggest-limit-hint {
+  margin-top: 6px;
+  font-size: 9px;
+  color: #d97706;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.layer:not(.theme-light) .suggest-limit-hint {
+  color: #fbbf24;
 }
 .suggest-row { display: flex; align-items: center; gap: 8px; }
 .suggest-value {
@@ -233,7 +360,7 @@ const STYLES = `
   min-width: 0;
   font-family: ui-monospace, monospace;
   font-size: 12px;
-  color: #e2e8f0;
+  color: var(--xp-text-main);
   word-break: break-all;
   line-height: 1.35;
 }
@@ -244,27 +371,35 @@ const STYLES = `
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: transparent;
-  color: #94a3b8;
+  border: 1px solid var(--xp-btn-border);
+  background: var(--xp-btn-bg);
+  color: var(--xp-text-muted);
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
   font-family: inherit;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
-.suggest-refresh:hover { color: #2dd4bf; border-color: rgba(45, 212, 191, 0.4); }
+.suggest-refresh:hover { color: #0d9488; border-color: rgba(13, 148, 136, 0.4); }
+.layer:not(.theme-light) .suggest-refresh:hover { color: #2dd4bf; border-color: rgba(45, 212, 191, 0.4); }
 .suggest-use {
   width: 100%;
   margin-top: 8px;
   padding: 7px 10px;
   font-size: 11px;
   font-weight: 700;
-  color: #04231d;
-  background: linear-gradient(135deg, #2dd4bf, #34d399);
+  color: #ffffff;
+  background: linear-gradient(135deg, #0d9488, #059669);
   border: none;
   border-radius: 7px;
   cursor: pointer;
   font-family: inherit;
+  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.25);
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+.layer:not(.theme-light) .suggest-use {
+  color: #04231d;
+  background: linear-gradient(135deg, #2dd4bf, #34d399);
 }
 
 .save-prompt {
@@ -945,8 +1080,173 @@ const STYLES = `
   box-shadow: 0 2px 8px rgba(13, 148, 136, 0.24);
 }
 .risk-btn-primary:hover:not(:disabled) { box-shadow: 0 4px 14px rgba(13, 148, 136, 0.36); }
+
+/* ── Dedicated Link Inspector Modal ── */
+.xp-link-modal {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  width: 400px;
+  max-width: calc(100vw - 48px);
+  background: var(--xp-bg-card, #ffffff);
+  border: 1px solid var(--xp-border-card, #e2e8f0);
+  border-radius: 16px;
+  box-shadow: 0 12px 36px -4px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.08);
+  pointer-events: auto;
+  color: var(--xp-text-main, #0f172a);
+  overflow: hidden;
+  z-index: 2147483647;
+  animation: xp-slide-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.xp-link-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px 16px;
+  border-bottom: 1px solid var(--xp-border-card, #f1f5f9);
+}
+.xp-link-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.xp-link-badge.safe { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+.xp-link-badge.suspicious { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+.xp-link-badge.high_risk { background: #ffe4e6; color: #be123c; border: 1px solid #fecdd3; }
+.xp-link-body {
+  padding: 14px 16px;
+}
+.xp-link-dest-box {
+  background: var(--xp-slider-track, #f8fafc);
+  border: 1px solid var(--xp-border-card, #e2e8f0);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.xp-link-dest-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+}
+.xp-link-dest-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--xp-text-main, #0f172a);
+  word-break: break-all;
+  line-height: 1.4;
+}
+.xp-link-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 14px;
+}
+
+/* ── Dedicated Checkout & Card Protection Banner ── */
+.xp-card-modal {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  width: 390px;
+  max-width: calc(100vw - 48px);
+  background: var(--xp-bg-card, #ffffff);
+  border: 1px solid var(--xp-border-card, #e2e8f0);
+  border-radius: 16px;
+  box-shadow: 0 12px 36px -4px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.08);
+  pointer-events: auto;
+  color: var(--xp-text-main, #0f172a);
+  overflow: hidden;
+  z-index: 2147483647;
+  animation: xp-slide-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.xp-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px 16px;
+  border-bottom: 1px solid var(--xp-border-card, #f1f5f9);
+}
+.xp-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.xp-card-badge.caution { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+.xp-card-badge.high_risk { background: #ffe4e6; color: #be123c; border: 1px solid #fecdd3; }
+.xp-card-body {
+  padding: 14px 16px;
+}
+.xp-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 14px;
+}
+
+/* ── Dedicated Webmail Phishing Banner ── */
+.xp-webmail-banner {
+  position: fixed;
+  top: 16px;
+  right: 24px;
+  width: 420px;
+  max-width: calc(100vw - 48px);
+  background: var(--xp-bg-card, #ffffff);
+  border: 1px solid #fecaca;
+  border-radius: 14px;
+  box-shadow: 0 12px 32px -4px rgba(185, 28, 28, 0.15), 0 4px 12px rgba(15, 23, 42, 0.08);
+  pointer-events: auto;
+  color: var(--xp-text-main, #0f172a);
+  overflow: hidden;
+  z-index: 2147483647;
+  animation: xp-slide-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.xp-webmail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px 16px;
+  background: #fff1f2;
+  border-bottom: 1px solid #ffe4e6;
+}
 `;
 
+// The field overlay icon uses the real XoraPass logo mark rather than a
+// generic shield, so the extension is immediately recognisable in any field.
+// We build the img at call-time so browser.runtime.getURL resolves correctly.
+function makeLogoIcon(): string {
+  try {
+    const url = browser.runtime.getURL('icons/icon16.png');
+    return `<img src="${url}" width="16" height="16" alt="XoraPass" style="display:block;pointer-events:none;image-rendering:auto;" />`;
+  } catch {
+    // Fallback to the teal shield if getURL is unavailable (unit test env, etc.)
+    return SHIELD_SVG;
+  }
+}
+
+// Used in modal headers, save-prompt, brand fallback, and risk banners.
 const SHIELD_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" ' +
   'fill="none" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
@@ -958,8 +1258,68 @@ const DANGER_SVG =
   '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/>' +
   '<line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
 
+let themePreference: 'light' | 'dark' | 'system' = 'system';
+let themeListenerInstalled = false;
+
+export function getEffectiveOverlayTheme(): 'dark' | 'light' {
+  if (themePreference === 'dark') return 'dark';
+  if (themePreference === 'light') return 'light';
+  const isLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+  return isLight ? 'light' : 'dark';
+}
+
+function applyEffectiveTheme(): void {
+  const isDark = getEffectiveOverlayTheme() === 'dark';
+  if (layer) {
+    if (isDark) {
+      layer.classList.remove('theme-light');
+      layer.classList.add('theme-dark');
+    } else {
+      layer.classList.remove('theme-dark');
+      layer.classList.add('theme-light');
+    }
+  }
+}
+
+export function initOverlayTheme(): void {
+  if (themeListenerInstalled) return;
+  themeListenerInstalled = true;
+
+  try {
+    browser.storage.local.get(['themePreference']).then((res: any) => {
+      if (res?.themePreference === 'dark' || res?.themePreference === 'light' || res?.themePreference === 'system') {
+        themePreference = res.themePreference;
+        applyEffectiveTheme();
+      }
+    });
+
+    browser.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === 'local' && changes['themePreference']) {
+        const next = changes['themePreference'].newValue;
+        if (next === 'dark' || next === 'light' || next === 'system') {
+          themePreference = next;
+          applyEffectiveTheme();
+        }
+      }
+    });
+
+    if (window.matchMedia) {
+      const media = window.matchMedia('(prefers-color-scheme: dark)');
+      media.addEventListener('change', () => {
+        if (themePreference === 'system') {
+          applyEffectiveTheme();
+        }
+      });
+    }
+  } catch (e) {
+    /* storage or matchMedia unavailable */
+  }
+}
+
 function ensureHost(): HTMLDivElement {
   if (layer && shadow) return layer;
+
+  initOverlayTheme();
 
   const host = document.createElement('div');
   host.id = HOST_ID;
@@ -976,6 +1336,7 @@ function ensureHost(): HTMLDivElement {
 
   layer = document.createElement('div');
   layer.className = 'layer';
+  applyEffectiveTheme();
   shadow.appendChild(layer);
 
   // <html> rather than <body>: survives pages that replace document.body.
@@ -1000,7 +1361,7 @@ export function attachIcon(input: HTMLInputElement, onActivate: () => void): boo
   icon.type = 'button';
   icon.className = 'icon';
   icon.setAttribute('aria-label', 'XoraPass autofill');
-  icon.innerHTML = SHIELD_SVG; // static trusted markup, no interpolation
+  icon.innerHTML = makeLogoIcon(); // XoraPass logo mark via runtime URL
 
   icon.addEventListener('mousedown', (e) => {
     // Prevent the input losing focus before we read it.
@@ -1018,6 +1379,7 @@ export function attachIcon(input: HTMLInputElement, onActivate: () => void): boo
   reposition();
   return true;
 }
+
 
 // Elements the page has placed at or near a field's right edge that our icon
 // must not sit on top of — reveal-password eyes, clear buttons, spinners. The
@@ -1063,9 +1425,28 @@ export function reposition(): void {
   for (const reg of registrations) {
     const rect = reg.input.getBoundingClientRect();
     const editable = !reg.input.disabled && !reg.input.readOnly;
+    let isVis = editable && isRectVisible(rect, viewport);
+    if (isVis && typeof (reg.input as any).checkVisibility === 'function') {
+      isVis = (reg.input as any).checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    }
 
-    if (!editable || !isRectVisible(rect, viewport)) {
-      reg.icon.style.display = 'none';
+    if (isVis) {
+      let parent = reg.input.parentElement;
+      while (parent && parent !== document.body && parent !== document.documentElement) {
+        const parentRect = parent.getBoundingClientRect();
+        if (parentRect.height < 10 || parentRect.width < 10) {
+          const style = window.getComputedStyle(parent);
+          if (style.overflow === 'hidden' || style.overflowY === 'hidden' || style.overflow === 'clip' || style.overflowY === 'clip') {
+            isVis = false;
+            break;
+          }
+        }
+        parent = parent.parentElement;
+      }
+    }
+
+    if (!isVis) {
+      reg.icon.style.setProperty('display', 'none', 'important');
       continue;
     }
 
@@ -1079,7 +1460,7 @@ export function reposition(): void {
     }
 
     const pos = computeIconPosition(rect, ICON_SIZE, 8, reg.offset);
-    reg.icon.style.display = 'flex';
+    reg.icon.style.setProperty('display', 'flex');
     reg.icon.style.left = `${pos.left}px`;
     reg.icon.style.top = `${pos.top}px`;
   }
@@ -1132,13 +1513,23 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
 
   if (opts.suggestion) {
     const sug = opts.suggestion;
+    let currentLength = sug.length || 20;
     const box = document.createElement('div');
     box.className = 'suggest';
 
+    const header = document.createElement('div');
+    header.className = 'suggest-header';
+
     const label = document.createElement('div');
     label.className = 'suggest-label';
-    label.textContent = 'Suggested password';
-    box.appendChild(label);
+    label.textContent = 'Password';
+    header.appendChild(label);
+
+    const lengthBadge = document.createElement('div');
+    lengthBadge.className = 'suggest-length-badge';
+    lengthBadge.textContent = `${currentLength} chars`;
+    header.appendChild(lengthBadge);
+    box.appendChild(header);
 
     const row = document.createElement('div');
     row.className = 'suggest-row';
@@ -1157,10 +1548,50 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
     refresh.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      value.textContent = sug.onRegenerate();
+      value.textContent = sug.onRegenerate(currentLength);
+      lengthBadge.textContent = `${value.textContent.length} chars`;
     });
     row.appendChild(refresh);
     box.appendChild(row);
+
+    // Length Slider bar
+    const maxConstraint = sug.maxLength && sug.maxLength > 4 ? sug.maxLength : undefined;
+    const minConstraint = sug.minLength && sug.minLength > 0 ? sug.minLength : 8;
+    const sliderMin = minConstraint;
+    const sliderMax = Math.max(sliderMin, maxConstraint ? Math.min(maxConstraint, 64) : 64);
+
+    if (currentLength < sliderMin) currentLength = sliderMin;
+    if (currentLength > sliderMax) currentLength = sliderMax;
+
+    const sliderContainer = document.createElement('div');
+    sliderContainer.className = 'suggest-slider-container';
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'suggest-slider';
+    slider.min = String(sliderMin);
+    slider.max = String(sliderMax);
+    slider.value = String(currentLength);
+    slider.setAttribute('aria-label', 'Password length');
+
+    slider.addEventListener('mousedown', (e) => e.stopPropagation());
+    slider.addEventListener('input', (e) => {
+      e.stopPropagation();
+      const len = parseInt((e.target as HTMLInputElement).value, 10);
+      currentLength = len;
+      lengthBadge.textContent = `${len} chars`;
+      value.textContent = sug.onRegenerate(len);
+    });
+
+    sliderContainer.appendChild(slider);
+    box.appendChild(sliderContainer);
+
+    if (maxConstraint && maxConstraint < 32) {
+      const hint = document.createElement('div');
+      hint.className = 'suggest-limit-hint';
+      hint.textContent = `ⓘ Field limited to max ${maxConstraint} characters by website`;
+      box.appendChild(hint);
+    }
 
     const use = document.createElement('button');
     use.type = 'button';
@@ -1892,14 +2323,14 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
 
   const badge = document.createElement('div');
   badge.className = 'xp-int-badge';
-  badge.textContent = 'XoraPass \u2014 phishing site blocked';
+  badge.textContent = 'XoraPass Shield \u2014 Phishing Attempt Blocked';
   card.appendChild(badge);
 
   const title = document.createElement('h1');
   title.className = 'xp-int-title';
   title.textContent = opts.expectedDomain
-    ? `This page is impersonating ${opts.expectedDomain}`
-    : 'This page is trying to steal your credentials';
+    ? `XoraPass Shield blocked this site: Impersonating ${opts.expectedDomain}`
+    : 'XoraPass Shield blocked this site: Potential Phishing Detected';
   card.appendChild(title);
 
   const body = document.createElement('p');
@@ -1989,7 +2420,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
 
   const foot = document.createElement('div');
   foot.className = 'xp-int-foot';
-  foot.textContent = 'Your vault stayed locked. No credentials were released to this page.';
+  foot.textContent = 'Credential Guard Active: Your vault stayed locked and no credentials or secrets were released to this page.';
   card.appendChild(foot);
 
   shell.appendChild(card);
@@ -2103,4 +2534,288 @@ export function showToast(title: string, message: string, durationMs = 4000): vo
     }
   }, durationMs);
 }
+
+let activeLinkModalEl: HTMLDivElement | null = null;
+
+export interface LinkInspectionData {
+  originalUrl: string;
+  finalUrl: string;
+  redirectsCount: number;
+  riskScore: number;
+  verdict: 'safe' | 'suspicious' | 'high_risk';
+  threats: string[];
+}
+
+/**
+ * Displays a clean in-page floating modal inspecting a right-clicked link.
+ */
+export function showLinkInspectionModal(data: LinkInspectionData): void {
+  if (activeLinkModalEl) {
+    activeLinkModalEl.remove();
+    activeLinkModalEl = null;
+  }
+
+  const root = ensureHost();
+  const card = document.createElement('div');
+  card.className = 'xp-link-modal';
+
+  const isHigh = data.verdict === 'high_risk';
+  const isSusp = data.verdict === 'suspicious';
+  const badgeClass = isHigh ? 'high_risk' : isSusp ? 'suspicious' : 'safe';
+  const badgeText = isHigh ? 'High Risk Phishing' : isSusp ? 'Suspicious Link' : 'Verified Safe';
+
+  card.innerHTML = `
+    <div class="xp-link-header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="xp-link-badge ${badgeClass}">${badgeText}</span>
+        <span style="font-size:11px;font-weight:700;color:#64748b;">Score: ${data.riskScore}/100</span>
+      </div>
+      <button class="risk-close" id="xp-link-modal-close" title="Close" style="cursor:pointer;background:none;border:none;font-size:18px;color:#94a3b8;line-height:1;">×</button>
+    </div>
+    <div class="xp-link-body">
+      <div style="font-weight:700;font-size:14px;color:var(--xp-text-main, #0f172a);margin-bottom:4px">
+        ${isHigh ? 'Phishing or Dangerous Destination' : isSusp ? 'Caution: Redirect or Unverified Domain' : 'Destination Appears Safe'}
+      </div>
+      <p style="font-size:12px;color:#64748b;margin:0 0 10px 0;line-height:1.45;">
+        ${isHigh ? 'XoraPass recommends NOT visiting this link. It exhibits indicators of spoofing or credential theft.' : 'Link destination resolved safely without executing untrusted scripts.'}
+      </p>
+
+      <div class="xp-link-dest-box">
+        <span class="xp-link-dest-label">Final Destination</span>
+        <span class="xp-link-dest-url" title="${data.finalUrl}">${data.finalUrl}</span>
+      </div>
+
+      ${data.redirectsCount > 0 ? `
+        <div style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:#64748b;">
+          <span style="font-weight:600;">Redirects:</span>
+          <span>${data.redirectsCount} hop(s) unwound from original URL</span>
+        </div>
+      ` : ''}
+
+      ${data.threats.length > 0 ? `
+        <div style="margin-top:10px;font-size:11.5px;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 10px;line-height:1.4;">
+          ${data.threats.map(t => `<div>• ${t}</div>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+
+    <div class="xp-link-actions">
+      <button class="risk-btn-dismiss" id="xp-link-modal-dismiss" style="padding:6px 12px;font-size:12px;">Close</button>
+      ${!isHigh ? `
+        <button class="risk-btn-primary" id="xp-link-modal-open" style="padding:6px 14px;font-size:12px;">Open Destination</button>
+      ` : `
+        <button class="risk-btn-secondary" id="xp-link-modal-bypass" style="padding:6px 12px;font-size:12px;color:#b91c1c;border-color:#fca5a5;">Open Anyway (Unsafe)</button>
+      `}
+    </div>
+
+    <div style="padding:8px 16px 10px;border-top:1px solid var(--xp-border-card, #f1f5f9);display:flex;align-items:center;justify-content:center;gap:7px;font-size:11px;color:#94a3b8;font-weight:600;">
+      <img src="${browser.runtime.getURL('xorapass_logo_mark.png')}" alt="XoraPass" style="width:15px;height:15px;object-fit:contain;display:block;" draggable="false" />
+      <span>XoraPass Shield Link Inspection</span>
+    </div>
+  `;
+
+  root.appendChild(card);
+  activeLinkModalEl = card;
+
+  const close = () => {
+    if (activeLinkModalEl) {
+      activeLinkModalEl.remove();
+      activeLinkModalEl = null;
+    }
+  };
+
+  card.querySelector('#xp-link-modal-close')?.addEventListener('click', close);
+  card.querySelector('#xp-link-modal-dismiss')?.addEventListener('click', close);
+  card.querySelector('#xp-link-modal-open')?.addEventListener('click', () => {
+    close();
+    window.open(data.finalUrl, '_blank', 'noopener,noreferrer');
+  });
+  card.querySelector('#xp-link-modal-bypass')?.addEventListener('click', () => {
+    close();
+    window.open(data.finalUrl, '_blank', 'noopener,noreferrer');
+  });
+}
+
+let activeCardModalEl: HTMLDivElement | null = null;
+
+export interface CheckoutProtectionData {
+  hostname: string;
+  riskScore: number;
+  reasons: string[];
+  isInsecureHttp: boolean;
+  onProceedAnyway?: () => void;
+}
+
+/**
+ * Displays a security review card when payment fields are detected on an unverified or risky site.
+ */
+export function showCheckoutProtectionBanner(data: CheckoutProtectionData): void {
+  if (activeCardModalEl) {
+    activeCardModalEl.remove();
+    activeCardModalEl = null;
+  }
+
+  const root = ensureHost();
+  const card = document.createElement('div');
+  card.className = 'xp-card-modal';
+
+  const isHigh = data.riskScore >= 70 || data.isInsecureHttp;
+  const badgeClass = isHigh ? 'high_risk' : 'caution';
+  const badgeText = isHigh ? 'High Risk Checkout' : 'Unverified Merchant';
+
+  card.innerHTML = `
+    <div class="xp-card-header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="xp-card-badge ${badgeClass}">${badgeText}</span>
+        <span style="font-size:11px;font-weight:700;color:#64748b;">Risk: ${data.riskScore}/100</span>
+      </div>
+      <button class="risk-close" id="xp-card-modal-close" title="Close" style="cursor:pointer;background:none;border:none;font-size:18px;color:#94a3b8;line-height:1;">×</button>
+    </div>
+    <div class="xp-card-body">
+      <div style="font-weight:700;font-size:14px;color:var(--xp-text-main, #0f172a);margin-bottom:4px">
+        ${isHigh ? 'Caution: Untrusted Payment Form' : 'Verify Merchant Before Payment'}
+      </div>
+      <p style="font-size:12px;color:#64748b;margin:0 0 10px 0;line-height:1.45;">
+        ${data.isInsecureHttp
+          ? 'This site is served over unencrypted HTTP. Credit card data entered here can be intercepted in transit.'
+          : 'XoraPass Shield detected credit card fields on a merchant domain not in your trusted vault history.'}
+      </p>
+
+      <div style="background:var(--xp-slider-track, #f8fafc);border:1px solid var(--xp-border-card, #e2e8f0);border-radius:10px;padding:8px 12px;margin-bottom:8px;font-size:12px;">
+        <span style="font-weight:700;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;display:block;margin-bottom:2px;">Merchant Origin</span>
+        <span style="font-weight:600;color:var(--xp-text-main, #0f172a);font-family:ui-monospace, monospace;">${data.hostname}</span>
+      </div>
+
+      ${data.reasons.length > 0 ? `
+        <div style="margin-top:6px;font-size:11.5px;color:#b45309;background:#fffbeb;border:1px solid #fef3c7;border-radius:8px;padding:8px 10px;line-height:1.4;">
+          ${data.reasons.map(r => `<div>• ${r}</div>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+
+    <div class="xp-card-actions">
+      <button class="risk-btn-dismiss" id="xp-card-modal-dismiss" style="padding:6px 12px;font-size:12px;">Dismiss</button>
+      <button class="risk-btn-primary" id="xp-card-modal-proceed" style="padding:6px 14px;font-size:12px;">I Trust This Merchant</button>
+    </div>
+
+    <div style="padding:8px 16px 10px;border-top:1px solid var(--xp-border-card, #f1f5f9);display:flex;align-items:center;justify-content:center;gap:7px;font-size:11px;color:#94a3b8;font-weight:600;">
+      <img src="${browser.runtime.getURL('xorapass_logo_mark.png')}" alt="XoraPass" style="width:15px;height:15px;object-fit:contain;display:block;" draggable="false" />
+      <span>XoraPass Shield Checkout Protection</span>
+    </div>
+  `;
+
+  root.appendChild(card);
+  activeCardModalEl = card;
+
+  const close = () => {
+    if (activeCardModalEl) {
+      activeCardModalEl.remove();
+      activeCardModalEl = null;
+    }
+  };
+
+  card.querySelector('#xp-card-modal-close')?.addEventListener('click', close);
+  card.querySelector('#xp-card-modal-dismiss')?.addEventListener('click', close);
+  card.querySelector('#xp-card-modal-proceed')?.addEventListener('click', () => {
+    close();
+    data.onProceedAnyway?.();
+  });
+}
+
+export function closeCheckoutProtectionBanner(): void {
+  if (activeCardModalEl) {
+    activeCardModalEl.remove();
+    activeCardModalEl = null;
+  }
+}
+
+let activeWebmailBannerEl: HTMLDivElement | null = null;
+
+export interface WebmailPhishingData {
+  displayName: string;
+  senderEmail: string;
+  reasons: string[];
+  riskScore: number;
+  onDismiss?: () => void;
+}
+
+/**
+ * Displays a non-intrusive in-page warning banner when sender impersonation is detected in webmail.
+ */
+export function showWebmailPhishingBanner(data: WebmailPhishingData): void {
+  if (activeWebmailBannerEl) {
+    activeWebmailBannerEl.remove();
+    activeWebmailBannerEl = null;
+  }
+
+  const root = ensureHost();
+  const card = document.createElement('div');
+  card.className = 'xp-webmail-banner';
+
+  card.innerHTML = `
+    <div class="xp-webmail-header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:11px;font-weight:800;color:#b91c1c;background:#fee2e2;padding:3px 8px;border-radius:6px;border:1px solid #fecaca;letter-spacing:0.04em;text-transform:uppercase;">Phishing Warning</span>
+        <span style="font-size:11px;font-weight:700;color:#991b1b;">Threat Score: ${data.riskScore}/100</span>
+      </div>
+      <button class="risk-close" id="xp-webmail-close" title="Close" style="cursor:pointer;background:none;border:none;font-size:18px;color:#94a3b8;line-height:1;">×</button>
+    </div>
+    <div style="padding:12px 16px;">
+      <div style="font-weight:700;font-size:13.5px;color:#991b1b;margin-bottom:4px;">
+        Sender Impersonation Detected
+      </div>
+      <p style="font-size:12px;color:#475569;margin:0 0 10px 0;line-height:1.45;">
+        This email exhibits characteristics of brand spoofing. The visible display name does not match the true originating sender address.
+      </p>
+
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:8px 12px;font-size:12px;display:flex;flex-direction:column;gap:3px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:#64748b;font-weight:600;">Display Name:</span>
+          <span style="color:#0f172a;font-weight:700;">${data.displayName || 'None'}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;">
+          <span style="color:#64748b;font-weight:600;">Actual Address:</span>
+          <span style="color:#b91c1c;font-weight:700;font-family:ui-monospace, monospace;">${data.senderEmail}</span>
+        </div>
+      </div>
+
+      ${data.reasons.length > 0 ? `
+        <div style="font-size:11.5px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 10px;line-height:1.4;">
+          ${data.reasons.map(r => `<div>• ${r}</div>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:8px 16px 12px;">
+      <button class="risk-btn-dismiss" id="xp-webmail-dismiss" style="padding:6px 14px;font-size:12px;">I Understand</button>
+    </div>
+
+    <div style="padding:7px 16px 9px;border-top:1px solid #f1f5f9;display:flex;align-items:center;justify-content:center;gap:7px;font-size:11px;color:#94a3b8;font-weight:600;">
+      <img src="${browser.runtime.getURL('xorapass_logo_mark.png')}" alt="XoraPass" style="width:14px;height:14px;object-fit:contain;display:block;" draggable="false" />
+      <span>XoraPass Shield Webmail Phishing Guard</span>
+    </div>
+  `;
+
+  root.appendChild(card);
+  activeWebmailBannerEl = card;
+
+  const close = () => {
+    if (activeWebmailBannerEl) {
+      activeWebmailBannerEl.remove();
+      activeWebmailBannerEl = null;
+    }
+    data.onDismiss?.();
+  };
+
+  card.querySelector('#xp-webmail-close')?.addEventListener('click', close);
+  card.querySelector('#xp-webmail-dismiss')?.addEventListener('click', close);
+}
+
+export function closeWebmailPhishingBanner(): void {
+  if (activeWebmailBannerEl) {
+    activeWebmailBannerEl.remove();
+    activeWebmailBannerEl = null;
+  }
+}
+
 
