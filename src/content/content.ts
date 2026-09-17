@@ -549,10 +549,44 @@ async function handleShortcutAutofill(): Promise<void> {
 // Field detection
 // ---------------------------------------------------------------------------
 
+// Checks if an element is hidden by an ancestor with overflow: hidden/clip and 0/tiny height
+function isClippedByAncestor(el: HTMLElement): boolean {
+  let parent = el.parentElement;
+  while (parent && parent !== document.body && parent !== document.documentElement) {
+    const parentRect = parent.getBoundingClientRect();
+    if (parentRect.height < 10 || parentRect.width < 10) {
+      const style = window.getComputedStyle(parent);
+      if (style.overflow === 'hidden' || style.overflowY === 'hidden' || style.overflow === 'clip' || style.overflowY === 'clip') {
+        return true;
+      }
+    }
+    parent = parent.parentElement;
+  }
+  return false;
+}
+
 // An input is fillable if it's visible and user-editable.
 function isFillable(el: HTMLInputElement): boolean {
   if (!el || el.type === 'hidden' || el.disabled || el.readOnly) return false;
-  return el.offsetParent !== null || el.getClientRects().length > 0;
+  if (el.offsetParent === null && el.offsetWidth === 0 && el.offsetHeight === 0) return false;
+
+  const rect = el.getBoundingClientRect();
+  if (rect.width < 50 || rect.height < 20) return false;
+
+  if (typeof (el as any).checkVisibility === 'function') {
+    try {
+      if (!(el as any).checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+    } catch {}
+  }
+
+  try {
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  } catch {}
+
+  if (isClippedByAncestor(el)) return false;
+
+  return true;
 }
 
 /**
@@ -643,12 +677,16 @@ function scanForLoginFields(): void {
         placeholder: el.getAttribute('placeholder'),
         ariaLabel: el.getAttribute('aria-label'),
         labelText,
+        role: el.getAttribute('role'),
+        className: el.className,
       })) {
         return true;
       }
 
-      // Fallback: If on AWS SSO / portal and there's only 1 visible editable text input, it's the username field
-      if (fillableInputs.length === 1 && (el.type === 'text' || el.type === 'email' || !el.type)) {
+      // Specific AWS Sign-in fallback: only on AWS domains if the field is the primary resolving input or username
+      const hostname = window.location.hostname;
+      if ((hostname.includes('aws.amazon.com') || hostname.includes('signin.aws')) &&
+          fillableInputs.length === 1 && (el.type === 'text' || el.type === 'email' || !el.type)) {
         return true;
       }
 
@@ -946,6 +984,8 @@ function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null
       id: el.id,
       placeholder: el.getAttribute('placeholder'),
       ariaLabel: el.getAttribute('aria-label'),
+      role: el.getAttribute('role'),
+      className: el.className,
     });
     if (matches) return el;
   }

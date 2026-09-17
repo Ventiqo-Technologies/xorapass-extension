@@ -1425,9 +1425,28 @@ export function reposition(): void {
   for (const reg of registrations) {
     const rect = reg.input.getBoundingClientRect();
     const editable = !reg.input.disabled && !reg.input.readOnly;
+    let isVis = editable && isRectVisible(rect, viewport);
+    if (isVis && typeof (reg.input as any).checkVisibility === 'function') {
+      isVis = (reg.input as any).checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    }
 
-    if (!editable || !isRectVisible(rect, viewport)) {
-      reg.icon.style.display = 'none';
+    if (isVis) {
+      let parent = reg.input.parentElement;
+      while (parent && parent !== document.body && parent !== document.documentElement) {
+        const parentRect = parent.getBoundingClientRect();
+        if (parentRect.height < 10 || parentRect.width < 10) {
+          const style = window.getComputedStyle(parent);
+          if (style.overflow === 'hidden' || style.overflowY === 'hidden' || style.overflow === 'clip' || style.overflowY === 'clip') {
+            isVis = false;
+            break;
+          }
+        }
+        parent = parent.parentElement;
+      }
+    }
+
+    if (!isVis) {
+      reg.icon.style.setProperty('display', 'none', 'important');
       continue;
     }
 
@@ -1441,7 +1460,7 @@ export function reposition(): void {
     }
 
     const pos = computeIconPosition(rect, ICON_SIZE, 8, reg.offset);
-    reg.icon.style.display = 'flex';
+    reg.icon.style.setProperty('display', 'flex');
     reg.icon.style.left = `${pos.left}px`;
     reg.icon.style.top = `${pos.top}px`;
   }

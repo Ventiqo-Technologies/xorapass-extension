@@ -33,6 +33,9 @@ describe('looksLikeUsername', () => {
 
   it('rejects search and one-time-code fields that mention user/login', () => {
     expect(looksLikeUsername({ type: 'text', name: 'user_search' })).toBe(false);
+    expect(looksLikeUsername({ type: 'search', name: 'user' })).toBe(false);
+    expect(looksLikeUsername({ type: 'text', role: 'searchbox', name: 'user' })).toBe(false);
+    expect(looksLikeUsername({ type: 'text', className: 'zgh-search-field' })).toBe(false);
     expect(looksLikeUsername({ type: 'text', id: 'login-otp' })).toBe(false);
     expect(looksLikeUsername({ type: 'text', name: 'account', placeholder: 'Promo code' })).toBe(false);
   });

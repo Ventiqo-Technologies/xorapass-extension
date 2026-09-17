@@ -11,13 +11,15 @@ export interface FieldAttrs {
   placeholder?: string | null;
   ariaLabel?: string | null;
   labelText?: string | null;
+  role?: string | null;
+  className?: string | null;
 }
 
 const USERNAME_HINT = /user|email|login|account|phone|mobile|identifier/i;
 
 // Fields that look username-ish by name but must never receive a username —
 // checked before the positive hints so "search-user" style inputs stay excluded.
-const NEGATIVE_HINT = /search|query|coupon|promo|captcha|otp|token|code|zip|postal/i;
+const NEGATIVE_HINT = /search|query|filter|find|lookup|keyword|coupon|promo|captcha|otp|token|code|zip|postal/i;
 
 /**
  * Heuristic for "is this the username/email input paired with a password
@@ -26,7 +28,10 @@ const NEGATIVE_HINT = /search|query|coupon|promo|captcha|otp|token|code|zip|post
  */
 export function looksLikeUsername(attrs: FieldAttrs): boolean {
   const type = (attrs.type || 'text').toLowerCase();
-  if (type === 'password' || type === 'hidden' || type === 'submit') return false;
+  if (type === 'password' || type === 'hidden' || type === 'submit' || type === 'search') return false;
+
+  const role = (attrs.role || '').toLowerCase();
+  if (role === 'searchbox') return false;
 
   const ac = (attrs.autocomplete || '').toLowerCase();
   // An explicit autocomplete token is authoritative in both directions.
@@ -37,7 +42,7 @@ export function looksLikeUsername(attrs: FieldAttrs): boolean {
   // AWS CloudScape Design System input: awsui-input-*
   if (id.startsWith('awsui-input')) return true;
 
-  const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel, attrs.labelText]
+  const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel, attrs.labelText, attrs.className]
     .filter(Boolean)
     .join(' ');
 
@@ -395,7 +400,7 @@ export function computeDropdownPosition(
  * decorating. Zero-size rects mean the field is hidden by CSS.
  */
 export function isRectVisible(rect: Rect, viewport: Viewport): boolean {
-  if (rect.width < 24 || rect.height < 12) return false;
+  if (rect.width < 50 || rect.height < 20) return false;
   if (rect.top + rect.height < 0 || rect.top > viewport.height) return false;
   if (rect.left + rect.width < 0 || rect.left > viewport.width) return false;
   return true;
