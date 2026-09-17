@@ -934,6 +934,50 @@ function scanWebmailMessages(): void {
     }
   }
 
+  // Yahoo & AOL Mail parsing
+  // Yahoo and AOL share the same mail rendering engine (Oath/Verizon Media)
+  if (window.location.hostname.includes('mail.yahoo.com') || window.location.hostname.includes('mail.aol.com')) {
+    // Target message view header
+    const senderContainer = document.querySelector('[data-test-id="message-view-sender"], [data-test-id="message-header-item"]');
+    if (senderContainer) {
+      const nameEl = senderContainer.querySelector('[data-test-id="sender-name"], .sender-name, span[role="gridcell"]');
+      const emailEl = senderContainer.querySelector('[data-test-id="sender-address"], .sender-address, [role="link"][href^="mailto:"]');
+      const displayName = (nameEl?.textContent || '').trim();
+      const rawEmail = (emailEl?.textContent || emailEl?.getAttribute('title') || emailEl?.getAttribute('href') || '').replace(/^mailto:/i, '').trim();
+      if (rawEmail && rawEmail.includes('@')) {
+        candidates.push({ displayName: displayName || rawEmail, email: rawEmail, raw: displayName ? `${displayName} <${rawEmail}>` : rawEmail });
+      }
+    }
+  }
+
+  // Proton Mail parsing
+  if (window.location.hostname.includes('proton.')) {
+    const senderContainer = document.querySelector('.message-header, [data-testid="message-header"]');
+    if (senderContainer) {
+      const nameEl = senderContainer.querySelector('[data-testid="message-header:sender-name"], .sender-name');
+      const emailEl = senderContainer.querySelector('[data-testid="message-header:sender-address"], .sender-address');
+      const displayName = (nameEl?.textContent || '').trim();
+      const rawEmail = (emailEl?.textContent || emailEl?.getAttribute('title') || '').replace(/[<>]/g, '').trim();
+      if (rawEmail && rawEmail.includes('@')) {
+        candidates.push({ displayName: displayName || rawEmail, email: rawEmail, raw: displayName ? `${displayName} <${rawEmail}>` : rawEmail });
+      }
+    }
+  }
+
+  // Zoho Mail parsing
+  if (window.location.hostname.includes('mail.zoho.')) {
+    const senderContainer = document.querySelector('.zmSender, .zmSenderDetails, .zmMailHeader');
+    if (senderContainer) {
+      const nameEl = senderContainer.querySelector('.zmSenderName, [data-zm-sender]');
+      const emailEl = senderContainer.querySelector('.zmSenderEmail, [data-zm-email], [email]');
+      const displayName = (nameEl?.textContent || '').trim();
+      const rawEmail = (emailEl?.getAttribute('email') || emailEl?.textContent || '').replace(/[<>]/g, '').trim();
+      if (rawEmail && rawEmail.includes('@')) {
+        candidates.push({ displayName: displayName || rawEmail, email: rawEmail, raw: displayName ? `${displayName} <${rawEmail}>` : rawEmail });
+      }
+    }
+  }
+
   for (const c of candidates) {
     if (warnedSendersOnPage.has(c.raw)) continue;
     const analysis = analyzeEmailSender(c.raw);

@@ -141,6 +141,15 @@ export function isSupportedWebmail(hostname: string): boolean {
     h === 'mail.google.com' ||
     h === 'outlook.live.com' ||
     h === 'outlook.office.com' ||
-    h === 'outlook.office365.com'
+    h === 'outlook.office365.com' ||
+    h === 'mail.yahoo.com' ||
+    h.endsWith('.mail.yahoo.com') ||
+    h === 'mail.aol.com' ||
+    h === 'mail.proton.me' ||
+    h === 'mail.protonmail.com' ||
+    h === 'mail.zoho.com' ||
+    h === 'mail.zoho.eu' ||
+    h === 'mail.zoho.in'
   );
 }
+

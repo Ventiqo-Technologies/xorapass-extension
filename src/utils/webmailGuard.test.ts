@@ -74,6 +74,18 @@ describe('webmailGuard', () => {
       expect(isSupportedWebmail('mail.google.com')).toBe(true);
       expect(isSupportedWebmail('outlook.live.com')).toBe(true);
       expect(isSupportedWebmail('outlook.office.com')).toBe(true);
+      expect(isSupportedWebmail('outlook.office365.com')).toBe(true);
+    });
+
+    it('identifies Yahoo, AOL, Proton, and Zoho Mail', () => {
+      expect(isSupportedWebmail('mail.yahoo.com')).toBe(true);
+      expect(isSupportedWebmail('uk.mail.yahoo.com')).toBe(true);
+      expect(isSupportedWebmail('mail.aol.com')).toBe(true);
+      expect(isSupportedWebmail('mail.proton.me')).toBe(true);
+      expect(isSupportedWebmail('mail.protonmail.com')).toBe(true);
+      expect(isSupportedWebmail('mail.zoho.com')).toBe(true);
+      expect(isSupportedWebmail('mail.zoho.eu')).toBe(true);
+      expect(isSupportedWebmail('mail.zoho.in')).toBe(true);
       expect(isSupportedWebmail('example.com')).toBe(false);
     });
   });
