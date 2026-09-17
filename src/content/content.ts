@@ -577,7 +577,8 @@ function scanForLoginFields(): void {
         placeholder: passInput.getAttribute('placeholder'),
         ariaLabel: passInput.getAttribute('aria-label'),
       },
-      hasSibling
+      hasSibling,
+      window.location.href
     );
 
     // Sign-up fields are worth decorating even with an empty vault — that is
@@ -1053,7 +1054,8 @@ function applyGeneratedPassword(passInput: HTMLInputElement, password: string): 
         placeholder: other.getAttribute('placeholder'),
         ariaLabel: other.getAttribute('aria-label'),
       },
-      true
+      true,
+      window.location.href
     );
     if (isNew) autofillField(other, password);
   }

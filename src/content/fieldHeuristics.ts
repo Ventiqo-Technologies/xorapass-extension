@@ -68,6 +68,12 @@ export function looksLikeAwsAccountId(attrs: FieldAttrs): boolean {
 
 const NEW_PASSWORD_HINT = /new|signup|sign-up|register|create|confirm|repeat|retype|verify/i;
 
+// URL path/search tokens that reliably indicate a sign-up or account-creation
+// page, used as a page-level fallback when field attributes give no signal
+// (e.g. Zoho signup.html uses id="password", no autocomplete, no placeholder).
+const SIGNUP_URL_HINT =
+  /signup|sign-up|register|join|create[_-]?account|new[_-]?account|enroll|onboarding/i;
+
 /**
  * Whether a password field is being used to choose a *new* password (sign-up,
  * password change) rather than to enter an existing one. The autocomplete
@@ -76,8 +82,15 @@ const NEW_PASSWORD_HINT = /new|signup|sign-up|register|create|confirm|repeat|ret
  *
  * `hasSibling` should be true when the page has more than one password field,
  * which on its own is a strong sign of a "password + confirm" pair.
+ *
+ * `pageUrl` (optional) is the full page URL. When the path/search contains a
+ * signup/register keyword, a lone generic password field is treated as new.
  */
-export function looksLikeNewPassword(attrs: FieldAttrs, hasSibling = false): boolean {
+export function looksLikeNewPassword(
+  attrs: FieldAttrs,
+  hasSibling = false,
+  pageUrl?: string
+): boolean {
   const ac = (attrs.autocomplete || '').toLowerCase();
   if (ac.includes('new-password')) return true;
   if (ac.includes('current-password')) return false;
@@ -87,7 +100,21 @@ export function looksLikeNewPassword(attrs: FieldAttrs, hasSibling = false): boo
     .join(' ');
 
   if (NEW_PASSWORD_HINT.test(hints)) return true;
-  return hasSibling;
+  if (hasSibling) return true;
+
+  // Page-level URL fallback: if the path or query string signals a sign-up
+  // flow, treat the field as new so a generate-password option is offered.
+  if (pageUrl) {
+    try {
+      const url = new URL(pageUrl);
+      const pathAndSearch = url.pathname + url.search;
+      if (SIGNUP_URL_HINT.test(pathAndSearch)) return true;
+    } catch {
+      // Malformed URL — ignore.
+    }
+  }
+
+  return false;
 }
 
 /** Minimal rectangle shape — matches the fields we need from a DOMRect. */

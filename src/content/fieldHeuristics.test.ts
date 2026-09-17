@@ -91,6 +91,22 @@ describe('looksLikeNewPassword', () => {
     expect(looksLikeNewPassword({ name: 'password', id: 'login-pw' })).toBe(false);
     expect(looksLikeNewPassword({ autocomplete: 'current-password' })).toBe(false);
   });
+
+  it('uses page URL path as a fallback when field attrs are generic', () => {
+    // Zoho signup.html — id="password", no autocomplete, no sibling
+    expect(looksLikeNewPassword({ name: 'password', id: 'password' }, false, 'https://zoho.com/signup.html')).toBe(true);
+    // GitHub join page
+    expect(looksLikeNewPassword({ name: 'user[password]', id: 'user_password' }, false, 'https://github.com/join')).toBe(true);
+    // Generic /register path
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://example.com/register')).toBe(true);
+    // create-account in path
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://example.com/create-account')).toBe(true);
+    // onboarding flow
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://app.example.com/onboarding')).toBe(true);
+    // Ordinary login page should NOT be affected
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://accounts.zoho.com/signin')).toBe(false);
+    expect(looksLikeNewPassword({ name: 'password' }, false, 'https://login.github.com/')).toBe(false);
+  });
 });
 
 describe('computeIconPosition', () => {
