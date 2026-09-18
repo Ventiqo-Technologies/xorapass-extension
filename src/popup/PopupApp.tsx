@@ -449,6 +449,21 @@ export const PopupApp: React.FC = () => {
   const [extensionAudit, setExtensionAudit] = useState<ExtensionAuditSummary | null>(null);
   const [isAuditingExtensions, setIsAuditingExtensions] = useState(false);
   const [extensionAuditDenied, setExtensionAuditDenied] = useState(false);
+  // Always-on Shield status (paid; keeps protecting while the vault is locked).
+  const [shieldState, setShieldState] = useState<{
+    active: boolean;
+    killSwitch: boolean;
+    entitlement: { planAllows: boolean; userEnabled: boolean } | null;
+    blocklistSize: number;
+  } | null>(null);
+  useEffect(() => {
+    browser.runtime
+      .sendMessage({ type: 'SHIELD_GET_STATE' })
+      .then((st: any) => {
+        if (st && typeof st.active === 'boolean') setShieldState(st);
+      })
+      .catch(() => undefined);
+  }, [unlocked]);
 
   // Theme preference ('dark' | 'light' | 'system')
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
@@ -1226,6 +1241,8 @@ export const PopupApp: React.FC = () => {
   };
 
   const handleLogout = async () => {
+    // Revoke this browser's always-on Shield credential before signing out.
+    await browser.runtime.sendMessage({ type: 'SHIELD_SIGN_OUT' }).catch(() => undefined);
     await clearVaultCache();
     await browser.runtime.sendMessage({ type: 'LOCK_VAULT' });
     setUnlocked(false);
@@ -3040,6 +3057,23 @@ export const PopupApp: React.FC = () => {
                   <p className="text-xs text-slate-300 leading-snug relative z-10">
                     Continuous zero-knowledge phishing defense, lookalike detection, and credential guard.
                   </p>
+                  {shieldState && (
+                    <p className="text-[11px] leading-snug relative z-10 font-semibold">
+                      {shieldState.active ? (
+                        <span className="text-emerald-300">
+                          Always-on protection: active{shieldState.blocklistSize > 0 ? ` · ${shieldState.blocklistSize.toLocaleString()} known threats` : ''} · keeps working while locked
+                        </span>
+                      ) : shieldState.killSwitch ? (
+                        <span className="text-amber-300">Always-on protection is temporarily paused by XoraPass.</span>
+                      ) : shieldState.entitlement && !shieldState.entitlement.planAllows ? (
+                        <span className="text-slate-400">Always-on protection (works while locked) is included in paid plans.</span>
+                      ) : shieldState.entitlement && !shieldState.entitlement.userEnabled ? (
+                        <span className="text-slate-400">Always-on protection is off — turn on Phishing &amp; Lookalike Shield in Settings.</span>
+                      ) : (
+                        <span className="text-slate-400">Sign in to enable always-on protection.</span>
+                      )}
+                    </p>
+                  )}
                 </div>
 
                 {/* 1. ON-DEMAND SITE SCANNER CARD */}

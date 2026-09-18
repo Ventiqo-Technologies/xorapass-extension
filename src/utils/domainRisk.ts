@@ -596,12 +596,27 @@ export function disabledDomainRiskAssessment(pageHost: string): DomainRiskAssess
   };
 }
 
+/**
+ * Runtime tuning from the Shield remote config (see utils/shieldConfig.ts):
+ * individual rules can be switched off and the warn/block thresholds moved
+ * without an extension release. Omitted → the built-in behaviour.
+ */
+export interface AssessOptions {
+  disabledRules?: readonly string[];
+  warnScore?: number;
+  blockScore?: number;
+}
+
 export function assessDomainRisk(
   pageHost: string,
   knownHosts: string[],
   allowlist: string[] = [],
-  pageUrl = ''
+  pageUrl = '',
+  options: AssessOptions = {}
 ): DomainRiskAssessment {
+  const ruleOn = (rule: string) => !(options.disabledRules || []).includes(rule);
+  const warnScore = options.warnScore ?? 40;
+  const blockScore = options.blockScore ?? 75;
   const pageHostname = normalizeHostname(pageHost);
   const pageReg = registrableDomain(pageHostname);
 
@@ -734,6 +749,7 @@ export function assessDomainRisk(
     const decodedSldSkeleton = toHomoglyphSkeleton(decodedSld);
 
     if (
+      ruleOn('homograph') &&
       (isPuny || decodedPageHost !== pageHostname || pageHasConfusables) &&
       (decodedRegSkeleton === target ||
         decodedSldSkeleton === brand ||
@@ -761,7 +777,7 @@ export function assessDomainRisk(
     const pageSldClean = pageSld.toLowerCase();
     const isExactBrandSld = pageSldClean === brand;
 
-    if (isBrandInHost && pageReg !== target) {
+    if (ruleOn('brand_abuse') && isBrandInHost && pageReg !== target) {
       // Check if brand is combined with login/secure/verify keywords or hyphenated/subdomain
       const brandRegex = new RegExp(`(^|[-._])${brand}([-._]|$)`, 'i');
       const isTokenMatch = brandRegex.test(pageHostname) || brandRegex.test(pageSld) || brandRegex.test(decodedPageHost);
@@ -804,7 +820,7 @@ export function assessDomainRisk(
     // Threat C: Suspicious TLD / Domain Extension Changes
     // e.g. user has paypal.com, current site is paypal.xyz or paypal.top
     // ──────────────────────────────────────────────────────────────────────────
-    if (isExactBrandSld && pageReg !== target) {
+    if (ruleOn('tld_change') && isExactBrandSld && pageReg !== target) {
       const isHighTld = assessment.signals.isHighRiskTld;
       // Only flag as suspicious TLD change if hosted on a known high-risk/disposable TLD or has security keywords
       if (isHighTld || hasSuspiciousKeyword) {
@@ -834,7 +850,7 @@ export function assessDomainRisk(
     const distSld = damerauLevenshtein(pageSldClean, brand);
     const minLen = Math.min(pageSldClean.length, brand.length);
 
-    if (distReg !== 0 && pageReg !== target) {
+    if (ruleOn('typosquat') && distReg !== 0 && pageReg !== target) {
       // 1-2 char typosquats on brand name or registrable domain
       if (
         (distSld > 0 && distSld <= 2 && minLen >= 4 && Math.abs(pageSldClean.length - brand.length) <= 2) ||
@@ -855,7 +871,7 @@ export function assessDomainRisk(
   }
 
   // Generic check for high-risk TLD with security keywords (even if brand not directly recognized)
-  if (assessment.signals.isHighRiskTld && assessment.signals.suspiciousKeywords.length >= 2 && highestScore < 60) {
+  if (ruleOn('keyword_tld') && assessment.signals.isHighRiskTld && assessment.signals.suspiciousKeywords.length >= 2 && highestScore < 60) {
     highestScore = 65;
     detectedReasons.push(
       `Suspicious pattern: Multiple auth/login keywords [${assessment.signals.suspiciousKeywords.join(
@@ -869,10 +885,10 @@ export function assessDomainRisk(
   assessment.riskScore = highestScore;
 
   // Determine Risk Level and Decision
-  if (highestScore >= 75) {
+  if (highestScore >= blockScore) {
     assessment.riskLevel = highestScore >= 90 ? 'critical' : 'high';
     assessment.decision = 'block';
-  } else if (highestScore >= 40) {
+  } else if (highestScore >= warnScore) {
     assessment.riskLevel = 'medium';
     assessment.decision = 'warn';
   } else if (highestScore > 0) {

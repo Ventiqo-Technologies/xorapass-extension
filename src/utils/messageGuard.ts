@@ -99,6 +99,12 @@ export const KNOWN_MESSAGE_TYPES = [
   // inside a (usually cross-origin) payment iframe. Carries no data at all;
   // the background only relays "card fields exist" to the tab's top frame.
   'CARD_FIELDS_IN_FRAME',
+  // Always-on Shield. SHIELD_NAV_CHECK comes from the document_start content
+  // script and carries nothing — the background uses the sender frame's URL.
+  'SHIELD_NAV_CHECK',
+  'SHIELD_GET_STATE',
+  'SHIELD_REFRESH',
+  'SHIELD_SIGN_OUT',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -152,6 +158,10 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'AUDIT_EXTENSIONS',
   // Site Scanner: builds a report from the vault's saved hostnames — popup only.
   'SCAN_SITE',
+  // Shield account state / sign-out: popup only.
+  'SHIELD_GET_STATE',
+  'SHIELD_REFRESH',
+  'SHIELD_SIGN_OUT',
   // A page has no business arming (or re-arming, and so postponing) the
   // clipboard clear; only the popup copies passwords.
   'CLIPBOARD_COPIED',

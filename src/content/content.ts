@@ -301,6 +301,13 @@ function worthAssessingSignals(): PageSignals | undefined {
 // on hostname+decision so repeated loadCredentials() calls (tab focus,
 // visibility change, SPA route watchers) don't re-pop an already-seen alert.
 async function maybeShowProactiveRiskWarning(): Promise<void> {
+  // The document_start navigation guard (shieldNav.ts) may already have
+  // shown the full-page warning for this page — never stack a second one,
+  // and if the user chose to continue there, don't re-block them here.
+  const nav = (window as unknown as { __xoraShieldNav?: { host: string; action: string; shown: boolean } })
+    .__xoraShieldNav;
+  const navHandled = !!nav && nav.shown && nav.host === window.location.hostname;
+  if (navHandled && nav!.action === 'block') return;
   const decision = domainRisk?.decision;
   const isRisky = decision === 'block' || decision === 'warn' || decision === 'require_approval';
   const key = `${window.location.hostname}|${decision || ''}`;
@@ -319,7 +326,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // A server-confirmed critical verdict on a credential page gets the full-page
   // block instead of a corner banner: at that point letting the user read and
   // interact with the page at all is the risk being managed.
-  if (domainRisk?.showInterstitial) {
+  if (domainRisk?.showInterstitial && !navHandled) {
     lastWarnedRiskKey = key;
     closeRiskWarning();
     showPhishingInterstitial({

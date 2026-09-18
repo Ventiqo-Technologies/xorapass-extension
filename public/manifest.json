@@ -45,6 +45,11 @@
   },
   "content_scripts": [
     {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["shieldNav.js"],
+      "run_at": "document_start"
+    },
+    {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_idle"

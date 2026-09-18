@@ -18,6 +18,22 @@ import {
 import { isFillableCategory } from '../utils/fillPolicy';
 import type { PageSignals } from '../utils/pageSignals';
 import { buildSiteSafetyReport } from '../utils/siteScanner';
+import {
+  initShield,
+  handleShieldAlarm,
+  getShieldConfig,
+  getShieldCredential,
+  isShieldActive,
+  ensureShieldDeviceToken,
+  shieldSignOut,
+  checkBlocklist,
+  getShieldState,
+  refreshShieldConfig,
+  refreshShieldEntitlement,
+  refreshBlocklist,
+} from './shield';
+import { decideNavigation, isTrustedHost, shouldEscalateRemote, threatReason } from '../utils/shieldEngine';
+import type { ShieldConfig } from '../utils/shieldConfig';
 import { unwrapLink, isShortenerUrl, buildLinkVerdict } from '../utils/linkInspect';
 import { KNOWN_BRAND_DOMAINS } from '../utils/promptSafety';
 import { auditInstalledExtensions } from '../utils/extensionAudit';
@@ -295,7 +311,11 @@ async function scheduleClipboardClear(): Promise<number> {
   return seconds;
 }
 
+// Always-on Shield: config/kill switch, entitlement and blocklist sync.
+initShield({ getJwt });
+
 browser.alarms.onAlarm.addListener((alarm) => {
+  if (handleShieldAlarm(alarm.name)) return;
   // When the idle timer fires, purge the decrypted vault from session storage.
   if (alarm.name === AUTO_LOCK_ALARM) {
     // console.debug('[XoraPass] auto-lock fired -> clearing session');
@@ -894,6 +914,85 @@ function sensitivityForItems(items: VaultItem[]): 'standard' | 'high' | 'critica
  * RELEASE cannot drift apart — they must reach the same verdict from the same
  * inputs, which is the bug this consolidates away.
  */
+/** Local-heuristic tuning from the Shield remote config. */
+function shieldAssessOptions(cfg: ShieldConfig) {
+  return {
+    disabledRules: cfg.heuristics.disabled_rules,
+    warnScore: cfg.heuristics.warn_score,
+    blockScore: cfg.heuristics.block_score,
+  };
+}
+
+/**
+ * The listing-path L3 gate: ask the server only for pages the local layers
+ * found suspicious, or untrusted pages asking for a credential.
+ */
+function listingRemoteGate(
+  hostname: string,
+  knownHosts: string[],
+  formContext: FormThreatContext | undefined,
+  pageSignals: PageSignals | undefined
+) {
+  return (local: DomainRiskAssessment, cfg: ShieldConfig): boolean => {
+    const actionHost = formContext?.actionUrl ? extractHostname(formContext.actionUrl) : '';
+    return shouldEscalateRemote({
+      config: cfg,
+      local,
+      trusted: isTrustedHost(hostname, knownHosts, cfg.trusted_domains),
+      pageSignals,
+      hasCredentialForm: !!(formContext?.hasPasswordField || formContext?.isLoginForm),
+      crossOriginFormAction: !!actionHost && registrableDomain(actionHost) !== registrableDomain(hostname),
+    });
+  };
+}
+
+/** Folds a confirmed blocklist hit into an assessment as a hard block. */
+function blocklistAssessment(base: DomainRiskAssessment, threatType: string): DomainRiskAssessment {
+  return {
+    ...base,
+    riskScore: 100,
+    riskLevel: 'critical',
+    decision: 'block',
+    reasons: Array.from(new Set([threatReason(threatType), ...base.reasons])),
+    safeWarningMessage: threatReason(threatType),
+  };
+}
+
+/**
+ * Navigation guard (L0 → L1 → L2) for a top-level page that is still
+ * loading. Fast and local; the server is only contacted to confirm a
+ * blocklist prefix hit.
+ */
+async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
+  const cfg = await getShieldConfig();
+  const url = sender.url || sender.tab?.url || '';
+  const typingGuardMs = cfg.nav_guard.typing_guard_ms;
+  const allow = { action: 'allow' as const, layer: 'disabled', reasons: [] as string[], typingGuardMs };
+  if (sender.frameId !== 0 || !/^https?:\/\//i.test(url)) return allow;
+  const active = await isShieldActive();
+  if (!active) return allow;
+
+  const host = extractHostname(url);
+  if (hasRiskApproval(sender.tab?.id, host)) return { ...allow, layer: 'allowlist' };
+
+  const [allowlist, session] = await Promise.all([
+    getDomainAllowlist(),
+    browser.storage.session.get(['unlocked', 'vaultItems']),
+  ]);
+  const items = (session as Record<string, unknown>).unlocked
+    ? ((session as Record<string, unknown>).vaultItems as VaultItem[] | undefined)
+    : undefined;
+  const knownHosts = (items || [])
+    .filter((i) => !!i.url)
+    .map((i) => extractHostname(i.url!))
+    .filter(Boolean);
+
+  const blocklistHit = await checkBlocklist(url);
+  const local = knownHosts.length > 0 ? assessDomainRisk(host, knownHosts, allowlist, url, shieldAssessOptions(cfg)) : null;
+  const decision = decideNavigation({ url, config: cfg, active, userAllowlist: allowlist, knownHosts, blocklistHit, local });
+  return { ...decision, typingGuardMs };
+}
+
 async function evaluateDomainRisk(opts: {
   hostname: string;
   currentUrl: string;
@@ -904,11 +1003,27 @@ async function evaluateDomainRisk(opts: {
   aiContext?: { isAISession?: boolean; agentId?: string; toolName?: string };
   sensitivity: 'standard' | 'high' | 'critical';
   pageSignals?: PageSignals;
+  /**
+   * Vault locked: the plan gate is the always-on Shield entitlement (the
+   * session JWT is gone), and calls authenticate with the Shield device token.
+   */
+  locked?: boolean;
+  /**
+   * L3 gate (see shouldEscalateRemote). Omitted → always ask the server,
+   * which is what the credential-RELEASE paths want.
+   */
+  remoteGate?: (local: DomainRiskAssessment, cfg: ShieldConfig) => boolean;
 }): Promise<DomainRiskAssessment> {
-  const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+  const cfg = await getShieldConfig();
+  const domainRiskOn = opts.locked
+    ? await isShieldActive()
+    : await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
   if (!domainRiskOn) return disabledDomainRiskAssessment(opts.hostname);
 
-  let risk = assessDomainRisk(opts.hostname, opts.knownHosts, opts.allowlist, opts.currentUrl);
+  let risk = assessDomainRisk(opts.hostname, opts.knownHosts, opts.allowlist, opts.currentUrl, shieldAssessOptions(cfg));
+
+  // Remote kill switch applies to every path; the gate only to the listing.
+  if (!cfg.remote.enabled || (opts.remoteGate && !opts.remoteGate(risk, cfg))) return risk;
 
   const remoteRisk = await checkDomainRiskRemote(
     opts.currentUrl,
@@ -917,7 +1032,7 @@ async function evaluateDomainRisk(opts: {
     opts.aiContext,
     opts.sensitivity,
     globalThis.fetch,
-    getJwt,
+    getShieldCredential,
     opts.pageSignals
   );
 
@@ -1030,6 +1145,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
         void scheduleTokenRefresh();
+        // Always-on Shield: get/rotate this browser's locked-mode credential.
+        if (jwt) void ensureShieldDeviceToken(jwt, email);
         // console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', (decryptedItems as unknown[]).length, 'items )');
         return { success: true };
       });
@@ -1084,9 +1201,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const enabled = !!msg.payload?.enabled;
     clearRemoteRiskCache();
     clearRiskApprovals();
-    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => ({
-      success,
-    }));
+    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => {
+      // The user's own toggle is part of the always-on Shield entitlement.
+      void refreshShieldEntitlement();
+      return { success };
+    });
   }
 
   if (type === 'GET_DOMAIN_RISK_HISTORY') {
@@ -1202,7 +1321,29 @@ browser.runtime.onMessage.addListener((message, sender) => {
       ]);
 
       if (!res.unlocked || !res.vaultItems) {
-        return { credentials: [], disabled, lookalike: null, risk: null };
+        // Locked: nothing to fill, but always-on Shield still protects the
+        // page (paid entitlement; device-token auth). With no saved sites to
+        // compare against, detection comes from the blocklist, the server's
+        // threat intel and its page classifier — escalated only for pages
+        // that ask for a credential (see listingRemoteGate).
+        if (disabled || !(await isShieldActive())) {
+          return { credentials: [], disabled, lookalike: null, risk: null };
+        }
+        const lockedRisk = await evaluateDomainRisk({
+          hostname,
+          currentUrl,
+          knownHosts: [],
+          allowlist,
+          savedDomain: '',
+          formContext,
+          pageSignals,
+          sensitivity: 'standard',
+          locked: true,
+          remoteGate: listingRemoteGate(hostname, [], formContext, pageSignals),
+        });
+        const hit = lockedRisk.decision === 'block' ? null : await checkBlocklist(currentUrl);
+        const risk = hit ? blocklistAssessment(lockedRisk, hit.threatType) : lockedRisk;
+        return { credentials: [], disabled, lookalike: null, risk, locked: true };
       }
 
       // If the user disabled autofill for this site, offer nothing.
@@ -1239,6 +1380,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         formContext,
         pageSignals,
         sensitivity: sensitivityForItems(matching),
+        remoteGate: listingRemoteGate(hostname, knownHosts, formContext, pageSignals),
       });
 
       // Maintain legacy lookalike compatibility for existing UI callers
@@ -1664,6 +1806,29 @@ browser.runtime.onMessage.addListener((message, sender) => {
       .catch(() => ({ success: false }));
   }
 
+  if (type === 'SHIELD_NAV_CHECK') {
+    // Navigation-time check from the document_start script (shieldNav.ts).
+    // The URL is the sender frame's REAL URL, never a payload value.
+    return handleShieldNavCheck(sender);
+  }
+
+  if (type === 'SHIELD_GET_STATE') {
+    return getShieldState();
+  }
+
+  if (type === 'SHIELD_REFRESH') {
+    return (async () => {
+      await refreshShieldConfig();
+      await refreshShieldEntitlement();
+      await refreshBlocklist();
+      return getShieldState();
+    })();
+  }
+
+  if (type === 'SHIELD_SIGN_OUT') {
+    return shieldSignOut().then(() => ({ success: true }));
+  }
+
   if (type === 'SCAN_SITE') {
     return (async () => {
       let targetUrl = msg.payload?.url;
@@ -2033,6 +2198,7 @@ async function applyBridgedSession(
 
   void scheduleAutoLock();
   void scheduleAiHeartbeat();
+  void ensureShieldDeviceToken(token, email);
   // Without this, a bridged session with a refresh token now correctly
   // stored would still never proactively renew -- only the reactive 401
   // backstop in apiJwt() would eventually catch it, and only once something

@@ -132,6 +132,16 @@ export function clearRemoteRiskCache(): void {
 }
 
 /**
+ * Builds the Authorization header value for a risk call. The credential is a
+ * session JWT, or — while the vault is locked — a ready-made
+ * "Shield <device-token>" value (see background/shield.ts), which the backend
+ * accepts on the Shield / Domain Risk read paths only.
+ */
+export function authHeaderValue(credential: string): string {
+  return /^(Bearer|Shield) /.test(credential) ? credential : `Bearer ${credential}`;
+}
+
+/**
  * Reduces a URL to scheme://host/path — no userinfo, query or fragment — so
  * nothing token-like ever leaves the device in a risk check. Returns '' for
  * anything without an http(s) host.
@@ -267,7 +277,7 @@ export async function checkDomainRiskRemote(
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const jwt = await getJwtOrEmpty(getJwtFn);
   if (jwt) {
-    headers['Authorization'] = `Bearer ${jwt}`;
+    headers['Authorization'] = authHeaderValue(jwt);
   }
 
   try {
@@ -383,7 +393,7 @@ export async function reportPhishing(
 ): Promise<boolean> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const jwt = await getJwtOrEmpty(getJwtFn);
-  if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
+  if (jwt) headers['Authorization'] = authHeaderValue(jwt);
 
   try {
     const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/report`, {
@@ -419,7 +429,7 @@ export async function checkDomainRiskEnabled(
 
   const headers: Record<string, string> = {};
   const jwt = await getJwtOrEmpty(getJwtFn);
-  if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
+  if (jwt) headers['Authorization'] = authHeaderValue(jwt);
 
   try {
     const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/status`, { headers });
