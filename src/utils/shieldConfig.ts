@@ -22,6 +22,7 @@ export interface ShieldConfig {
   remote: { enabled: boolean; min_local_score: number; on_credential_forms: boolean };
   heuristics: { disabled_rules: LocalRule[]; warn_score: number; block_score: number };
   config_refresh_minutes: number;
+  ai_scan: { enabled: boolean };
   trusted_domains: string[];
 }
 
@@ -33,6 +34,7 @@ export const DEFAULT_SHIELD_CONFIG: ShieldConfig = Object.freeze({
   remote: { enabled: true, min_local_score: 25, on_credential_forms: true },
   heuristics: { disabled_rules: [], warn_score: 40, block_score: 75 },
   config_refresh_minutes: 15,
+  ai_scan: { enabled: true },
   trusted_domains: [],
 }) as ShieldConfig;
 
@@ -59,6 +61,7 @@ export function coerceShieldConfig(input: unknown): ShieldConfig {
   const bl = obj(o.blocklist);
   const rem = obj(o.remote);
   const heur = obj(o.heuristics);
+  const ai = obj(o.ai_scan);
 
   const rules = Array.isArray(heur.disabled_rules)
     ? Array.from(
@@ -105,6 +108,7 @@ export function coerceShieldConfig(input: unknown): ShieldConfig {
     },
     heuristics: { disabled_rules: rules, warn_score: warn, block_score: block },
     config_refresh_minutes: int(o.config_refresh_minutes, 5, 1440, d.config_refresh_minutes),
+    ai_scan: { enabled: bool(ai.enabled, d.ai_scan.enabled) },
     trusted_domains: trusted,
   };
 }

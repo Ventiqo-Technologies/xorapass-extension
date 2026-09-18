@@ -32,7 +32,8 @@ import {
   refreshShieldEntitlement,
   refreshBlocklist,
 } from './shield';
-import { decideNavigation, isTrustedHost, shouldEscalateRemote, threatReason } from '../utils/shieldEngine';
+import { decideNavigation, isTrustedHost, isAllowlistedHost, shouldEscalateRemote, threatReason } from '../utils/shieldEngine';
+import { sanitizeUrlForRiskCheck, authHeaderValue } from '../utils/domainRiskService';
 import type { ShieldConfig } from '../utils/shieldConfig';
 import { unwrapLink, isShortenerUrl, buildLinkVerdict } from '../utils/linkInspect';
 import { KNOWN_BRAND_DOMAINS } from '../utils/promptSafety';
@@ -946,6 +947,80 @@ function listingRemoteGate(
   };
 }
 
+// Per-page AI verdicts, so a reload or SPA re-render doesn't re-ask the
+// server (which has its own shared cache and quota on top).
+const aiScanCache = new Map<string, { res: AiScanResult; expires: number }>();
+const AI_SCAN_CACHE_MS = 30 * 60 * 1000;
+
+interface AiScanResult {
+  verdict: 'scam' | 'suspicious' | 'benign' | 'unavailable';
+  risk_score: number;
+  scam_type?: string;
+  title?: string;
+  message?: string;
+}
+
+/**
+ * AI scam analysis for the sender's top frame. Paid (always-on entitlement),
+ * kill-switchable, and never for allowlisted, saved or trusted sites. The
+ * URL is the sender frame's real URL (query-stripped), never the payload's.
+ */
+async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload: any): Promise<AiScanResult> {
+  const none: AiScanResult = { verdict: 'unavailable', risk_score: 0 };
+  if (sender.frameId !== 0) return none;
+  const url = sender.url || sender.tab?.url || '';
+  if (!/^https?:\/\//i.test(url)) return none;
+  const cfg = await getShieldConfig();
+  if (!cfg.shield_enabled || !cfg.ai_scan.enabled) return none;
+  if (!(await isShieldActive())) return none;
+
+  const host = extractHostname(url);
+  const [allowlist, session] = await Promise.all([
+    getDomainAllowlist(),
+    browser.storage.session.get(['unlocked', 'vaultItems']),
+  ]);
+  const items = (session as Record<string, unknown>).unlocked
+    ? ((session as Record<string, unknown>).vaultItems as VaultItem[] | undefined)
+    : undefined;
+  const knownHosts = (items || []).filter((i) => !!i.url).map((i) => extractHostname(i.url!)).filter(Boolean);
+  if (isAllowlistedHost(host, allowlist) || isTrustedHost(host, knownHosts, cfg.trusted_domains)) return none;
+
+  const cleanUrl = sanitizeUrlForRiskCheck(url);
+  const page = payload?.page;
+  const cacheKey = `${cleanUrl}|${typeof page?.title === 'string' ? page.title : ''}`;
+  const hit = aiScanCache.get(cacheKey);
+  if (hit && hit.expires > Date.now()) return hit.res;
+
+  const cred = await getShieldCredential();
+  if (!cred) return none;
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/shield/ai-scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
+      body: JSON.stringify({ url: cleanUrl, page, page_signals: payload?.pageSignals }),
+    });
+    if (!res.ok) return none;
+    const data = (await res.json()) as Partial<AiScanResult>;
+    const out: AiScanResult = {
+      verdict: data.verdict === 'scam' || data.verdict === 'suspicious' || data.verdict === 'benign' ? data.verdict : 'unavailable',
+      risk_score: typeof data.risk_score === 'number' ? Math.max(0, Math.min(100, data.risk_score)) : 0,
+      scam_type: typeof data.scam_type === 'string' ? data.scam_type : undefined,
+      title: typeof data.title === 'string' ? data.title.slice(0, 120) : undefined,
+      message: typeof data.message === 'string' ? data.message.slice(0, 600) : undefined,
+    };
+    if (out.verdict !== 'unavailable') {
+      aiScanCache.set(cacheKey, { res: out, expires: Date.now() + AI_SCAN_CACHE_MS });
+      if (aiScanCache.size > 500) {
+        const now = Date.now();
+        for (const [k, v] of aiScanCache) if (v.expires < now) aiScanCache.delete(k);
+      }
+    }
+    return out;
+  } catch {
+    return none;
+  }
+}
+
 /** Folds a confirmed blocklist hit into an assessment as a hard block. */
 function blocklistAssessment(base: DomainRiskAssessment, threatType: string): DomainRiskAssessment {
   return {
@@ -1810,6 +1885,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // Navigation-time check from the document_start script (shieldNav.ts).
     // The URL is the sender frame's REAL URL, never a payload value.
     return handleShieldNavCheck(sender);
+  }
+
+  if (type === 'SHIELD_AI_SCAN') {
+    return handleShieldAiScan(sender, msg.payload);
   }
 
   if (type === 'SHIELD_GET_STATE') {

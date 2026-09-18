@@ -35,6 +35,7 @@ import {
   showPhishingInterstitial,
   closePhishingInterstitial,
   isInterstitialOpen,
+  isRiskWarningOpen,
   clearAll,
   showToast,
   showLinkInspectionModal,
@@ -48,6 +49,7 @@ import {
 import { looksLikeCardNumber, looksLikeCvv, looksLikeCardExpiry } from './cardGuard';
 import { isSupportedWebmail, analyzeEmailSender } from '../utils/webmailGuard';
 import { collectPageSignals, isWorthAssessing, type PageSignals } from '../utils/pageSignals';
+import { collectPageText, shouldAiScan } from '../utils/pageContent';
 import { WEB_APP_URL } from '../utils/config';
 
 let activeCredentials: OverlayCredential[] = [];
@@ -280,6 +282,7 @@ function loadCredentials(): void {
       scanForLoginFields();
       scanForPaymentFields();
       scanWebmailMessages();
+      scheduleAiScan();
     })
     .catch((err) => {
       console.warn('[XoraPass Content] Error requesting credentials:', err);
@@ -294,6 +297,73 @@ function loadCredentials(): void {
 function worthAssessingSignals(): PageSignals | undefined {
   const signals = collectPageSignals();
   return isWorthAssessing(signals) ? signals : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// AI scam analysis (always-on Shield, paid)
+// ---------------------------------------------------------------------------
+// Pages without a password field (fake tech-support, fake shops, crypto and
+// prize scams, "paste this command" traps) slip past the credential-focused
+// checks. For pages whose local scam cues (or risk score) justify it, a small
+// redacted text extract is sent for an AI verdict — see utils/pageContent.ts
+// for exactly what leaves the device. The background gates this on the
+// entitlement, the kill switch and trusted/allowlisted sites; the server
+// enforces a monthly quota. Warning copy comes from XoraPass, never the model.
+let aiScannedHref = '';
+let aiScanTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleAiScan(): void {
+  if (window !== window.top) return;
+  const href = window.location.href.split('#')[0];
+  if (aiScannedHref === href || aiScanTimer) return;
+  // Give client-rendered pages a moment to put their text on screen.
+  aiScanTimer = setTimeout(() => {
+    aiScanTimer = null;
+    void maybeRunAiScan(href);
+  }, 1500);
+}
+
+async function maybeRunAiScan(href: string): Promise<void> {
+  if (aiScannedHref === href || window.location.href.split('#')[0] !== href) return;
+  aiScannedHref = href;
+  const nav = (window as unknown as { __xoraShieldNav?: { shown: boolean } }).__xoraShieldNav;
+  if (nav?.shown || isInterstitialOpen()) return;
+
+  let page;
+  try {
+    page = collectPageText(document);
+  } catch {
+    return;
+  }
+  if (!shouldAiScan(page.cues, domainRisk?.riskScore ?? 0)) return;
+
+  const res: any = await browser.runtime
+    .sendMessage({ type: 'SHIELD_AI_SCAN', payload: { page, pageSignals: worthAssessingSignals() } })
+    .catch(() => null);
+  if (!res || typeof res.risk_score !== 'number' || res.risk_score < 45) return;
+  if (window.location.href.split('#')[0] !== href || isInterstitialOpen()) return;
+  // Never downgrade or replace a stronger warning that is already showing.
+  if (isRiskWarningOpen() && domainRisk?.decision === 'block') return;
+
+  const blocking = res.risk_score >= 75;
+  showRiskWarning({
+    severity: blocking ? 'block' : 'warn',
+    title: typeof res.title === 'string' && res.title ? res.title : 'Possible Scam Detected',
+    message:
+      typeof res.message === 'string' && res.message
+        ? res.message
+        : 'XoraPass Shield found signs that this page is a scam. Don\'t enter personal or payment details.',
+    currentDomain: window.location.hostname,
+    riskLevel: blocking ? 'high' : 'medium',
+    onReportPhishing: () =>
+      browser.runtime
+        .sendMessage({
+          type: 'REPORT_PHISHING',
+          payload: { hostname: window.location.hostname, decision: blocking ? 'block' : 'warn', riskLevel: blocking ? 'high' : 'medium' },
+        })
+        .then((r: any) => ({ success: !!r?.success }))
+        .catch(() => ({ success: false })),
+  });
 }
 
 // Surfaces a risky decision immediately, without requiring the user to click

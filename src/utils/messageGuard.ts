@@ -102,6 +102,9 @@ export const KNOWN_MESSAGE_TYPES = [
   // Always-on Shield. SHIELD_NAV_CHECK comes from the document_start content
   // script and carries nothing — the background uses the sender frame's URL.
   'SHIELD_NAV_CHECK',
+  // AI scam analysis: from the content script, carries only the redacted
+  // page extract (utils/pageContent.ts); the URL comes from the sender.
+  'SHIELD_AI_SCAN',
   'SHIELD_GET_STATE',
   'SHIELD_REFRESH',
   'SHIELD_SIGN_OUT',
@@ -432,6 +435,20 @@ export function validateMessage(
         return { ok: false, reason: 'bad-payload' };
       }
       break;
+    case 'SHIELD_AI_SCAN': {
+      const page = payload?.page as { title?: unknown; text?: unknown } | undefined;
+      if (
+        !page ||
+        typeof page !== 'object' ||
+        typeof page.title !== 'string' ||
+        typeof page.text !== 'string' ||
+        page.text.length > 4000 ||
+        page.title.length > 400
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    }
     case 'SCAN_SITE':
       if (payload && payload.url !== undefined && typeof payload.url !== 'string') {
         return { ok: false, reason: 'bad-payload' };
