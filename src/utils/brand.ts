@@ -82,6 +82,30 @@ export const getBrandMetadata = (label: string, category: string, url?: string):
   if (isMatch(['nvidia'], ['nvidia.com'])) {
     return { icon: Server, colorClass: 'text-green-500', borderClass: 'border-green-500/25', bgClass: 'bg-green-500/10', logoUrl: '/icons/nvidia.png' };
   }
+  if (isMatch(['google cloud', 'gcp'], ['cloud.google.com', 'console.cloud.google.com'])) {
+    return { icon: Cloud, colorClass: 'text-blue-400', borderClass: 'border-blue-500/25', bgClass: 'bg-blue-500/10', faviconUrl: getFaviconUrl('cloud.google.com') };
+  }
+  if (isMatch(['heroku'], ['heroku.com', 'herokuapp.com'])) {
+    return { icon: Server, colorClass: 'text-purple-400', borderClass: 'border-purple-500/25', bgClass: 'bg-purple-500/10', faviconUrl: getFaviconUrl('heroku.com') };
+  }
+  if (isMatch(['render'], ['render.com'])) {
+    return { icon: Server, colorClass: 'text-indigo-400', borderClass: 'border-indigo-500/25', bgClass: 'bg-indigo-500/10', faviconUrl: getFaviconUrl('render.com') };
+  }
+  if (isMatch(['terraform', 'hashicorp', 'vault'], ['app.terraform.io', 'hashicorp.com'])) {
+    return { icon: Server, colorClass: 'text-purple-400', borderClass: 'border-purple-500/25', bgClass: 'bg-purple-500/10', faviconUrl: getFaviconUrl('hashicorp.com') };
+  }
+  if (isMatch(['datadog'], ['datadoghq.com'])) {
+    return { icon: Shield, colorClass: 'text-purple-400', borderClass: 'border-purple-500/25', bgClass: 'bg-purple-500/10', faviconUrl: getFaviconUrl('datadoghq.com') };
+  }
+  if (isMatch(['new relic', 'newrelic'], ['newrelic.com'])) {
+    return { icon: Shield, colorClass: 'text-teal-400', borderClass: 'border-teal-500/25', bgClass: 'bg-teal-500/10', faviconUrl: getFaviconUrl('newrelic.com') };
+  }
+  if (isMatch(['pagerduty'], ['pagerduty.com'])) {
+    return { icon: Shield, colorClass: 'text-green-400', borderClass: 'border-green-500/25', bgClass: 'bg-green-500/10', faviconUrl: getFaviconUrl('pagerduty.com') };
+  }
+  if (isMatch(['sentry'], ['sentry.io'])) {
+    return { icon: Shield, colorClass: 'text-purple-400', borderClass: 'border-purple-500/25', bgClass: 'bg-purple-500/10', faviconUrl: getFaviconUrl('sentry.io') };
+  }
 
   // ── 2. Enterprise SSO & Identity Providers ────────────────────────────────
   if (isMatch(['okta'], ['okta.com', 'oktapreview.com', 'okta-emea.com'])) {
@@ -92,6 +116,21 @@ export const getBrandMetadata = (label: string, category: string, url?: string):
   }
   if (isMatch(['auth0'], ['auth0.com'])) {
     return { icon: Shield, colorClass: 'text-orange-400', borderClass: 'border-orange-500/25', bgClass: 'bg-orange-500/10', faviconUrl: getFaviconUrl('auth0.com') };
+  }
+  if (isMatch(['crowdstrike'], ['crowdstrike.com'])) {
+    return { icon: Shield, colorClass: 'text-red-400', borderClass: 'border-red-500/25', bgClass: 'bg-red-500/10', faviconUrl: getFaviconUrl('crowdstrike.com') };
+  }
+  if (isMatch(['palo alto', 'paloalto', 'prisma'], ['paloaltonetworks.com'])) {
+    return { icon: Shield, colorClass: 'text-blue-400', borderClass: 'border-blue-500/25', bgClass: 'bg-blue-500/10', faviconUrl: getFaviconUrl('paloaltonetworks.com') };
+  }
+  if (isMatch(['sentinelone'], ['sentinelone.com'])) {
+    return { icon: Shield, colorClass: 'text-purple-400', borderClass: 'border-purple-500/25', bgClass: 'bg-purple-500/10', faviconUrl: getFaviconUrl('sentinelone.com') };
+  }
+  if (isMatch(['1password', 'onepassword'], ['1password.com'])) {
+    return { icon: Shield, colorClass: 'text-blue-400', borderClass: 'border-blue-500/25', bgClass: 'bg-blue-500/10', faviconUrl: getFaviconUrl('1password.com') };
+  }
+  if (isMatch(['bitwarden'], ['bitwarden.com'])) {
+    return { icon: Shield, colorClass: 'text-blue-400', borderClass: 'border-blue-500/25', bgClass: 'bg-blue-500/10', faviconUrl: getFaviconUrl('bitwarden.com') };
   }
 
   // ── 3. Google, Microsoft, Apple & Email Suites ────────────────────────────
@@ -157,6 +196,33 @@ export const getBrandMetadata = (label: string, category: string, url?: string):
   if (isMatch(['fortinet', 'fortigate'], ['fortinet.com'])) {
     return { icon: Shield, colorClass: 'text-red-400', borderClass: 'border-red-500/25', bgClass: 'bg-red-500/10', logoUrl: '/icons/fortinet.png' };
   }
+  if (isMatch(['zoom'], ['zoom.us', 'zoom.com'])) {
+    return { icon: Chrome, colorClass: 'text-blue-400', borderClass: 'border-blue-500/25', bgClass: 'bg-blue-500/10', faviconUrl: getFaviconUrl('zoom.us') };
+  }
+  if (isMatch(['intercom'], ['intercom.com', 'intercom.io'])) {
+    return { icon: Chrome, colorClass: 'text-blue-400', borderClass: 'border-blue-500/25', bgClass: 'bg-blue-500/10', faviconUrl: getFaviconUrl('intercom.com') };
+  }
+  if (isMatch(['freshdesk', 'freshworks'], ['freshdesk.com', 'freshworks.com'])) {
+    return { icon: Chrome, colorClass: 'text-teal-400', borderClass: 'border-teal-500/25', bgClass: 'bg-teal-500/10', faviconUrl: getFaviconUrl('freshworks.com') };
+  }
+  if (isMatch(['servicenow'], ['service-now.com', 'servicenow.com'])) {
+    return { icon: Shield, colorClass: 'text-green-400', borderClass: 'border-green-500/25', bgClass: 'bg-green-500/10', faviconUrl: getFaviconUrl('servicenow.com') };
+  }
+  if (isMatch(['monday'], ['monday.com'])) {
+    return { icon: Shield, colorClass: 'text-red-400', borderClass: 'border-red-500/25', bgClass: 'bg-red-500/10', faviconUrl: getFaviconUrl('monday.com') };
+  }
+  if (isMatch(['asana'], ['asana.com'])) {
+    return { icon: Shield, colorClass: 'text-pink-400', borderClass: 'border-pink-500/25', bgClass: 'bg-pink-500/10', faviconUrl: getFaviconUrl('asana.com') };
+  }
+  if (isMatch(['clickup'], ['clickup.com'])) {
+    return { icon: Shield, colorClass: 'text-purple-400', borderClass: 'border-purple-500/25', bgClass: 'bg-purple-500/10', faviconUrl: getFaviconUrl('clickup.com') };
+  }
+  if (isMatch(['airtable'], ['airtable.com'])) {
+    return { icon: FileText, colorClass: 'text-amber-400', borderClass: 'border-amber-500/25', bgClass: 'bg-amber-500/10', faviconUrl: getFaviconUrl('airtable.com') };
+  }
+  if (isMatch(['miro'], ['miro.com'])) {
+    return { icon: FileText, colorClass: 'text-amber-400', borderClass: 'border-amber-500/25', bgClass: 'bg-amber-500/10', faviconUrl: getFaviconUrl('miro.com') };
+  }
 
   // ── 5. AI & Machine Learning ──────────────────────────────────────────────
   if (isMatch(['openai', 'chatgpt'], ['openai.com', 'chatgpt.com'])) {
@@ -170,6 +236,18 @@ export const getBrandMetadata = (label: string, category: string, url?: string):
   }
   if (isMatch(['huggingface', 'hugging face'], ['huggingface.co'])) {
     return { icon: Server, colorClass: 'text-amber-400', borderClass: 'border-amber-500/25', bgClass: 'bg-amber-500/10', faviconUrl: getFaviconUrl('huggingface.co') };
+  }
+  if (isMatch(['gemini', 'google ai', 'google deepmind'], ['gemini.google.com', 'ai.google.dev', 'deepmind.google'])) {
+    return { icon: Shield, colorClass: 'text-blue-400', borderClass: 'border-blue-500/25', bgClass: 'bg-blue-500/10', faviconUrl: getFaviconUrl('gemini.google.com') };
+  }
+  if (isMatch(['mistral'], ['mistral.ai', 'console.mistral.ai'])) {
+    return { icon: Shield, colorClass: 'text-orange-400', borderClass: 'border-orange-500/25', bgClass: 'bg-orange-500/10', faviconUrl: getFaviconUrl('mistral.ai') };
+  }
+  if (isMatch(['grok', 'xai'], ['x.ai', 'grok.com'])) {
+    return { icon: Shield, colorClass: 'text-slate-200', borderClass: 'border-slate-700', bgClass: 'bg-slate-800', faviconUrl: getFaviconUrl('x.ai') };
+  }
+  if (isMatch(['midjourney'], ['midjourney.com'])) {
+    return { icon: Shield, colorClass: 'text-slate-200', borderClass: 'border-slate-700', bgClass: 'bg-slate-800', faviconUrl: getFaviconUrl('midjourney.com') };
   }
 
   // ── 6. Payments & E-Commerce ──────────────────────────────────────────────
@@ -191,6 +269,18 @@ export const getBrandMetadata = (label: string, category: string, url?: string):
   if (isMatch(['amazon'], ['amazon.com'])) {
     return { icon: Cloud, colorClass: 'text-amber-500', borderClass: 'border-amber-500/25', bgClass: 'bg-amber-500/10', logoUrl: '/icons/aws.png' };
   }
+  if (isMatch(['wise', 'transferwise'], ['wise.com'])) {
+    return { icon: CreditCard, colorClass: 'text-emerald-400', borderClass: 'border-emerald-500/25', bgClass: 'bg-emerald-500/10', faviconUrl: getFaviconUrl('wise.com') };
+  }
+  if (isMatch(['revolut'], ['revolut.com'])) {
+    return { icon: CreditCard, colorClass: 'text-slate-200', borderClass: 'border-slate-700', bgClass: 'bg-slate-800', faviconUrl: getFaviconUrl('revolut.com') };
+  }
+  if (isMatch(['brex'], ['brex.com'])) {
+    return { icon: CreditCard, colorClass: 'text-indigo-400', borderClass: 'border-indigo-500/25', bgClass: 'bg-indigo-500/10', faviconUrl: getFaviconUrl('brex.com') };
+  }
+  if (isMatch(['paddle'], ['paddle.com'])) {
+    return { icon: CreditCard, colorClass: 'text-green-400', borderClass: 'border-green-500/25', bgClass: 'bg-green-500/10', faviconUrl: getFaviconUrl('paddle.com') };
+  }
 
   // ── 7. Social, Media & Entertainment ──────────────────────────────────────
   if (isMatch(['facebook', 'meta'], ['facebook.com', 'meta.com', 'messenger.com'])) {
@@ -210,6 +300,24 @@ export const getBrandMetadata = (label: string, category: string, url?: string):
   }
   if (isMatch(['spotify'], ['spotify.com'])) {
     return { icon: Shield, colorClass: 'text-emerald-400', borderClass: 'border-emerald-500/25', bgClass: 'bg-emerald-500/10', faviconUrl: getFaviconUrl('spotify.com') };
+  }
+  if (isMatch(['tiktok'], ['tiktok.com'])) {
+    return { icon: Shield, colorClass: 'text-slate-200', borderClass: 'border-slate-700', bgClass: 'bg-slate-800', faviconUrl: getFaviconUrl('tiktok.com') };
+  }
+  if (isMatch(['reddit'], ['reddit.com', 'redd.it'])) {
+    return { icon: Chrome, colorClass: 'text-orange-400', borderClass: 'border-orange-500/25', bgClass: 'bg-orange-500/10', faviconUrl: getFaviconUrl('reddit.com') };
+  }
+  if (isMatch(['discord'], ['discord.com', 'discord.gg'])) {
+    return { icon: Chrome, colorClass: 'text-indigo-400', borderClass: 'border-indigo-500/25', bgClass: 'bg-indigo-500/10', faviconUrl: getFaviconUrl('discord.com') };
+  }
+  if (isMatch(['twitch'], ['twitch.tv'])) {
+    return { icon: Chrome, colorClass: 'text-purple-400', borderClass: 'border-purple-500/25', bgClass: 'bg-purple-500/10', faviconUrl: getFaviconUrl('twitch.tv') };
+  }
+  if (isMatch(['pinterest'], ['pinterest.com', 'pin.it'])) {
+    return { icon: Chrome, colorClass: 'text-red-400', borderClass: 'border-red-500/25', bgClass: 'bg-red-500/10', faviconUrl: getFaviconUrl('pinterest.com') };
+  }
+  if (isMatch(['whatsapp'], ['whatsapp.com', 'wa.me'])) {
+    return { icon: Chrome, colorClass: 'text-emerald-400', borderClass: 'border-emerald-500/25', bgClass: 'bg-emerald-500/10', faviconUrl: getFaviconUrl('whatsapp.com') };
   }
 
   // ── 8. Generic keyword categories ─────────────────────────────────────────
