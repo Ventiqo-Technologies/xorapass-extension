@@ -16,7 +16,9 @@
 // Built as its own self-contained IIFE (vite --mode shieldnav).
 
 import browser from 'webextension-polyfill';
-import { showPhishingInterstitial, closePhishingInterstitial } from './overlay';
+import { showPhishingInterstitial, closePhishingInterstitial, showRiskWarning, showConfirmDialog } from './overlay';
+import { detectScamCues } from '../utils/pageContent';
+import { techSupportScamScore, TECH_SUPPORT_WARN, isNotificationBait, type BehaviorKind } from '../utils/scamBehavior';
 
 interface NavVerdict {
   action: 'allow' | 'warn' | 'block';
@@ -103,10 +105,122 @@ const MAX_GUARD_MS = 1500;
     });
   };
 
+  // ── Behaviour events from the MAIN-world hooks (pageHooks.ts) ───────────
+  // Buffered until the navigation verdict says whether always-on Shield is
+  // active for this user; everything is local, nothing leaves the device
+  // except a short per-tab summary for the Site Scanner.
+  let shieldActive: boolean | null = null;
+  const queued: any[] = [];
+  const behaviors = new Set<BehaviorKind>();
+  let warnedTechSupport = false;
+  let warnedClickFix = false;
+  let warnedNotification = false;
+
+  const pageText = () => {
+    try {
+      return [document.title, (document.body?.innerText || '').slice(0, 6000)].join('\n');
+    } catch {
+      return document.title || '';
+    }
+  };
+
+  const tellBackground = (kind: string, detail: Record<string, unknown> = {}) => {
+    browser.runtime.sendMessage({ type: 'SHIELD_BEHAVIOR', payload: { kind, ...detail } }).catch(() => undefined);
+  };
+
+  const reply = (id: string, allow: boolean) => {
+    window.postMessage({ __xoraShieldReply: 'v1', id, allow }, '*');
+  };
+
+  const handle = (d: any) => {
+    const kind = String(d.kind || '');
+    if (kind === 'wallet_check') {
+      if (!shieldActive || state.shown) return reply(String(d.id), true);
+      tellBackground('wallet_check', { level: d.level });
+      void showConfirmDialog({
+        title: d.level === 'danger' ? 'XoraPass blocked a risky wallet request' : 'Check this wallet request',
+        body: [
+          String(d.summary || 'This site is asking your crypto wallet for a risky permission.'),
+          'Wallet-draining scams work exactly like this. Only continue if you fully trust this site and understand the request.',
+        ],
+        confirmLabel: 'Block request',
+        cancelLabel: 'Continue anyway',
+      }).then((block) => reply(String(d.id), !block));
+      return;
+    }
+    if (!shieldActive) return;
+    tellBackground(kind, kind === 'fingerprint' ? { techniques: d.techniques } : {});
+
+    if (kind === 'clickfix' && !warnedClickFix) {
+      warnedClickFix = true;
+      showRiskWarning({
+        severity: 'block',
+        title: "Blocked a Dangerous 'Paste This Command' Trick",
+        message:
+          'This page tried to copy a hidden command to your clipboard and will ask you to paste it into Run or a terminal. That command would install malware. XoraPass stopped the copy — do not follow the page\'s instructions.',
+        currentDomain: location.hostname,
+        riskLevel: 'critical',
+      });
+      return;
+    }
+    if (kind === 'notification_request' && !warnedNotification) {
+      const text = pageText();
+      if (isNotificationBait(!!d.activated, text, detectScamCues(text))) {
+        warnedNotification = true;
+        showRiskWarning({
+          severity: 'warn',
+          title: 'Notification Spam Trick',
+          message:
+            'This page wants permission to send you notifications, using a trick ("click Allow to continue"). Sites like this flood you with scam pop-ups. Choose Block.',
+          currentDomain: location.hostname,
+          riskLevel: 'medium',
+        });
+      }
+      return;
+    }
+    if (['fullscreen', 'keyboard_lock', 'pointer_lock', 'beforeunload', 'history_flood', 'autoplay_audio'].includes(kind)) {
+      behaviors.add(kind as BehaviorKind);
+      if (warnedTechSupport) return;
+      const score = techSupportScamScore(behaviors, detectScamCues(pageText()));
+      if (score >= TECH_SUPPORT_WARN) {
+        warnedTechSupport = true;
+        try {
+          if (document.fullscreenElement) void document.exitFullscreen();
+          (navigator as any).keyboard?.unlock?.();
+          if (document.pointerLockElement) document.exitPointerLock();
+        } catch {
+          /* best effort */
+        }
+        tellBackground('tech_support_scam', { score });
+        showRiskWarning({
+          severity: 'block',
+          title: 'Fake Tech-Support Scam',
+          message:
+            "This page is trying to trap you (full screen, locked keyboard or back button) and pretends your device has a problem. It's a scam. Don't call any number or install anything. Close this tab — press and hold Esc if the page won't let go.",
+          currentDomain: location.hostname,
+          riskLevel: 'critical',
+        });
+      }
+    }
+  };
+
+  window.addEventListener('message', (ev) => {
+    const d = ev.data;
+    if (ev.source !== window || !d || d.__xoraShield !== 'v1') return;
+    if (shieldActive === null) queued.push(d);
+    else handle(d);
+  });
+
+  const setActive = (active: boolean) => {
+    shieldActive = active;
+    for (const d of queued.splice(0)) handle(d);
+  };
+
   browser.runtime
     .sendMessage({ type: 'SHIELD_NAV_CHECK' })
     .then((v: NavVerdict | undefined) => {
       clearTimeout(failOpen);
+      setActive(!!v && v.layer !== 'disabled');
       state.action = v?.action || 'allow';
       if (v?.action === 'block') {
         // Keep holding input until the user explicitly chooses to continue.
@@ -117,6 +231,7 @@ const MAX_GUARD_MS = 1500;
     })
     .catch(() => {
       clearTimeout(failOpen);
+      setActive(false);
       state.action = 'allow';
       release();
     });

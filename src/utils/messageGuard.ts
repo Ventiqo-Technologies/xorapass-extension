@@ -108,6 +108,14 @@ export const KNOWN_MESSAGE_TYPES = [
   'SHIELD_GET_STATE',
   'SHIELD_REFRESH',
   'SHIELD_SIGN_OUT',
+  // Page-behaviour summary from the document_start script (shieldNav.ts):
+  // a behaviour kind only, never page content.
+  'SHIELD_BEHAVIOR',
+  // Secure browsing / Is it Safe (popup only).
+  'SHIELD_TAB_PRIVACY',
+  'SHIELD_GET_PRIVACY_SETTINGS',
+  'SHIELD_SET_PRIVACY_SETTINGS',
+  'SHIELD_AUTH_HEADER',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -165,6 +173,12 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'SHIELD_GET_STATE',
   'SHIELD_REFRESH',
   'SHIELD_SIGN_OUT',
+  // Privacy settings, per-tab reports and the Shield credential (used by the
+  // popup's Is it Safe uploads) — never reachable from a web page.
+  'SHIELD_TAB_PRIVACY',
+  'SHIELD_GET_PRIVACY_SETTINGS',
+  'SHIELD_SET_PRIVACY_SETTINGS',
+  'SHIELD_AUTH_HEADER',
   // A page has no business arming (or re-arming, and so postponing) the
   // clipboard clear; only the popup copies passwords.
   'CLIPBOARD_COPIED',
@@ -449,6 +463,19 @@ export function validateMessage(
       }
       break;
     }
+    case 'SHIELD_BEHAVIOR':
+      if (!payload || typeof payload.kind !== 'string' || payload.kind.length > 40) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'SHIELD_TAB_PRIVACY':
+      if (!payload || typeof payload.tabId !== 'number' || typeof payload.url !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'SHIELD_SET_PRIVACY_SETTINGS':
+      if (!payload) return { ok: false, reason: 'bad-payload' };
+      break;
     case 'SCAN_SITE':
       if (payload && payload.url !== undefined && typeof payload.url !== 'string') {
         return { ok: false, reason: 'bad-payload' };

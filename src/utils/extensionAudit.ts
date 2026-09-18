@@ -46,7 +46,47 @@ const ALL_URL_PATTERNS = [
   'https://*/*',
 ];
 
-export async function auditInstalledExtensions(): Promise<ExtensionAuditSummary> {
+// Powerful permissions that aren't an intercept risk on their own but widen
+// what a compromised extension can do.
+const EXTRA_RISK_PERMISSIONS: Record<string, [number, string]> = {
+  scripting: [10, 'Can inject scripts into web pages'],
+  nativeMessaging: [20, 'Can talk to programs installed on your computer'],
+  history: [10, 'Can read your full browsing history'],
+  proxy: [30, 'Can route all your traffic through a proxy'],
+  webNavigation: [5, 'Can see every page you navigate to'],
+  downloads: [10, 'Can start and open downloads'],
+  privacy: [15, 'Can change browser privacy settings'],
+  management: [15, 'Can manage (enable or disable) other extensions'],
+};
+
+const STORE_UPDATE_HOSTS = [
+  'clients2.google.com',
+  'edge.microsoft.com',
+  'addons.mozilla.org',
+  'extension-updates.opera.com',
+];
+
+/** Store/sideload checks for one extension (pure, unit-tested). */
+export function installOriginFindings(ext: { installType?: string; updateUrl?: string; id?: string }, maliciousIds?: ReadonlySet<string>): [number, string][] {
+  const out: [number, string][] = [];
+  if (ext.id && maliciousIds?.has(ext.id)) out.push([100, 'Known malicious extension — remove it now']);
+  if (ext.installType === 'development') out.push([35, 'Loaded in developer mode (unpacked), not from a store']);
+  else if (ext.installType === 'sideload') out.push([40, 'Installed by another program, not from a store']);
+  if (ext.updateUrl) {
+    let host = '';
+    try {
+      host = new URL(ext.updateUrl).hostname;
+    } catch {
+      host = '';
+    }
+    if (host && !STORE_UPDATE_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) {
+      out.push([30, `Updates from outside the official store (${host})`]);
+    }
+  }
+  return out;
+}
+
+export async function auditInstalledExtensions(maliciousIds?: ReadonlySet<string>): Promise<ExtensionAuditSummary> {
   const managementApi = (globalThis as any).chrome?.management || (globalThis as any).browser?.management;
 
   if (!managementApi?.getAll) {
@@ -115,6 +155,21 @@ export async function auditInstalledExtensions(): Promise<ExtensionAuditSummary>
     if (hasAllUrls && threatReasons.length === 0) {
       riskScore += 20;
       threatReasons.push('Has broad read/write access to all visited websites');
+    }
+
+    // 5. Other powerful permissions
+    for (const p of permissions) {
+      const extra = EXTRA_RISK_PERMISSIONS[p];
+      if (extra) {
+        riskScore += extra[0];
+        threatReasons.push(extra[1]);
+      }
+    }
+
+    // 6. Where it came from (store, sideload, developer mode, known-bad list)
+    for (const [score, reason] of installOriginFindings(ext, maliciousIds)) {
+      riskScore += score;
+      threatReasons.unshift(reason);
     }
 
     // Classify Level

@@ -14,7 +14,14 @@
     "contextMenus"
   ],
   "optional_permissions": [
-    "management"
+    "management",
+    "downloads",
+    "cookies",
+    "declarativeNetRequest"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
@@ -48,6 +55,12 @@
       "matches": ["http://*/*", "https://*/*"],
       "js": ["shieldNav.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["pageHooks.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     },
     {
       "matches": ["<all_urls>"],

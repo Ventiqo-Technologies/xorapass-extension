@@ -51,6 +51,7 @@ import { isSupportedWebmail, analyzeEmailSender } from '../utils/webmailGuard';
 import { collectPageSignals, isWorthAssessing, type PageSignals } from '../utils/pageSignals';
 import { collectPageText, shouldAiScan } from '../utils/pageContent';
 import { WEB_APP_URL } from '../utils/config';
+import { scanEmailContent, checkInsecureForms, collectPrivacySignals, showDownloadPrompt, showDownloadBlocked } from './secureBrowsing';
 
 let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
@@ -984,7 +985,9 @@ function scanForPaymentFields(): void {
 const warnedSendersOnPage = new Set<string>();
 
 function scanWebmailMessages(): void {
+  if (window === window.top) checkInsecureForms();
   if (!webmailGuardEnabled || !isSupportedWebmail(window.location.hostname)) return;
+  scanEmailContent(window.location.hostname);
 
   // Gmail: sender name usually in span[email] or .gD; email in [email] attribute
   // Outlook: sender name in .b80yQ or [data-testid="SenderDetails"]
@@ -2345,6 +2348,17 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     // only — see the privacy contract in utils/pageSignals.ts.
     if (message?.type === 'GET_PAGE_SIGNALS') {
       return Promise.resolve({ pageSignals: collectPageSignals() });
+    }
+    // Privacy report (popup): trackers + mixed content seen by this page.
+    if (message?.type === 'GET_PRIVACY_SIGNALS' && window === window.top) {
+      return Promise.resolve({ privacy: collectPrivacySignals() });
+    }
+    // Download guard (background): ask before keeping a risky file.
+    if (message?.type === 'SHIELD_DOWNLOAD_PROMPT' && window === window.top) {
+      return showDownloadPrompt(message.payload || {});
+    }
+    if (message?.type === 'SHIELD_DOWNLOAD_BLOCKED' && window === window.top) {
+      showDownloadBlocked(message.payload || {});
     }
     if (message?.type === 'CARD_FIELDS_IN_FRAME') {
       paymentFieldsInSubframe = true;

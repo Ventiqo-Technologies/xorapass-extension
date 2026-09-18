@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import ShieldExtras from './ShieldExtras';
 import {
   Shield,
   Search,
@@ -3419,6 +3420,9 @@ export const PopupApp: React.FC = () => {
                     ))}
                   </div>
                 </div>
+
+                {/* Privacy report, secure browsing, Is it Safe */}
+                <ShieldExtras />
 
                 {/* 3. INSTALLED EXTENSION SECURITY CHECKUP CARD */}
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">

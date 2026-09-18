@@ -32,6 +32,14 @@ import {
   refreshShieldEntitlement,
   refreshBlocklist,
 } from './shield';
+import {
+  initShieldPrivacy,
+  recordBehavior,
+  getTabBehavior,
+  getPrivacySettings,
+  setPrivacySettings,
+  getMaliciousExtensionIds,
+} from './shieldPrivacy';
 import { decideNavigation, isTrustedHost, isAllowlistedHost, shouldEscalateRemote, threatReason } from '../utils/shieldEngine';
 import { sanitizeUrlForRiskCheck, authHeaderValue } from '../utils/domainRiskService';
 import type { ShieldConfig } from '../utils/shieldConfig';
@@ -314,6 +322,7 @@ async function scheduleClipboardClear(): Promise<number> {
 
 // Always-on Shield: config/kill switch, entitlement and blocklist sync.
 initShield({ getJwt });
+initShieldPrivacy();
 
 browser.alarms.onAlarm.addListener((alarm) => {
   if (handleShieldAlarm(alarm.name)) return;
@@ -1862,7 +1871,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       aiContext,
       sensitivity,
       globalThis.fetch,
-      getJwt,
+      // Works while locked too (Shield device token).
+      getShieldCredential,
       pageSignals
     ).then((result) => ({
       risk: result,
@@ -1906,6 +1916,32 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'SHIELD_SIGN_OUT') {
     return shieldSignOut().then(() => ({ success: true }));
+  }
+
+  if (type === 'SHIELD_BEHAVIOR') {
+    return Promise.resolve(recordBehavior(sender, msg.payload));
+  }
+
+  if (type === 'SHIELD_TAB_PRIVACY') {
+    const { tabId, url } = msg.payload as { tabId: number; url: string };
+    return Promise.resolve(getTabBehavior(tabId, url));
+  }
+
+  if (type === 'SHIELD_GET_PRIVACY_SETTINGS') {
+    return getPrivacySettings();
+  }
+
+  if (type === 'SHIELD_SET_PRIVACY_SETTINGS') {
+    return setPrivacySettings(msg.payload || {});
+  }
+
+  if (type === 'SHIELD_AUTH_HEADER') {
+    // Popup-only (messageGuard): the Is it Safe file upload is multipart,
+    // which can't cross runtime messaging, so the popup calls the API itself.
+    return (async () => {
+      const [cred, active, cfg] = await Promise.all([getShieldCredential(), isShieldActive(), getShieldConfig()]);
+      return { header: cred ? authHeaderValue(cred) : '', active, apiBase: API_BASE_URL, config: cfg };
+    })();
   }
 
   if (type === 'SCAN_SITE') {
@@ -2084,7 +2120,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
         .contains({ permissions: ['management'] })
         .catch(() => false);
       if (!granted) return { permissionDenied: true };
-      return auditInstalledExtensions();
+      const malicious = await getMaliciousExtensionIds().catch(() => new Set<string>());
+      return auditInstalledExtensions(malicious);
     })();
   }
 

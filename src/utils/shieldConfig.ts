@@ -23,6 +23,10 @@ export interface ShieldConfig {
   heuristics: { disabled_rules: LocalRule[]; warn_score: number; block_score: number };
   config_refresh_minutes: number;
   ai_scan: { enabled: boolean };
+  // "Is it Safe" tools (server-side quotas; these only hide/show the UI).
+  image_scan: { enabled: boolean };
+  file_scan: { enabled: boolean };
+  file_upload: { enabled: boolean };
   trusted_domains: string[];
 }
 
@@ -35,6 +39,9 @@ export const DEFAULT_SHIELD_CONFIG: ShieldConfig = Object.freeze({
   heuristics: { disabled_rules: [], warn_score: 40, block_score: 75 },
   config_refresh_minutes: 15,
   ai_scan: { enabled: true },
+  image_scan: { enabled: true },
+  file_scan: { enabled: true },
+  file_upload: { enabled: true },
   trusted_domains: [],
 }) as ShieldConfig;
 
@@ -109,6 +116,9 @@ export function coerceShieldConfig(input: unknown): ShieldConfig {
     heuristics: { disabled_rules: rules, warn_score: warn, block_score: block },
     config_refresh_minutes: int(o.config_refresh_minutes, 5, 1440, d.config_refresh_minutes),
     ai_scan: { enabled: bool(ai.enabled, d.ai_scan.enabled) },
+    image_scan: { enabled: bool(obj(o.image_scan).enabled, d.image_scan.enabled) },
+    file_scan: { enabled: bool(obj(o.file_scan).enabled, d.file_scan.enabled) },
+    file_upload: { enabled: bool(obj(o.file_upload).enabled, d.file_upload.enabled) },
     trusted_domains: trusted,
   };
 }
