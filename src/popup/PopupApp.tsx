@@ -81,6 +81,7 @@ import {
 import { isAuthError, isOfflineError } from '../utils/netErrors';
 import { isAiSite } from '../utils/pasteGuard';
 import { LogoIcon, LogoHorizontal } from './Logo';
+import { getBrandMetadata } from '../utils/brand';
 import { API_BASE_URL, SIGNUP_URL, RECOVERY_URL, WEB_APP_URL } from '../utils/config';
 import browser from 'webextension-polyfill';
 
@@ -221,20 +222,38 @@ const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; siz
   size = 'w-7 h-7 text-xs',
 }) => {
   const [imgError, setImgError] = useState(false);
-  const hostname = url ? extractHostname(url) : '';
+  const meta = getBrandMetadata(label, category, url);
   const color = categoryColor(category);
 
-  if (hostname && !imgError) {
+  // 1. Static bundled PNG logo (e.g. AWS, GitHub, Google, Docker, etc.)
+  if (meta.logoUrl && !imgError) {
     return (
-      <img
-        src={`https://www.google.com/s2/favicons?domain=${hostname}&sz=64`}
-        alt=""
-        onError={() => setImgError(true)}
-        className={`${size} rounded-lg object-contain bg-white border border-slate-900/10 p-0.5 shrink-0 shadow-xs`}
-      />
+      <div className={`${size} rounded-lg bg-white border border-slate-900/10 p-0.5 shrink-0 shadow-xs flex items-center justify-center overflow-hidden`}>
+        <img
+          src={meta.logoUrl}
+          alt=""
+          onError={() => setImgError(true)}
+          className="w-full h-full object-contain"
+        />
+      </div>
     );
   }
 
+  // 2. Dynamic favicon (Google Favicon API)
+  if (meta.faviconUrl && !imgError) {
+    return (
+      <div className={`${size} rounded-lg bg-white border border-slate-900/10 p-0.5 shrink-0 shadow-xs flex items-center justify-center overflow-hidden`}>
+        <img
+          src={meta.faviconUrl}
+          alt=""
+          onError={() => setImgError(true)}
+          className="w-full h-full object-contain"
+        />
+      </div>
+    );
+  }
+
+  // 3. Fallback Initial tile
   const initial = (label || 'P').charAt(0).toUpperCase();
   return (
     <div
