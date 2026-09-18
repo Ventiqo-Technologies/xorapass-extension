@@ -132,6 +132,24 @@ export function clearRemoteRiskCache(): void {
 }
 
 /**
+ * Reduces a URL to scheme://host/path — no userinfo, query or fragment — so
+ * nothing token-like ever leaves the device in a risk check. Returns '' for
+ * anything without an http(s) host.
+ */
+export function sanitizeUrlForRiskCheck(raw: string): string {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  let u: URL;
+  try {
+    u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`);
+  } catch {
+    return '';
+  }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || !u.hostname) return '';
+  return `${u.protocol}//${u.host.toLowerCase()}${u.pathname || '/'}`;
+}
+
+/**
  * Checks cached remote risk evaluation if available and fresh.
  */
 export function getCachedRemoteRisk(
@@ -196,9 +214,10 @@ export async function checkDomainRiskRemote(
   if (!currHost) return null;
 
   // Ensure current_url is always a full URL — providers like Google Web Risk
-  // require scheme + host. If the caller passed a bare hostname, reconstruct it.
-  const normalizedUrl =
-    currentUrl.includes('://') ? currentUrl : `https://${currHost}`;
+  // require scheme + host — and never carries a query string, fragment or
+  // userinfo: that is where reset tokens, magic links, OAuth codes and
+  // session IDs live, and none of it says anything about the site itself.
+  const normalizedUrl = sanitizeUrlForRiskCheck(currentUrl) || `https://${currHost}/`;
 
   const actionHost = formContext?.actionUrl ? extractHostname(formContext.actionUrl) : '';
   const isAI = !!aiContext?.isAISession;
@@ -227,7 +246,7 @@ export async function checkDomainRiskRemote(
       has_password_field: formContext.hasPasswordField,
       has_mfa_field: formContext.hasMfaField,
       is_iframe: formContext.isIframe,
-      action_url: formContext.actionUrl,
+      action_url: formContext.actionUrl ? sanitizeUrlForRiskCheck(formContext.actionUrl) : undefined,
       num_inputs: formContext.numInputs,
     };
   }
@@ -345,6 +364,7 @@ export function mergeLocalAndRemoteRisk(
     matchedTarget: local.matchedTarget || remote.matched_target || null,
     safeWarningMessage: remote.safe_warning_message || local.safeWarningMessage,
     showInterstitial: !!remote.show_interstitial,
+    threatIntelSignals: remote.threat_intel_signals,
   };
 }
 

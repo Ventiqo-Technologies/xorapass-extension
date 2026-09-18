@@ -829,6 +829,13 @@ try {
   });
 } catch {}
 
+// Card fields inside a cross-origin payment iframe (Stripe Elements,
+// Braintree, Adyen, ...) are invisible to this top-frame script; the tiny
+// all-frames cardFrame.ts script detects them and the background relays a
+// CARD_FIELDS_IN_FRAME notice here. Remembered so a notice that arrives
+// before the risk verdict is still honoured once loadCredentials() resolves.
+let paymentFieldsInSubframe = false;
+
 function scanForPaymentFields(): void {
   if (!checkoutGuardEnabled || hasWarnedCheckoutOnPage) return;
 
@@ -840,7 +847,7 @@ function scanForPaymentFields(): void {
 
   const inputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
   const fillable = inputs.filter(isFillable);
-  if (fillable.length === 0) return;
+  if (fillable.length === 0 && !paymentFieldsInSubframe) return;
 
   const hasCard = fillable.some((el) =>
     looksLikeCardNumber({
@@ -875,7 +882,7 @@ function scanForPaymentFields(): void {
     })
   );
 
-  if (hasCard || (hasCsc && hasExp)) {
+  if (hasCard || (hasCsc && hasExp) || paymentFieldsInSubframe) {
     hasWarnedCheckoutOnPage = true;
     const reasons: string[] = [];
     if (isInsecure) reasons.push('Unencrypted connection (HTTP) transmits card details in plaintext.');
@@ -2257,6 +2264,16 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     if (message?.type === 'SHOW_LINK_INSPECTION' && message.payload) {
       showLinkInspectionModal(message.payload);
     }
+    // Site Scanner (popup → background → here): structural page features
+    // only — see the privacy contract in utils/pageSignals.ts.
+    if (message?.type === 'GET_PAGE_SIGNALS') {
+      return Promise.resolve({ pageSignals: collectPageSignals() });
+    }
+    if (message?.type === 'CARD_FIELDS_IN_FRAME') {
+      paymentFieldsInSubframe = true;
+      scanForPaymentFields();
+    }
+    return undefined;
   });
 
   // Listen for real-time Shield toggle changes from popup settings

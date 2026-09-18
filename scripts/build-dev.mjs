@@ -15,6 +15,7 @@ const steps = [
   ['npx', ['tsc']],
   ['npx', ['vite', 'build']],
   ['npx', ['vite', 'build', '--mode', 'content']],
+  ['npx', ['vite', 'build', '--mode', 'cardframe']],
 ];
 
 for (const [cmd, args] of steps) {

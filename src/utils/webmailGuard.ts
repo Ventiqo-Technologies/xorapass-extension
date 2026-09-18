@@ -14,7 +14,7 @@ export const BRAND_DOMAINS: Record<string, string[]> = {
   netflix: ['netflix.com'],
   chase: ['chase.com'],
   'bank of america': ['bankofamerica.com', 'bofa.com'],
-  wells: ['wellsfargo.com'],
+  'wells fargo': ['wellsfargo.com', 'wf.com'],
   meta: ['meta.com', 'facebook.com', 'instagram.com'],
   dhl: ['dhl.com'],
   fedex: ['fedex.com'],
@@ -27,6 +27,52 @@ export const BRAND_DOMAINS: Record<string, string[]> = {
   linkedin: ['linkedin.com'],
   github: ['github.com'],
 };
+
+// Brands whose name is also an everyday first name, surname or word. For
+// these, a bare mention in the display name ("Chase Miller", "Apple Tree
+// Dental") is NOT a brand claim — the display name must read as a corporate
+// sender: the brand plus only generic corporate words ("Chase Alerts",
+// "Apple Support", "Amazon.com").
+const AMBIGUOUS_BRANDS = new Set(['chase', 'meta', 'apple', 'amazon', 'stripe', 'ups']);
+
+const CORPORATE_WORDS = new Set([
+  'support', 'service', 'services', 'customer', 'customers', 'care', 'team', 'security',
+  'alert', 'alerts', 'notification', 'notifications', 'notice', 'account', 'accounts',
+  'billing', 'payment', 'payments', 'pay', 'bank', 'banking', 'online', 'mobile', 'info',
+  'no', 'reply', 'noreply', 'do', 'not', 'official', 'help', 'desk', 'helpdesk', 'center',
+  'centre', 'update', 'updates', 'verification', 'verify', 'fraud', 'department', 'dept',
+  'inc', 'llc', 'ltd', 'corp', 'com', 'co', 'us', 'uk', 'express', 'delivery', 'shipping',
+  'order', 'orders', 'prime', 'web', 'card', 'cards', 'member', 'members', 'rewards',
+  'store', 'id', 'for', 'business', 'the', 'and', 'my', 'secure', 'services', 'dashboard',
+]);
+
+function displayTokens(displayName: string): string[] {
+  return displayName
+    .toLowerCase()
+    .replace(/\S+@\S+/g, ' ') // drop any embedded email address (Outlook passes "Name addr")
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+/**
+ * Whether `displayName` claims to BE `brand` (vs merely containing the word).
+ * Exported for tests.
+ */
+export function displayNameClaimsBrand(displayName: string, brand: string): boolean {
+  const tokens = displayTokens(displayName);
+  const brandTokens = brand.split(/\s+/);
+  let at = -1;
+  for (let i = 0; i + brandTokens.length <= tokens.length; i++) {
+    if (brandTokens.every((b, j) => tokens[i + j] === b)) {
+      at = i;
+      break;
+    }
+  }
+  if (at === -1) return false;
+  if (!AMBIGUOUS_BRANDS.has(brand)) return true;
+  const rest = tokens.filter((_, i) => i < at || i >= at + brandTokens.length);
+  return rest.every((t) => CORPORATE_WORDS.has(t));
+}
 
 export interface EmailSenderAnalysis {
   isImpersonation: boolean;
@@ -70,8 +116,7 @@ export function analyzeEmailSender(rawSender: string): EmailSenderAnalysis {
 
   // Check if display name claims to be one of the high-target brands
   for (const [brand, allowedDomains] of Object.entries(BRAND_DOMAINS)) {
-    const brandRegex = new RegExp(`\\b${brand.replace(/\s+/g, '[\\s-_]?')}\\b`, 'i');
-    if (brandRegex.test(normalizedDisplay)) {
+    if (displayNameClaimsBrand(displayName, brand)) {
       claimedBrand = brand;
       expectedDomains = allowedDomains;
 

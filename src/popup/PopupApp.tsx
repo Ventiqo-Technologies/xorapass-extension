@@ -448,6 +448,7 @@ export const PopupApp: React.FC = () => {
   // XoraPass Shield - Installed Extension Security Checkup state
   const [extensionAudit, setExtensionAudit] = useState<ExtensionAuditSummary | null>(null);
   const [isAuditingExtensions, setIsAuditingExtensions] = useState(false);
+  const [extensionAuditDenied, setExtensionAuditDenied] = useState(false);
 
   // Theme preference ('dark' | 'light' | 'system')
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
@@ -706,10 +707,23 @@ export const PopupApp: React.FC = () => {
 
   const handleAuditExtensions = () => {
     setIsAuditingExtensions(true);
-    browser.runtime
-      .sendMessage({ type: 'AUDIT_EXTENSIONS' })
+    setExtensionAuditDenied(false);
+    // permissions.request must be the first thing in the click handler (it
+    // requires a live user gesture), so no await before it.
+    browser.permissions
+      .request({ permissions: ['management'] })
+      .catch(() => false)
+      .then((granted: boolean) => {
+        if (!granted) {
+          setExtensionAuditDenied(true);
+          return null;
+        }
+        return browser.runtime.sendMessage({ type: 'AUDIT_EXTENSIONS' });
+      })
       .then((res: any) => {
-        if (res && typeof res.overallHealthScore === 'number') {
+        if (res?.permissionDenied) {
+          setExtensionAuditDenied(true);
+        } else if (res && typeof res.overallHealthScore === 'number') {
           setExtensionAudit(res);
         }
       })
@@ -3485,7 +3499,11 @@ export const PopupApp: React.FC = () => {
                       <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">
                         <Puzzle className="w-4 h-4 text-slate-400" />
                       </div>
-                      <p className="text-xs text-slate-500 font-medium">Click "Audit Extensions" to verify other installed addons.</p>
+                      <p className="text-xs text-slate-500 font-medium">
+                        {extensionAuditDenied
+                          ? 'The checkup needs permission to list your installed extensions. Click "Audit Extensions" and allow it to continue.'
+                          : 'Click "Audit Extensions" to verify other installed addons.'}
+                      </p>
                     </div>
                   )}
                 </div>

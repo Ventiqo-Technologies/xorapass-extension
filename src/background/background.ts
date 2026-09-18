@@ -18,6 +18,8 @@ import {
 import { isFillableCategory } from '../utils/fillPolicy';
 import type { PageSignals } from '../utils/pageSignals';
 import { buildSiteSafetyReport } from '../utils/siteScanner';
+import { unwrapLink, isShortenerUrl, buildLinkVerdict } from '../utils/linkInspect';
+import { KNOWN_BRAND_DOMAINS } from '../utils/promptSafety';
 import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
 import {
@@ -1650,6 +1652,18 @@ browser.runtime.onMessage.addListener((message, sender) => {
     }));
   }
 
+  if (type === 'CARD_FIELDS_IN_FRAME') {
+    // Relay to the TOP frame of the same tab only; the top frame decides
+    // whether the merchant page is suspicious. Ignore top-frame senders — the
+    // main content script already scans its own document.
+    const tabId = sender.tab?.id;
+    if (tabId === undefined || !sender.frameId) return Promise.resolve({ success: false });
+    return browser.tabs
+      .sendMessage(tabId, { type: 'CARD_FIELDS_IN_FRAME' }, { frameId: 0 })
+      .then(() => ({ success: true }))
+      .catch(() => ({ success: false }));
+  }
+
   if (type === 'SCAN_SITE') {
     return (async () => {
       let targetUrl = msg.payload?.url;
@@ -1681,30 +1695,61 @@ browser.runtime.onMessage.addListener((message, sender) => {
         };
       }
 
-      // Gather saved domains from cached vault items
-      const res = await browser.storage.session.get(['vaultItems']);
-      const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
+      // Saved hostnames come from the unlocked session only.
+      const res = await browser.storage.session.get(['unlocked', 'vaultItems']);
+      const items = (res as Record<string, unknown>).unlocked
+        ? ((res as Record<string, unknown>).vaultItems as VaultItem[] | undefined)
+        : undefined;
       const savedDomains: string[] = [];
+      const matching: VaultItem[] = [];
       if (Array.isArray(items)) {
         for (const it of items) {
-          if (it.url) {
-            const h = extractHostname(it.url);
-            if (h) savedDomains.push(h);
-          }
+          if (!it.url) continue;
+          const h = extractHostname(it.url);
+          if (h) savedDomains.push(h);
+          if (isFillableCategory(it.category) && isDomainMatch(extractHostname(targetUrl), it.url)) matching.push(it);
         }
       }
 
-      // Run remote/cached domain risk check
-      const risk = await checkDomainRiskRemote(
-        targetUrl,
-        savedDomains[0] || '',
-        undefined,
-        undefined,
-        'standard',
-        globalThis.fetch,
-        getJwt,
-        msg.payload?.pageSignals
-      );
+      const allowlist = await getDomainAllowlist();
+      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+
+      // Page shape, straight from the tab's own content script. The popup
+      // can't collect it, and without it the backend's page classifier (and
+      // the report's script/form indicators) have nothing to work with.
+      let pageSignals: PageSignals | undefined = msg.payload?.pageSignals;
+      if (!pageSignals) {
+        try {
+          const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+          if (tab?.id !== undefined && tab.url === targetUrl) {
+            const r: any = await browser.tabs.sendMessage(tab.id, { type: 'GET_PAGE_SIGNALS' }, { frameId: 0 });
+            pageSignals = r?.pageSignals;
+          }
+        } catch {
+          /* no content script on this page (e.g. store pages) */
+        }
+      }
+
+      // Same saved_domain the autofill path would send: the credential that
+      // actually matches this page, else the site it most resembles — never
+      // just whichever vault item happens to be first.
+      let risk = null;
+      if (domainRiskOn) {
+        const local = assessDomainRisk(extractHostname(targetUrl), savedDomains, allowlist, targetUrl);
+        const savedDomain = matching[0]?.url
+          ? extractHostname(matching[0].url)
+          : local.matchedTarget || findLookalikeTarget(extractHostname(targetUrl), savedDomains, allowlist)?.target || '';
+        risk = await checkDomainRiskRemote(
+          targetUrl,
+          savedDomain,
+          undefined,
+          undefined,
+          sensitivityForItems(matching),
+          globalThis.fetch,
+          getJwt,
+          pageSignals
+        );
+      }
 
       const report = buildSiteSafetyReport({
         url: targetUrl,
@@ -1712,7 +1757,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
         favIconUrl: targetFavIcon,
         savedDomains,
         riskAssessment: risk,
-        scriptCount: msg.payload?.pageSignals?.external_script_origins,
+        allowlist,
+        domainRiskEnabled: domainRiskOn,
+        pageSignals,
       });
 
       return { report };
@@ -1785,7 +1832,16 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'AUDIT_EXTENSIONS') {
-    return auditInstalledExtensions();
+    // `management` is an OPTIONAL permission (its install-time warning —
+    // "Manage your apps, extensions, and themes" — is far too alarming for a
+    // feature most users never open). The popup requests it on click.
+    return (async () => {
+      const granted = await browser.permissions
+        .contains({ permissions: ['management'] })
+        .catch(() => false);
+      if (!granted) return { permissionDenied: true };
+      return auditInstalledExtensions();
+    })();
   }
 
   // ── Web Bridge messages from content script or internal pages ─────────
@@ -2248,74 +2304,42 @@ browser.runtime.onStartup?.addListener(() => {
 });
 setupContextMenus();
 
-// Resolve destination by following HEAD/GET redirects safely in background
-async function unwindRedirects(initialUrl: string): Promise<{ finalUrl: string; hops: number; isCustomScheme: boolean }> {
-  let current = initialUrl;
-  let hops = 0;
-  const maxHops = 6;
-
-  // Non-HTTP links (magnet:, mailto:, tel:, ftp:) cannot be HTTP-fetched
-  if (!/^https?:\/\//i.test(initialUrl)) {
-    return { finalUrl: initialUrl, hops: 0, isCustomScheme: true };
-  }
-
+// Asks a link SHORTENER (and only a shortener — see utils/linkInspect.ts)
+// where it points: one credential-less, referrer-less HEAD request, redirects
+// followed as HEAD. Never falls back to GET: a GET to an unknown destination can consume a one-time link or
+// confirm to a phisher that the address is live. Returns null when the
+// shortener can't be read (no CORS, timeout, offline) — the caller then
+// reports the destination as unverified rather than guessing.
+async function resolveShortener(url: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
   try {
-    while (hops < maxHops) {
-      // Use redirect: 'manual' to catch 301/302/307/308 and examine Location header
-      const res = await fetch(current, {
-        method: 'HEAD',
-        mode: 'cors',
-        credentials: 'omit',
-        redirect: 'manual',
-        cache: 'no-store',
-      });
-
-      // Check for manual redirect location
-      const redirectLocation = res.headers?.get('location');
-      if (redirectLocation) {
-        try {
-          const resolved = new URL(redirectLocation, current).href;
-          if (resolved !== current) {
-            current = resolved;
-            hops++;
-            continue;
-          }
-        } catch {
-          /* invalid location header */
-        }
-      }
-
-      // Fallback: If browser auto-resolved res.url to something different
-      if (res.url && res.url !== current) {
-        current = res.url;
-        hops++;
-      } else {
-        break;
-      }
-    }
+    const res = await fetch(url, {
+      method: 'HEAD',
+      credentials: 'omit',
+      redirect: 'follow',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      signal: controller.signal,
+    });
+    return res.url && res.url !== url ? res.url : null;
   } catch {
-    // If HEAD fails due to CORS or server blocking HEAD, try one safe GET request with abort timeout
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2500);
-      const getRes = await fetch(current, {
-        method: 'GET',
-        mode: 'cors',
-        credentials: 'omit',
-        signal: controller.signal,
-        cache: 'no-store',
-      });
-      clearTimeout(timer);
-      if (getRes.url && getRes.url !== current) {
-        current = getRes.url;
-        hops++;
-      }
-    } catch {
-      /* network failure or cross-origin restrictions */
-    }
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
 
-  return { finalUrl: current, hops, isCustomScheme: false };
+/** Hostnames of the unlocked vault's saved items ([] when locked). */
+async function getVaultHostsIfUnlocked(): Promise<string[]> {
+  try {
+    const res = await browser.storage.session.get(['unlocked', 'vaultItems']);
+    const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
+    if (!(res as Record<string, unknown>).unlocked || !Array.isArray(items)) return [];
+    return items.map((i) => (i.url ? extractHostname(i.url) : '')).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 // Handle context menu click
@@ -2323,45 +2347,72 @@ const menusApi = (browser.contextMenus || (globalThis as any).chrome?.contextMen
 menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
   if (info.menuItemId !== INSPECT_LINK_MENU_ID || !info.linkUrl || !tab?.id) return;
 
-  const originalUrl = info.linkUrl;
-  console.info('[XoraPass] Inspecting link destination:', originalUrl);
+  const originalUrl: string = info.linkUrl;
 
   try {
-    const { finalUrl, hops } = await unwindRedirects(originalUrl);
-    const destHost = extractHostname(finalUrl);
+    const isCustomScheme = !/^https?:\/\//i.test(originalUrl);
 
-    // Retrieve saved vault domains to check for lookalike impersonation
-    let knownVaultHosts: string[] = [];
-    try {
-      const cache = await browser.storage.local.get(['vaultCache']);
-      if (cache?.vaultCache?.entries) {
-        knownVaultHosts = cache.vaultCache.entries.map((e: any) => e.url || e.label).filter(Boolean);
+    // 1. Offline unwrapping of mail/social redirectors (no network at all).
+    let { url: finalUrl, hops } = unwrapLink(originalUrl);
+    let hopCount = hops.length;
+
+    // 2. A shortener is the one case that needs asking — HEAD to it only.
+    let unresolvedShortener = false;
+    if (!isCustomScheme && isShortenerUrl(finalUrl)) {
+      const resolved = await resolveShortener(finalUrl);
+      if (resolved) {
+        const again = unwrapLink(resolved);
+        finalUrl = again.url;
+        hopCount += 1 + again.hops.length;
+      } else {
+        unresolvedShortener = true;
       }
-    } catch {
-      /* ignore */
     }
 
-    const assessment = assessDomainRisk(destHost, knownVaultHosts);
-    const threats: string[] = [];
+    // 3. Score the destination against the user's saved sites (the vault
+    //    cache in storage.local is ciphertext only — hostnames come from the
+    //    unlocked session) plus commonly phished brands.
+    const destHost = extractHostname(finalUrl);
+    const vaultHosts = await getVaultHostsIfUnlocked();
+    const knownHosts = Array.from(new Set([...vaultHosts, ...KNOWN_BRAND_DOMAINS]));
+    const allowlist = await getDomainAllowlist();
 
-    if (assessment.signals.hasPunycode) threats.push('Punycode / Homograph domain structure');
-    if (assessment.signals.brandAbuse) threats.push(`Brand impersonation of ${assessment.signals.brandAbuse.brand}`);
-    if (assessment.signals.typosquatTarget) threats.push(`Mimics saved domain ${assessment.signals.typosquatTarget}`);
-    if (assessment.signals.isHighRiskTld) threats.push('Registered under high-risk phishing TLD');
-    if (/^http:\/\//i.test(finalUrl)) threats.push('Unencrypted HTTP connection');
+    let risk: DomainRiskAssessment = isCustomScheme
+      ? disabledDomainRiskAssessment(destHost)
+      : assessDomainRisk(destHost, knownHosts, allowlist, finalUrl);
 
-    let verdict: 'safe' | 'suspicious' | 'high_risk' = 'safe';
-    if (assessment.riskScore >= 70) verdict = 'high_risk';
-    else if (assessment.riskScore >= 35 || hops > 2) verdict = 'suspicious';
+    // 4. Threat intel for the destination (query-stripped; plan-gated).
+    if (!isCustomScheme && destHost && !unresolvedShortener) {
+      const enabled = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+      if (enabled) {
+        const remote = await checkDomainRiskRemote(
+          finalUrl,
+          risk.matchedTarget || '',
+          undefined,
+          undefined,
+          'standard',
+          globalThis.fetch,
+          getJwt
+        );
+        risk = mergeLocalAndRemoteRisk(risk, remote);
+      }
+    }
 
-    // Dispatch message to active tab's content script to render floating inspection card
+    const { verdict, riskScore, threats } = buildLinkVerdict({
+      finalUrl,
+      risk,
+      hops: hopCount,
+      unresolvedShortener,
+      isCustomScheme,
+    });
+
     await browser.tabs.sendMessage(tab.id, {
       type: 'SHOW_LINK_INSPECTION',
       payload: {
         originalUrl,
         finalUrl,
-        redirectsCount: hops,
-        riskScore: assessment.riskScore,
+        redirectsCount: hopCount,
+        riskScore,
         verdict,
         threats,
       },

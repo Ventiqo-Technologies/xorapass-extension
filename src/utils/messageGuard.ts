@@ -95,6 +95,10 @@ export const KNOWN_MESSAGE_TYPES = [
   'SCAN_SITE',
   // XoraPass Shield - Installed Extension Security Checkup
   'AUDIT_EXTENSIONS',
+  // Checkout Guard: the all-frames cardFrame.ts probe reporting card inputs
+  // inside a (usually cross-origin) payment iframe. Carries no data at all;
+  // the background only relays "card fields exist" to the tab's top frame.
+  'CARD_FIELDS_IN_FRAME',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -146,6 +150,8 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'SET_CLIPBOARD_CLEAR',
   // Extension checkup: privileged call reserved for popup
   'AUDIT_EXTENSIONS',
+  // Site Scanner: builds a report from the vault's saved hostnames — popup only.
+  'SCAN_SITE',
   // A page has no business arming (or re-arming, and so postponing) the
   // clipboard clear; only the popup copies passwords.
   'CLIPBOARD_COPIED',

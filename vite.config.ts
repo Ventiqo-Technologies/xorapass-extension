@@ -16,6 +16,28 @@ import { resolve } from 'path';
 export default defineConfig(({ mode }) => {
   const plugins = [react(), tailwindcss()];
 
+  // `--mode cardframe`: the all-frames Checkout Guard probe (src/content/
+  // cardFrame.ts), same self-contained IIFE constraints as the content script.
+  if (mode === 'cardframe') {
+    return {
+      plugins,
+      build: {
+        target: 'esnext',
+        outDir: 'dist',
+        emptyOutDir: false,
+        rollupOptions: {
+          input: { cardFrame: resolve(__dirname, 'src/content/cardFrame.ts') },
+          output: {
+            format: 'iife',
+            inlineDynamicImports: true,
+            entryFileNames: '[name].js',
+          },
+        },
+      },
+      esbuild: { target: 'esnext' },
+    };
+  }
+
   if (mode === 'content') {
     return {
       plugins,

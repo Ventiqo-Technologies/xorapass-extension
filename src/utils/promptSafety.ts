@@ -45,6 +45,11 @@ const KNOWN_PHISHED_BRANDS = [
   { name: 'Dropbox', domains: ['dropbox.com'] },
 ];
 
+/** Registrable domains of commonly phished brands (for lookalike checks when the vault is locked). */
+export const KNOWN_BRAND_DOMAINS: readonly string[] = Array.from(
+  new Set(KNOWN_PHISHED_BRANDS.flatMap((b) => b.domains))
+);
+
 // High-urgency scam vocabulary
 const URGENCY_TRIGGERS = [
   { pattern: /\b(suspended|disabled|deactivated|locked|terminated|closed)\b/i, signal: 'Account suspension threat' },

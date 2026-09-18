@@ -69,6 +69,36 @@ describe('webmailGuard', () => {
     });
   });
 
+  describe('person names that collide with brand names', () => {
+    it('does not flag a person named Chase', () => {
+      const a = analyzeEmailSender('Chase Miller <chase@acme-corp.com>');
+      expect(a.isImpersonation).toBe(false);
+      expect(a.riskScore).toBe(0);
+    });
+
+    it('does not flag surnames like Wells or everyday words like Apple', () => {
+      expect(analyzeEmailSender('Sarah Wells <sarah@example.org>').isImpersonation).toBe(false);
+      expect(analyzeEmailSender('Apple Tree Dental <frontdesk@appletreedental.com>').isImpersonation).toBe(false);
+      expect(analyzeEmailSender('Meta Ramirez <meta.r@example.com>').isImpersonation).toBe(false);
+    });
+
+    it('still flags a corporate-looking claim of an ambiguous brand', () => {
+      const a = analyzeEmailSender('Chase Fraud Alerts <alerts@chase-secure-mail.com>');
+      expect(a.isImpersonation).toBe(true);
+      expect(a.claimedBrand).toBe('chase');
+      expect(analyzeEmailSender('Amazon.com <order-update@amaz0n-shipping.net>').isImpersonation).toBe(true);
+    });
+
+    it('matches Wells Fargo as a phrase and allows its real domain', () => {
+      expect(analyzeEmailSender('Wells Fargo Online <alerts@notify.wellsfargo.com>').isImpersonation).toBe(false);
+      expect(analyzeEmailSender('Wells Fargo Online <alerts@wf-secure.help>').isImpersonation).toBe(true);
+    });
+
+    it('ignores an email address embedded in the display text (Outlook)', () => {
+      expect(analyzeEmailSender('Chase Miller chase@acme-corp.com').isImpersonation).toBe(false);
+    });
+  });
+
   describe('isSupportedWebmail', () => {
     it('identifies Gmail and Outlook Web', () => {
       expect(isSupportedWebmail('mail.google.com')).toBe(true);

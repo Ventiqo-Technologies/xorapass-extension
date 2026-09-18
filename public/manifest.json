@@ -11,7 +11,9 @@
     "idle",
     "offscreen",
     "clipboardWrite",
-    "contextMenus",
+    "contextMenus"
+  ],
+  "optional_permissions": [
     "management"
   ],
   "content_security_policy": {
@@ -46,6 +48,13 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["cardFrame.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
     }
   ],
   "icons": {

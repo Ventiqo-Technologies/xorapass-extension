@@ -55,6 +55,38 @@ export const MULTI_PART_SUFFIXES = new Set([
   'notion.site', 'ngrok.io', 'ngrok-free.app', 'trycloudflare.com',
 ]);
 
+// Hosts on otherwise-trusted platforms that serve content authored by
+// arbitrary customers — static-site buckets, form builders, script hosts.
+// Phishing kits live on exactly these (a Google Form, an Azure blob page "on
+// microsoft's domain"), so a page here must never inherit the platform's
+// KNOWN_LEGITIMATE_DOMAINS trust, and must never be "same site" with a
+// credential saved on a DIFFERENT host of the same platform.
+//
+// Kept in lockstep with UserContentHostSuffixes in the backend's
+// apps/core-api/modules/domainrisk/domain_risk.go.
+export const USER_CONTENT_HOST_SUFFIXES: readonly string[] = [
+  // Google
+  'sites.google.com', 'docs.google.com', 'script.google.com', 'forms.gle',
+  'storage.googleapis.com', 'firebasestorage.googleapis.com', 'googleusercontent.com',
+  // Microsoft
+  'blob.core.windows.net', 'web.core.windows.net', 'file.core.windows.net',
+  'forms.office.com', 'forms.microsoft.com', 'sway.office.com', 'sway.cloud.microsoft',
+  // AWS — every *.amazonaws.com host is customer-controlled (S3, API Gateway,
+  // Lambda URLs). AWS's own sign-in lives on amazon.com / signin.aws / awsapps.com.
+  'amazonaws.com', 'amazoncognito.com',
+  // Salesforce Sites / Experience Cloud
+  'force.com', 'my.site.com',
+  // Misc
+  'canva.site', 'dropboxusercontent.com', 'box.net',
+];
+
+/** True when `host` is (or is under) a customer-content hosting suffix. */
+export function isUserContentHost(host: string): boolean {
+  const h = normalizeHostname(host);
+  if (!h) return false;
+  return USER_CONTENT_HOST_SUFFIXES.some((suf) => h === suf || h.endsWith('.' + suf));
+}
+
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 
 /** Lower-cases, trims and strips a trailing dot and a leading `www.`. */
@@ -150,6 +182,12 @@ export function isDomainMatch(pageHost: string, credInput: string): boolean {
   if (!page || !cred) return false;
 
   if (page === cred) return true;
+
+  // On a customer-content host only the exact saved host counts — sharing
+  // google.com with accounts.google.com does not make sites.google.com/view/x
+  // Google's page, and the same goes for tenants on *.blob.core.windows.net.
+  if (isUserContentHost(page) || isUserContentHost(cred)) return false;
+
   if (isSubdomainOf(page, cred) || isSubdomainOf(cred, page)) return true;
 
   const rp = registrableDomain(page);

@@ -9,7 +9,8 @@
 // are inspected.
 
 import { extractHostname, isDomainMatch, findLookalikeTarget } from './siteTrust';
-import { assessDomainRisk } from './domainRisk';
+import { assessDomainRisk, disabledDomainRiskAssessment } from './domainRisk';
+import type { PageSignals } from './pageSignals';
 import type { RemoteDomainRiskResponse } from './domainRiskService';
 
 export interface SiteSafetyReport {
@@ -73,25 +74,45 @@ export function buildSiteSafetyReport(params: {
   scriptCount?: number;
   externalOriginsCount?: number;
   hasCrossDomainForm?: boolean;
+  /** The user's domain allowlist — must be honoured exactly as on the autofill path. */
+  allowlist?: string[];
+  /**
+   * false when Domain Risk is off for this account (plan or user setting):
+   * no lookalike/threat-intel verdict is produced, only transport security.
+   */
+  domainRiskEnabled?: boolean;
+  /** Structural page features from the content script (pageSignals.ts). */
+  pageSignals?: PageSignals;
 }): SiteSafetyReport {
   const {
     url,
     title,
     favIconUrl,
     savedDomains,
-    riskAssessment,
     scriptCount = 0,
-    externalOriginsCount = 0,
-    hasCrossDomainForm = false,
+    allowlist = [],
+    domainRiskEnabled = true,
+    pageSignals,
   } = params;
+  const externalOriginsCount = params.externalOriginsCount ?? pageSignals?.external_script_origins ?? 0;
+  const hasCrossDomainForm = params.hasCrossDomainForm ?? !!pageSignals?.form_action_cross_origin;
 
   const hostname = extractHostname(url);
   const isHttps = url.toLowerCase().startsWith('https://');
 
   // 1. Vault domain matching & lookalike detection
   const hasSavedCredential = savedDomains.some((d) => isDomainMatch(hostname, d));
-  const localRisk = assessDomainRisk(hostname, savedDomains, [], url);
-  const lookalike = !hasSavedCredential ? findLookalikeTarget(hostname, savedDomains) : null;
+  const localRisk = domainRiskEnabled
+    ? assessDomainRisk(hostname, savedDomains, allowlist, url)
+    : disabledDomainRiskAssessment(hostname);
+  const lookalike =
+    domainRiskEnabled && !hasSavedCredential ? findLookalikeTarget(hostname, savedDomains, allowlist) : null;
+  // Same rule as mergeLocalAndRemoteRisk: a user allowlist suppresses the
+  // remote verdict unless a business policy enforced it.
+  const riskAssessment =
+    !domainRiskEnabled || (localRisk.isAllowlisted && !params.riskAssessment?.policy_enforced)
+      ? null
+      : params.riskAssessment;
 
   // 2. Risk scoring (use max of local heuristic assessment, remote assessment, and structural flags)
   let score = Math.max(localRisk.riskScore, riskAssessment?.risk_score ?? 0);
@@ -128,6 +149,11 @@ export function buildSiteSafetyReport(params: {
     verdict = 'caution';
     headline = 'Unencrypted Connection';
     summary = 'This website does not use secure HTTPS. Data sent to this site can be intercepted.';
+  }
+  if (!domainRiskEnabled && verdict === 'safe') {
+    headline = 'Connection Checked';
+    summary =
+      'Phishing & Lookalike Shield is off for this account, so only connection security was checked.';
   }
 
   // 4. Detailed indicators
@@ -195,9 +221,12 @@ export function buildSiteSafetyReport(params: {
     scriptCount,
     externalOriginsCount,
     hasCrossDomainForm,
-    label: `${scriptCount} script${scriptCount === 1 ? '' : 's'}${
-      externalOriginsCount > 0 ? ` across ${externalOriginsCount} origin${externalOriginsCount === 1 ? '' : 's'}` : ''
-    }`,
+    label:
+      scriptCount > 0
+        ? `${scriptCount} script${scriptCount === 1 ? '' : 's'}${
+            externalOriginsCount > 0 ? ` across ${externalOriginsCount} origin${externalOriginsCount === 1 ? '' : 's'}` : ''
+          }`
+        : `${externalOriginsCount} external script origin${externalOriginsCount === 1 ? '' : 's'}`,
   };
 
   return {

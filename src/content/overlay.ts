@@ -2678,7 +2678,7 @@ export function showCheckoutProtectionBanner(data: CheckoutProtectionData): void
       <p style="font-size:12px;color:#64748b;margin:0 0 10px 0;line-height:1.45;">
         ${data.isInsecureHttp
           ? 'This site is served over unencrypted HTTP. Credit card data entered here can be intercepted in transit.'
-          : 'XoraPass Shield detected credit card fields on a merchant domain not in your trusted vault history.'}
+          : 'XoraPass Shield found a payment form on a site its phishing checks flagged as suspicious. Verify the merchant before entering card details.'}
       </p>
 
       <div style="background:var(--xp-slider-track, #f8fafc);border:1px solid var(--xp-border-card, #e2e8f0);border-radius:10px;padding:8px 12px;margin-bottom:8px;font-size:12px;">

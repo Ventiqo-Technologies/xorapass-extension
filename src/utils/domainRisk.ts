@@ -18,6 +18,7 @@ import {
   isSubdomainOf,
   hasPunycode,
   stripPublicSuffix,
+  isUserContentHost,
 } from './siteTrust';
 
 export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
@@ -60,6 +61,9 @@ export interface DomainRiskAssessment {
   // sets this - an interstitial is reserved for a server-confirmed critical
   // verdict on a page actively asking for a password.
   showInterstitial?: boolean;
+  // Raw threat-intel provider signals from the backend, carried through the
+  // merge so the Site Scanner can display them. Never set locally.
+  threatIntelSignals?: Record<string, string>;
 }
 
 /** Known phishing and credential-harvesting action keywords. */
@@ -659,7 +663,10 @@ export function assessDomainRisk(
   }
 
   // 2b. Check for Legitimate Subdomain of Known Major Platforms
-  if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg)) {
+  // ...but never for a customer-content host on that platform (see
+  // USER_CONTENT_HOST_SUFFIXES): a Google Form or an Azure blob page is not
+  // Google's or Microsoft's page.
+  if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg) && !isUserContentHost(pageHostname)) {
     assessment.matchedTarget = pageReg;
     return assessment; // Safe legitimate platform domain
   }
