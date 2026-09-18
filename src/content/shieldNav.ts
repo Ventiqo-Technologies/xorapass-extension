@@ -18,11 +18,14 @@
 import browser from 'webextension-polyfill';
 import { showPhishingInterstitial, closePhishingInterstitial, showRiskWarning, showConfirmDialog } from './overlay';
 import { detectScamCues } from '../utils/pageContent';
+import { webRiskAdvisoryFromThreatType } from '../utils/webRiskAttribution';
 import { techSupportScamScore, TECH_SUPPORT_WARN, isNotificationBait, type BehaviorKind } from '../utils/scamBehavior';
 
 interface NavVerdict {
   action: 'allow' | 'warn' | 'block';
   layer?: string;
+  /** Page-behaviour protection rolled out to this user. */
+  hooks?: boolean;
   reasons?: string[];
   matchedTarget?: string | null;
   threatType?: string;
@@ -69,6 +72,7 @@ const MAX_GUARD_MS = 1500;
       (v.reasons && v.reasons[0]) ||
       'XoraPass Shield flagged this site as dangerous. Entering passwords or payment details here is not safe.';
     showPhishingInterstitial({
+      advisory: webRiskAdvisoryFromThreatType(v.threatType),
       currentDomain: location.hostname,
       expectedDomain: expected,
       message,
@@ -220,7 +224,7 @@ const MAX_GUARD_MS = 1500;
     .sendMessage({ type: 'SHIELD_NAV_CHECK' })
     .then((v: NavVerdict | undefined) => {
       clearTimeout(failOpen);
-      setActive(!!v && v.layer !== 'disabled');
+      setActive(!!v && v.layer !== 'disabled' && v.hooks === true);
       state.action = v?.action || 'allow';
       if (v?.action === 'block') {
         // Keep holding input until the user explicitly chooses to continue.

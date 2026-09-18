@@ -11,10 +11,50 @@
 //     loaded and mixed (HTTP-on-HTTPS) content.
 //   • The download prompt asked for by the background download guard.
 
+import browser from 'webextension-polyfill';
 import { showRiskWarning, showConfirmDialog } from './overlay';
 import { analyzeEmailLink, analyzeAttachmentName, analyzeReplyTo, findReplyTo, type EmailFinding } from '../utils/emailGuard';
 import { trackerFor } from '../utils/trackerList';
 import { registrableDomain } from '../utils/siteTrust';
+
+// ── Rollout gate ───────────────────────────────────────────────────────────
+// Email Guard and insecure-form warnings are always-on Shield features under
+// gradual rollout; the background stores the per-user result (see
+// background/shield.ts). Off until known.
+
+let rollout: Record<string, boolean> = {};
+let rolloutLoaded = false;
+
+function readRollout(e: any, cfg: any): Record<string, boolean> {
+  const fresh = e && e.active === true && Date.now() - Number(e.checkedAt || 0) < 24 * 60 * 60 * 1000;
+  if (!fresh || (cfg && cfg.shield_enabled === false) || e.features?.always_on !== true) return {};
+  return e.features || {};
+}
+
+function loadRollout(): void {
+  if (rolloutLoaded) return;
+  rolloutLoaded = true;
+  const load = () =>
+    browser.storage.local
+      .get(['shieldEntitlement', 'shieldConfig'])
+      .then((r: any) => {
+        rollout = readRollout(r.shieldEntitlement, r.shieldConfig);
+      })
+      .catch(() => undefined);
+  void load();
+  try {
+    browser.storage.onChanged.addListener((changes: any, area: string) => {
+      if (area === 'local' && (changes.shieldEntitlement || changes.shieldConfig)) void load();
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+function featureOn(name: string): boolean {
+  loadRollout();
+  return rollout[name] === true;
+}
 
 // ── Email Guard ────────────────────────────────────────────────────────────
 
@@ -87,7 +127,7 @@ let emailLastRun = 0;
 
 /** Throttled (the webmail DOM mutates constantly): at most every 600 ms. */
 export function scanEmailContent(host: string): void {
-  if (emailTimer) return;
+  if (!featureOn('email_guard') || emailTimer) return;
   const wait = Math.max(0, emailLastRun + 600 - Date.now());
   emailTimer = setTimeout(() => {
     emailTimer = null;
@@ -169,7 +209,7 @@ function insecureAction(form: HTMLFormElement): boolean {
 }
 
 export function checkInsecureForms(): void {
-  if (!/^https?:$/.test(location.protocol)) return;
+  if (!featureOn('insecure_forms') || !/^https?:$/.test(location.protocol)) return;
   const pwFields = Array.from(document.querySelectorAll('input[type="password"]')) as HTMLInputElement[];
   if (!pwFields.length) return;
   const isLocal = /^(localhost|127\.|10\.|192\.168\.|\[?::1)/.test(location.hostname);

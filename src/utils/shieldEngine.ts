@@ -55,15 +55,16 @@ export function isAllowlistedHost(host: string, allowlist: readonly string[]): b
 }
 
 const THREAT_LABELS: Record<string, string> = {
-  SOCIAL_ENGINEERING: 'This page is on a list of known phishing and scam sites.',
-  SOCIAL_ENGINEERING_EXTENDED_COVERAGE: 'This page is on a list of known phishing and scam sites.',
-  MALWARE: 'This page is on a list of sites known to distribute malware.',
-  UNWANTED_SOFTWARE: 'This page is on a list of sites known to push unwanted software.',
-  XORAPASS_BLOCKLIST: 'XoraPass has blocked this site as dangerous.',
+  // Qualified wording (Web Risk display rules): a listing is "suspected".
+  SOCIAL_ENGINEERING: 'This page is on a list of suspected phishing and scam sites.',
+  SOCIAL_ENGINEERING_EXTENDED_COVERAGE: 'This page is on a list of suspected phishing and scam sites.',
+  MALWARE: 'This page is on a list of sites that may distribute malware.',
+  UNWANTED_SOFTWARE: 'This page is on a list of sites that may push unwanted software.',
+  XORAPASS_BLOCKLIST: 'XoraPass has blocked this site as likely dangerous.',
 };
 
 export function threatReason(threatType: string): string {
-  return THREAT_LABELS[threatType] || 'This page is on a list of known dangerous sites.';
+  return THREAT_LABELS[threatType] || 'This page is on a list of suspected dangerous sites.';
 }
 
 /**

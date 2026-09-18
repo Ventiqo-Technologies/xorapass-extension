@@ -24,6 +24,7 @@ import {
   getShieldConfig,
   getShieldCredential,
   isShieldActive,
+  shieldFeature,
   ensureShieldDeviceToken,
   shieldSignOut,
   checkBlocklist,
@@ -981,7 +982,7 @@ async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload
   if (!/^https?:\/\//i.test(url)) return none;
   const cfg = await getShieldConfig();
   if (!cfg.shield_enabled || !cfg.ai_scan.enabled) return none;
-  if (!(await isShieldActive())) return none;
+  if (!(await shieldFeature('ai_scan'))) return none;
 
   const host = extractHostname(url);
   const [allowlist, session] = await Promise.all([
@@ -1057,7 +1058,9 @@ async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
   if (!active) return allow;
 
   const host = extractHostname(url);
-  if (hasRiskApproval(sender.tab?.id, host)) return { ...allow, layer: 'allowlist' };
+  // Gradual rollout: MAIN-world behaviour hooks (ClickFix, wallets, lock-in).
+  const hooks = await shieldFeature('page_hooks');
+  if (hasRiskApproval(sender.tab?.id, host)) return { ...allow, layer: 'allowlist', hooks };
 
   const [allowlist, session] = await Promise.all([
     getDomainAllowlist(),
@@ -1074,7 +1077,7 @@ async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
   const blocklistHit = await checkBlocklist(url);
   const local = knownHosts.length > 0 ? assessDomainRisk(host, knownHosts, allowlist, url, shieldAssessOptions(cfg)) : null;
   const decision = decideNavigation({ url, config: cfg, active, userAllowlist: allowlist, knownHosts, blocklistHit, local });
-  return { ...decision, typingGuardMs };
+  return { ...decision, typingGuardMs, hooks };
 }
 
 async function evaluateDomainRisk(opts: {
@@ -1939,8 +1942,19 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // Popup-only (messageGuard): the Is it Safe file upload is multipart,
     // which can't cross runtime messaging, so the popup calls the API itself.
     return (async () => {
-      const [cred, active, cfg] = await Promise.all([getShieldCredential(), isShieldActive(), getShieldConfig()]);
-      return { header: cred ? authHeaderValue(cred) : '', active, apiBase: API_BASE_URL, config: cfg };
+      const [cred, active, cfg, state] = await Promise.all([
+        getShieldCredential(),
+        isShieldActive(),
+        getShieldConfig(),
+        getShieldState(),
+      ]);
+      return {
+        header: cred ? authHeaderValue(cred) : '',
+        active,
+        apiBase: API_BASE_URL,
+        config: cfg,
+        features: active ? state.entitlement?.features || {} : {},
+      };
     })();
   }
 

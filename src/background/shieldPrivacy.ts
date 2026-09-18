@@ -19,7 +19,7 @@ import { authHeaderValue, checkDomainRiskRemote } from '../utils/domainRiskServi
 import { extractHostname, registrableDomain } from '../utils/siteTrust';
 import { blockableTrackerDomains } from '../utils/trackerList';
 import { decideDownload, fileExtension, RUNNABLE_EXTENSIONS } from '../utils/downloadGuard';
-import { checkBlocklist, getShieldCredential, isShieldActive } from './shield';
+import { checkBlocklist, getShieldCredential, shieldFeature } from './shield';
 
 // ── Settings ───────────────────────────────────────────────────────────────
 
@@ -83,7 +83,7 @@ export async function applyTrackerRules(): Promise<{ enabled: boolean; domains: 
   const dnr = (globalThis as any).chrome?.declarativeNetRequest || (browser as any).declarativeNetRequest;
   if (!dnr?.updateDynamicRules || !(await hasPermission('declarativeNetRequest'))) return { enabled: false, domains: 0 };
   const s = await getPrivacySettings();
-  const on = s.blockTrackers && (await isShieldActive());
+  const on = s.blockTrackers && (await shieldFeature('tracker_blocking'));
   const domains = blockableTrackerDomains();
   const rule = {
     id: TRACKER_RULE_ID,
@@ -183,7 +183,7 @@ async function onDownloadCreated(item: any): Promise<void> {
   const url: string = item.finalUrl || item.url || '';
   if (!/^https?:\/\//i.test(url)) return; // blob:/data: — nothing to check at the source
   const s = await getPrivacySettings();
-  if (!s.downloadGuard || !(await isShieldActive())) return;
+  if (!s.downloadGuard || !(await shieldFeature('download_guard'))) return;
 
   const dl = (browser as any).downloads;
   const ext = fileExtension(item.filename || '') || fileExtension(url);
@@ -293,6 +293,10 @@ export async function getMaliciousExtensionIds(): Promise<Set<string>> {
 export function initShieldPrivacy(): void {
   registerDownloadListener();
   void applyTrackerRules();
+  // Rollout / entitlement changes turn tracker rules on or off.
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && (changes.shieldEntitlement || changes.shieldConfig)) void applyTrackerRules();
+  });
   browser.tabs.onRemoved.addListener((tabId) => tabBehaviors.delete(tabId));
   browser.permissions.onAdded?.addListener(() => {
     registerDownloadListener();

@@ -48,9 +48,10 @@ import {
 } from './overlay';
 import { looksLikeCardNumber, looksLikeCvv, looksLikeCardExpiry } from './cardGuard';
 import { isSupportedWebmail, analyzeEmailSender } from '../utils/webmailGuard';
-import { collectPageSignals, isWorthAssessing, type PageSignals } from '../utils/pageSignals';
+import { collectPageSignals, isWorthAssessing, primeFaviconBrand, type PageSignals } from '../utils/pageSignals';
 import { collectPageText, shouldAiScan } from '../utils/pageContent';
 import { WEB_APP_URL } from '../utils/config';
+import { webRiskAdvisoryFromSignals } from '../utils/webRiskAttribution';
 import { scanEmailContent, checkInsecureForms, collectPrivacySignals, showDownloadPrompt, showDownloadBlocked } from './secureBrowsing';
 
 let activeCredentials: OverlayCredential[] = [];
@@ -64,6 +65,8 @@ let domainRisk: {
   safeWarningMessage?: string;
   // Server-set: a full-page block rather than a corner banner.
   showInterstitial?: boolean;
+  // Provider signals (for the required Google Web Risk attribution).
+  threatIntelSignals?: Record<string, string>;
 } | null = null;
 
 // Tracks the last hostname+decision pair we already alerted on, so
@@ -401,6 +404,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
     lastWarnedRiskKey = key;
     closeRiskWarning();
     showPhishingInterstitial({
+      advisory: webRiskAdvisoryFromSignals(domainRisk.threatIntelSignals),
       currentDomain: window.location.hostname,
       expectedDomain: domainRisk.matchedTarget || lookalikeWarning?.target || null,
       message,
@@ -466,8 +470,9 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
 
   showRiskWarning({
     severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
-    title: decision === 'block' ? 'Phishing Site Blocked' : 'Suspicious Site Detected',
+    title: decision === 'block' ? 'Likely Phishing Site Blocked' : 'Suspicious Site Detected',
     message,
+    advisory: webRiskAdvisoryFromSignals(domainRisk?.threatIntelSignals),
     currentDomain: currentHostname,
     expectedDomain,
     riskLevel: domainRisk?.riskLevel,
@@ -2275,7 +2280,13 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   initOverlayTheme();
   initPasteGuard();
   initWebBridge();
-  loadCredentials();
+  // The first risk check includes the on-device favicon match. The tab icon
+  // is normally cached, so this waits a few ms (400 ms at most).
+  if (window === window.top && /^https?:$/.test(location.protocol)) {
+    void Promise.race([primeFaviconBrand(), new Promise((r) => setTimeout(r, 400))]).then(() => loadCredentials());
+  } else {
+    loadCredentials();
+  }
   checkAiFill();
   watchForUsernameEntry();
   watchForSubmission();

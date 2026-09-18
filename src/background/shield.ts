@@ -42,12 +42,25 @@ interface StoredToken {
   email: string;
 }
 
+export type ShieldFeature =
+  | 'always_on'
+  | 'page_hooks'
+  | 'email_guard'
+  | 'insecure_forms'
+  | 'tracker_blocking'
+  | 'download_guard'
+  | 'ai_scan'
+  | 'image_scan'
+  | 'file_scan';
+
 export interface ShieldEntitlement {
   active: boolean;
   planAllows: boolean;
   userEnabled: boolean;
   email: string;
   checkedAt: number;
+  /** Gradual rollout, decided per user by the server (GET /api/shield/status). */
+  features?: Partial<Record<ShieldFeature, boolean>>;
 }
 
 let getSessionJwt: () => Promise<string> = async () => '';
@@ -179,7 +192,14 @@ export async function refreshShieldEntitlement(): Promise<ShieldEntitlement | nu
       return entitlementMem;
     }
     if (!res.ok) return getEntitlement();
-    const data = (await res.json()) as { active?: boolean; plan_allows?: boolean; user_enabled?: boolean };
+    const data = (await res.json()) as {
+      active?: boolean;
+      plan_allows?: boolean;
+      user_enabled?: boolean;
+      features?: Record<string, unknown>;
+    };
+    const features: Partial<Record<ShieldFeature, boolean>> = {};
+    for (const [k, v] of Object.entries(data.features || {})) if (v === true) features[k as ShieldFeature] = true;
     const tok = await getStoredToken();
     await setEntitlement({
       active: data.active === true,
@@ -187,6 +207,7 @@ export async function refreshShieldEntitlement(): Promise<ShieldEntitlement | nu
       userEnabled: data.user_enabled === true,
       email: tok?.email || (await getEntitlement())?.email || '',
       checkedAt: Date.now(),
+      features,
     });
     return entitlementMem;
   } catch {
@@ -255,8 +276,16 @@ export async function shieldSignOut(): Promise<void> {
   await saveStoredBlocklist(null);
 }
 
-/** Always-on Shield is active: kill switch on, entitlement fresh and true. */
+/**
+ * Always-on Shield is active: kill switch on, entitlement fresh and true,
+ * and the "always_on" rollout includes this user.
+ */
 export async function isShieldActive(): Promise<boolean> {
+  return shieldFeature('always_on');
+}
+
+/** A rollout-controlled Shield feature is on for this user (implies always_on). */
+export async function shieldFeature(feature: ShieldFeature): Promise<boolean> {
   const cfg = await getShieldConfig();
   if (!cfg.shield_enabled) return false;
   const e = await getEntitlement();
@@ -265,7 +294,7 @@ export async function isShieldActive(): Promise<boolean> {
     void refreshShieldEntitlement();
     return false;
   }
-  return true;
+  return e.features?.always_on === true && e.features?.[feature] === true;
 }
 
 export async function getShieldState(): Promise<{

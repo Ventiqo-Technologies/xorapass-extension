@@ -25,6 +25,8 @@ export interface PageSignals {
   external_brand_origins?: string[];
   favicon_cross_origin?: boolean;
   has_favicon?: boolean;
+  /** Brand whose real favicon this page's own icon matches (computed on device). */
+  favicon_brand?: string;
 
   password_field_count?: number;
   hidden_input_count?: number;
@@ -239,6 +241,33 @@ const WINDOW_CONTROL_RE = /titlebar|window-control|traffic-light|close-btn|windo
  * file. Never throws: a page that resists inspection yields fewer signals, not
  * an exception on the autofill path.
  */
+let faviconBrandMatch: string | null = null;
+let faviconPrimed: Promise<void> | null = null;
+
+/**
+ * Hashes this page's own favicon (same-origin or data: only — a cross-origin
+ * icon is already a signal of its own) and matches it against the bundled
+ * brand icons. Runs once per page; the result joins later page signals.
+ */
+export function primeFaviconBrand(): Promise<void> {
+  if (faviconPrimed) return faviconPrimed;
+  faviconPrimed = (async () => {
+    try {
+      const { loadAndHashIcon, matchFaviconBrand } = await import('./faviconHash');
+      const { FAVICON_BRANDS } = await import('./faviconBrands');
+      const link = document.querySelector('link[rel~="icon"]') as HTMLLinkElement | null;
+      const href = link?.href || `${location.origin}/favicon.ico`;
+      const u = new URL(href, location.href);
+      if (u.protocol !== 'data:' && u.origin !== location.origin) return;
+      const hash = await loadAndHashIcon(u.href);
+      faviconBrandMatch = matchFaviconBrand(hash, location.hostname.toLowerCase(), FAVICON_BRANDS);
+    } catch {
+      /* best effort */
+    }
+  })();
+  return faviconPrimed;
+}
+
 export function collectPageSignals(): PageSignals {
   try {
     const loc = window.location;
@@ -274,6 +303,7 @@ export function collectPageSignals(): PageSignals {
     signals.external_script_origins = externalOrigins.size;
 
     // ── Favicon ──
+    if (faviconBrandMatch) signals.favicon_brand = faviconBrandMatch;
     const icon = document.querySelector('link[rel~="icon"]');
     signals.has_favicon = !!icon;
     if (icon) {

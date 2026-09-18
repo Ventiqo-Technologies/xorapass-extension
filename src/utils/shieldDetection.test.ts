@@ -154,3 +154,61 @@ describe('extension checkup origin', () => {
     expect(installOriginFindings({ id: 'abc' }, new Set(['abc']))[0][0]).toBe(100);
   });
 });
+
+import { dHashRGBA, hammingHex, matchFaviconBrand } from './faviconHash';
+import { FAVICON_BRANDS } from './faviconBrands';
+import { webRiskAdvisoryFromSignals, webRiskAdvisoryFromThreatType, GOOGLE_NO_GUARANTEE_NOTICE } from './webRiskAttribution';
+import { threatReason } from './shieldEngine';
+
+describe('on-device favicon impersonation', () => {
+  const icon = (bar: number, size = 32) => {
+    const px = new Uint8ClampedArray(size * size * 4);
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4;
+        const dark = x >= bar && x < bar + size / 4;
+        px[i] = dark ? 0 : 255;
+        px[i + 1] = dark ? 48 : 255;
+        px[i + 2] = dark ? 135 : 255;
+        px[i + 3] = 255;
+      }
+    return px;
+  };
+  it('hashes deterministically and is scale-tolerant', () => {
+    const a = dHashRGBA(icon(4), 32, 32)!;
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
+    expect(hammingHex(a, dHashRGBA(icon(8, 64), 64, 64)!)).toBeLessThanOrEqual(4);
+    expect(hammingHex(a, dHashRGBA(icon(20), 32, 32)!)).toBeGreaterThan(4);
+  });
+  it('rejects blank icons', () => {
+    expect(dHashRGBA(new Uint8ClampedArray(16 * 16 * 4).fill(255), 16, 16)).toBeNull();
+  });
+  it('matches a copied brand icon only off the brand domain', () => {
+    const paypal = FAVICON_BRANDS.find((b) => b.brand === 'paypal')!.hashes[0];
+    expect(matchFaviconBrand(paypal, 'paypa1-login.example', FAVICON_BRANDS)).toBe('paypal');
+    expect(matchFaviconBrand(paypal, 'www.paypal.com', FAVICON_BRANDS)).toBeNull();
+    expect(matchFaviconBrand('ffffffffffffffff', 'example.com', FAVICON_BRANDS)).toBeNull();
+  });
+  it('keeps reference brands well apart from each other', () => {
+    for (const a of FAVICON_BRANDS)
+      for (const b of FAVICON_BRANDS)
+        if (a.brand !== b.brand && !a.domains.some((d) => b.domains.includes(d)))
+          for (const x of a.hashes) for (const y of b.hashes) expect(hammingHex(x, y)).toBeGreaterThan(8);
+  });
+});
+
+describe('Google Web Risk attribution', () => {
+  it('attributes Google verdicts with the advisory link', () => {
+    const a = webRiskAdvisoryFromSignals({ google_web_risk: 'phishing_hit', virustotal: 'clean' });
+    expect(a?.text).toBe('Advisory provided by Google');
+    expect(a?.learnMoreUrl).toContain('antiphishing.org');
+    expect(webRiskAdvisoryFromSignals({ google_web_risk: 'clean' })).toBeNull();
+    expect(webRiskAdvisoryFromThreatType('MALWARE')?.learnMoreUrl).toContain('malware');
+    expect(webRiskAdvisoryFromThreatType('XORAPASS_BLOCKLIST')).toBeNull();
+  });
+  it('uses qualified wording and the no-guarantee notice', () => {
+    expect(threatReason('SOCIAL_ENGINEERING')).toMatch(/suspected/);
+    expect(threatReason('MALWARE')).toMatch(/may/);
+    expect(GOOGLE_NO_GUARANTEE_NOTICE).toMatch(/cannot guarantee/);
+  });
+});

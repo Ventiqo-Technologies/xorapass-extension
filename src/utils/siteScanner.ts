@@ -1,3 +1,4 @@
+import { webRiskAdvisoryFromSignals } from './webRiskAttribution';
 // Site Scanner utility for XoraPass Shield.
 //
 // Gathers comprehensive on-device security signals from the active tab and
@@ -44,6 +45,7 @@ export interface SiteSafetyReport {
     label: string;
     detail: string;
     signals: string[];
+    advisory?: import("./webRiskAttribution").ThreatAdvisory | null;
   };
   credentialGuard: {
     status: 'protected' | 'autofill_allowed' | 'autofill_blocked';
@@ -198,8 +200,9 @@ export function buildSiteSafetyReport(params: {
     label: isThreatIntelClean ? 'Threat Feeds Clean' : 'Threat Intelligence Alert',
     detail: isThreatIntelClean
       ? 'No known phishing, malware, or abuse reports found on global security databases.'
-      : 'Flagged on active security intelligence feeds.',
+      : 'Flagged as suspected phishing, malware or abuse on security intelligence feeds.',
     signals: threatIntelSignals,
+    advisory: webRiskAdvisoryFromSignals(riskAssessment?.threat_intel_signals),
   };
 
   // Credential Guard

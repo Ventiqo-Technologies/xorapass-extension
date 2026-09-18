@@ -2052,7 +2052,36 @@ export function isSavePromptOpen(): boolean {
 
 let riskAlertEl: HTMLElement | null = null;
 
+/** Third-party attribution line (e.g. "Advisory provided by Google"). */
+export interface WarningAdvisory {
+  text: string;
+  url: string;
+  learnMoreUrl?: string;
+}
+
+function advisoryFooter(a: WarningAdvisory, dark: boolean): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = `margin-top:10px;font:12px/1.4 system-ui,sans-serif;color:${dark ? '#cbd5e1' : '#475569'}`;
+  const link = (text: string, href: string) => {
+    const el = document.createElement('a');
+    el.textContent = text;
+    el.href = href;
+    el.target = '_blank';
+    el.rel = 'noopener noreferrer';
+    el.style.cssText = 'color:inherit;text-decoration:underline';
+    return el;
+  };
+  wrap.appendChild(link(a.text, a.url));
+  if (a.learnMoreUrl) {
+    wrap.appendChild(document.createTextNode(' · '));
+    wrap.appendChild(link('Learn more about this threat', a.learnMoreUrl));
+  }
+  return wrap;
+}
+
 export interface RiskWarningOptions {
+  /** Attribution for a third-party verdict — required for Google Web Risk. */
+  advisory?: WarningAdvisory | null;
   /** 'block' gets the strongest visual treatment; anything else reads as a caution. */
   severity: 'block' | 'warn' | 'require_approval';
   title: string;
@@ -2139,6 +2168,7 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
   // textContent only — the message may embed a domain name we don't control.
   body.textContent = opts.message;
   card.appendChild(body);
+  if (opts.advisory) card.appendChild(advisoryFooter(opts.advisory, false));
 
   // ── Structured facts: current domain, expected domain, risk level ────────
   const facts = document.createElement('div');
@@ -2281,6 +2311,8 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
 }
 
 export interface InterstitialOptions {
+  /** Attribution for a third-party verdict — required for Google Web Risk. */
+  advisory?: WarningAdvisory | null;
   currentDomain: string;
   expectedDomain?: string | null;
   message: string;
@@ -2355,6 +2387,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
   if (opts.expectedDomain) addRow('It claims to be', opts.expectedDomain);
   for (const reason of (opts.reasons || []).slice(0, 3)) addRow('Detected', reason);
   card.appendChild(facts);
+  if (opts.advisory) card.appendChild(advisoryFooter(opts.advisory, true));
 
   const actions = document.createElement('div');
   actions.className = 'xp-int-actions';

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
+import { GOOGLE_NO_GUARANTEE_NOTICE } from '../utils/webRiskAttribution';
 import {
   Shield,
   Search,
@@ -2837,6 +2838,9 @@ export const PopupApp: React.FC = () => {
                           ? 'Warns or blocks autofill on fake, typosquat, and lookalike domains'
                           : 'Not included in your current plan'}
                       </div>
+                      {planAllowsDomainRisk && (
+                        <div className="text-[10px] text-slate-400 mt-0.5 leading-snug">{GOOGLE_NO_GUARANTEE_NOTICE}</div>
+                      )}
                     </div>
                     <button
                       role="switch"
@@ -3210,6 +3214,17 @@ export const PopupApp: React.FC = () => {
                               <Shield className="w-3.5 h-3.5 text-slate-500" /> Threat Intelligence
                             </span>
                             <p className="text-[11px] text-slate-500">{siteReport.threatIntel.detail}</p>
+                            {siteReport.threatIntel.advisory && (
+                              <p className="text-[10px] text-slate-500">
+                                <a href={siteReport.threatIntel.advisory.url} target="_blank" rel="noopener noreferrer" className="underline">
+                                  {siteReport.threatIntel.advisory.text}
+                                </a>
+                                {' · '}
+                                <a href={siteReport.threatIntel.advisory.learnMoreUrl} target="_blank" rel="noopener noreferrer" className="underline">
+                                  Learn more
+                                </a>
+                              </p>
+                            )}
                           </div>
                           <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase shrink-0 ${
                             siteReport.threatIntel.clean ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'

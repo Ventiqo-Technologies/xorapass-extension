@@ -10,10 +10,19 @@
 // Optional permissions are requested from the click handler itself, as the
 // browser requires a user gesture.
 
-import { useEffect, useState } from 'react';
-import browser from 'webextension-polyfill';
-import { Eye, Download, Cookie, FileSearch, Image as ImageIcon, Link2, ShieldAlert, Ban } from 'lucide-react';
-import { trackingCookieOwner } from '../utils/trackerList';
+import { useEffect, useState } from "react";
+import browser from "webextension-polyfill";
+import {
+  Eye,
+  Download,
+  Cookie,
+  FileSearch,
+  Image as ImageIcon,
+  Link2,
+  ShieldAlert,
+  Ban,
+} from "lucide-react";
+import { trackingCookieOwner } from "../utils/trackerList";
 
 interface PrivacySettings {
   blockTrackers: boolean;
@@ -30,7 +39,12 @@ interface AuthInfo {
   header: string;
   active: boolean;
   apiBase: string;
-  config?: { image_scan?: { enabled: boolean }; file_scan?: { enabled: boolean }; file_upload?: { enabled: boolean } };
+  config?: {
+    image_scan?: { enabled: boolean };
+    file_scan?: { enabled: boolean };
+    file_upload?: { enabled: boolean };
+  };
+  features?: Record<string, boolean>;
 }
 interface FileVerdict {
   verdict: string;
@@ -42,22 +56,25 @@ interface FileVerdict {
 }
 
 const BEHAVIOR_LABELS: Record<string, string> = {
-  fingerprint: 'Tried to fingerprint your browser',
-  fullscreen: 'Forced full screen',
-  keyboard_lock: 'Tried to lock your keyboard',
-  pointer_lock: 'Captured your mouse pointer',
-  beforeunload: 'Tried to stop you leaving',
-  history_flood: 'Flooded the back button',
-  autoplay_audio: 'Auto-played audio',
-  notification_request: 'Asked to send notifications',
+  fingerprint: "Tried to fingerprint your browser",
+  fullscreen: "Forced full screen",
+  keyboard_lock: "Tried to lock your keyboard",
+  pointer_lock: "Captured your mouse pointer",
+  beforeunload: "Tried to stop you leaving",
+  history_flood: "Flooded the back button",
+  autoplay_audio: "Auto-played audio",
+  notification_request: "Asked to send notifications",
   clickfix: "Tried to copy a malicious command (blocked)",
-  wallet_check: 'Made a risky crypto-wallet request',
-  tech_support_scam: 'Fake tech-support scam (blocked)',
+  wallet_check: "Made a risky crypto-wallet request",
+  tech_support_scam: "Fake tech-support scam (blocked)",
 };
 
-const card = 'p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5';
-const heading = 'flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400';
-const btn = 'px-2.5 py-1 text-white rounded-lg text-xs font-bold cursor-pointer disabled:opacity-60 bg-slate-900 hover:bg-slate-700';
+const card =
+  "p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5";
+const heading =
+  "flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400";
+const btn =
+  "px-2.5 py-1 text-white rounded-lg text-xs font-bold cursor-pointer disabled:opacity-60 bg-slate-900 hover:bg-slate-700";
 
 async function requestPermission(p: string): Promise<boolean> {
   try {
@@ -68,8 +85,10 @@ async function requestPermission(p: string): Promise<boolean> {
 }
 
 async function sha256Hex(buf: ArrayBuffer): Promise<string> {
-  const d = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
+  const d = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(d), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 /** Downscales a screenshot to ≤1280px wide JPEG so it stays small. */
@@ -78,84 +97,142 @@ async function downscale(dataUrl: string): Promise<string> {
   img.src = dataUrl;
   await img.decode();
   const scale = Math.min(1, 1280 / img.width);
-  const c = document.createElement('canvas');
+  const c = document.createElement("canvas");
   c.width = Math.round(img.width * scale);
   c.height = Math.round(img.height * scale);
-  c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
-  return c.toDataURL('image/jpeg', 0.8);
+  c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.8);
 }
 
-function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+function Toggle({
+  on,
+  onChange,
+  label,
+}: {
+  on: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+}) {
   return (
     <label className="flex items-center justify-between text-xs font-semibold text-slate-700 cursor-pointer">
       <span>{label}</span>
-      <input type="checkbox" className="accent-teal-600 w-4 h-4 cursor-pointer" checked={on} onChange={(e) => onChange(e.target.checked)} />
+      <input
+        type="checkbox"
+        className="accent-teal-600 w-4 h-4 cursor-pointer"
+        checked={on}
+        onChange={(e) => onChange(e.target.checked)}
+      />
     </label>
   );
 }
 
 export default function ShieldExtras() {
-  const [tab, setTab] = useState<{ id?: number; url: string; host: string }>({ url: '', host: '' });
+  const [tab, setTab] = useState<{ id?: number; url: string; host: string }>({
+    url: "",
+    host: "",
+  });
   const [settings, setSettings] = useState<PrivacySettings | null>(null);
   const [signals, setSignals] = useState<PrivacySignals | null>(null);
-  const [behaviors, setBehaviors] = useState<{ kinds: string[]; fingerprint: string[] }>({ kinds: [], fingerprint: [] });
-  const [cookies, setCookies] = useState<{ name: string; owner: string | null; secure: boolean; httpOnly: boolean; session: boolean }[] | null>(null);
+  const [behaviors, setBehaviors] = useState<{
+    kinds: string[];
+    fingerprint: string[];
+  }>({ kinds: [], fingerprint: [] });
+  const [cookies, setCookies] = useState<
+    | {
+        name: string;
+        owner: string | null;
+        secure: boolean;
+        httpOnly: boolean;
+        session: boolean;
+      }[]
+    | null
+  >(null);
   const [auth, setAuth] = useState<AuthInfo | null>(null);
-  const [msg, setMsg] = useState('');
+  const [msg, setMsg] = useState("");
 
   // Is it Safe
-  const [linkInput, setLinkInput] = useState('');
-  const [linkResult, setLinkResult] = useState<string>('');
+  const [linkInput, setLinkInput] = useState("");
+  const [linkResult, setLinkResult] = useState<string>("");
   const [imgConsent, setImgConsent] = useState(false);
-  const [imgResult, setImgResult] = useState<string>('');
-  const [fileResult, setFileResult] = useState<string>('');
+  const [imgResult, setImgResult] = useState<string>("");
+  const [fileResult, setFileResult] = useState<string>("");
   const [pendingUpload, setPendingUpload] = useState<File | null>(null);
-  const [busy, setBusy] = useState('');
+  const [busy, setBusy] = useState("");
 
   useEffect(() => {
     void (async () => {
-      const [t] = await browser.tabs.query({ active: true, currentWindow: true });
-      const url = t?.url || '';
-      let host = '';
+      const [t] = await browser.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      const url = t?.url || "";
+      let host = "";
       try {
-        host = /^https?:/.test(url) ? new URL(url).hostname : '';
+        host = /^https?:/.test(url) ? new URL(url).hostname : "";
       } catch {
-        host = '';
+        host = "";
       }
       setTab({ id: t?.id, url, host });
-      setSettings((await browser.runtime.sendMessage({ type: 'SHIELD_GET_PRIVACY_SETTINGS' }).catch(() => null)) as PrivacySettings | null);
-      setAuth((await browser.runtime.sendMessage({ type: 'SHIELD_AUTH_HEADER' }).catch(() => null)) as AuthInfo | null);
+      setSettings(
+        (await browser.runtime
+          .sendMessage({ type: "SHIELD_GET_PRIVACY_SETTINGS" })
+          .catch(() => null)) as PrivacySettings | null,
+      );
+      setAuth(
+        (await browser.runtime
+          .sendMessage({ type: "SHIELD_AUTH_HEADER" })
+          .catch(() => null)) as AuthInfo | null,
+      );
       if (t?.id !== undefined && host) {
-        const r = (await browser.tabs.sendMessage(t.id, { type: 'GET_PRIVACY_SIGNALS' }, { frameId: 0 }).catch(() => null)) as {
+        const r = (await browser.tabs
+          .sendMessage(t.id, { type: "GET_PRIVACY_SIGNALS" }, { frameId: 0 })
+          .catch(() => null)) as {
           privacy?: PrivacySignals;
         } | null;
         setSignals(r?.privacy || null);
         const b = (await browser.runtime
-          .sendMessage({ type: 'SHIELD_TAB_PRIVACY', payload: { tabId: t.id, url } })
-          .catch(() => null)) as { kinds: string[]; fingerprint: string[] } | null;
+          .sendMessage({
+            type: "SHIELD_TAB_PRIVACY",
+            payload: { tabId: t.id, url },
+          })
+          .catch(() => null)) as {
+          kinds: string[];
+          fingerprint: string[];
+        } | null;
         if (b) setBehaviors(b);
       }
     })();
   }, []);
 
   const save = async (patch: Partial<PrivacySettings>) => {
-    const next = (await browser.runtime.sendMessage({ type: 'SHIELD_SET_PRIVACY_SETTINGS', payload: patch }).catch(() => null)) as PrivacySettings | null;
+    const next = (await browser.runtime
+      .sendMessage({ type: "SHIELD_SET_PRIVACY_SETTINGS", payload: patch })
+      .catch(() => null)) as PrivacySettings | null;
     if (next) setSettings(next);
   };
 
   const toggleTrackers = async (on: boolean) => {
-    if (on && !(await requestPermission('declarativeNetRequest'))) return setMsg('Tracker blocking needs permission to block requests.');
+    if (on && !(await requestPermission("declarativeNetRequest")))
+      return setMsg("Tracker blocking needs permission to block requests.");
     await save({ blockTrackers: on });
   };
   const toggleDownloads = async (on: boolean) => {
-    if (on && !(await requestPermission('downloads'))) return setMsg('Download protection needs permission to see downloads.');
+    if (on && !(await requestPermission("downloads")))
+      return setMsg("Download protection needs permission to see downloads.");
     await save({ downloadGuard: on });
   };
-  const siteAllowed = !!settings && !!tab.host && settings.trackerAllowSites.some((d) => tab.host === d || tab.host.endsWith(`.${d}`));
+  const siteAllowed =
+    !!settings &&
+    !!tab.host &&
+    settings.trackerAllowSites.some(
+      (d) => tab.host === d || tab.host.endsWith(`.${d}`),
+    );
   const toggleSiteAllow = () => {
     if (!settings || !tab.host) return;
     const list = siteAllowed
-      ? settings.trackerAllowSites.filter((d) => !(tab.host === d || tab.host.endsWith(`.${d}`)))
+      ? settings.trackerAllowSites.filter(
+          (d) => !(tab.host === d || tab.host.endsWith(`.${d}`)),
+        )
       : [...settings.trackerAllowSites, tab.host];
     void save({ trackerAllowSites: list });
   };
@@ -165,12 +242,20 @@ export default function ShieldExtras() {
     // One request (a user gesture is needed): cookies + this one site only.
     let granted = false;
     try {
-      granted = await browser.permissions.request({ permissions: ['cookies' as any], origins: [`${new URL(tab.url).origin}/*`] });
+      granted = await browser.permissions.request({
+        permissions: ["cookies" as any],
+        origins: [`${new URL(tab.url).origin}/*`],
+      });
     } catch {
       granted = false;
     }
-    if (!granted) return setMsg('The cookie viewer needs permission to read cookies for this site.');
-    const list = await (browser as any).cookies.getAll({ url: tab.url }).catch(() => []);
+    if (!granted)
+      return setMsg(
+        "The cookie viewer needs permission to read cookies for this site.",
+      );
+    const list = await (browser as any).cookies
+      .getAll({ url: tab.url })
+      .catch(() => []);
     setCookies(
       (list as any[]).map((c) => ({
         name: String(c.name),
@@ -178,115 +263,124 @@ export default function ShieldExtras() {
         secure: !!c.secure,
         httpOnly: !!c.httpOnly,
         session: !!c.session,
-      }))
+      })),
     );
   };
 
   const api = async (path: string, init: RequestInit = {}) => {
-    if (!auth?.header) throw new Error('signin');
+    if (!auth?.header) throw new Error("signin");
     const res = await fetch(`${auth.apiBase}${path}`, {
       ...init,
       headers: { ...(init.headers || {}), Authorization: auth.header },
     });
-    if (res.status === 402 || res.status === 403) throw new Error('plan');
-    if (!res.ok) throw new Error('http');
+    if (res.status === 402 || res.status === 403) throw new Error("plan");
+    if (!res.ok) throw new Error("http");
     return res.json();
   };
   const errText = (e: unknown) =>
-    (e as Error)?.message === 'plan'
-      ? 'Included in paid plans.'
-      : (e as Error)?.message === 'signin'
-        ? 'Sign in to XoraPass to use this.'
-        : 'Could not check right now. Try again later.';
+    (e as Error)?.message === "plan"
+      ? "Included in paid plans."
+      : (e as Error)?.message === "signin"
+        ? "Sign in to XoraPass to use this."
+        : "Could not check right now. Try again later.";
 
   const checkLink = async () => {
     let url = linkInput.trim();
     if (!url) return;
     if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
-    setBusy('link');
-    setLinkResult('');
+    setBusy("link");
+    setLinkResult("");
     try {
-      const r = (await browser.runtime.sendMessage({ type: 'CHECK_DOMAIN_RISK', payload: { currentUrl: url } })) as any;
+      const r = (await browser.runtime.sendMessage({
+        type: "CHECK_DOMAIN_RISK",
+        payload: { currentUrl: url },
+      })) as any;
       const risk = r?.risk;
-      if (!risk) setLinkResult('No verdict available right now.');
+      if (!risk) setLinkResult("No verdict available right now.");
       else
         setLinkResult(
-          risk.decision === 'block'
-            ? `Dangerous — ${risk.safe_warning_message || risk.reasons?.[0] || 'do not open this link.'}`
-            : risk.decision === 'warn' || risk.decision === 'require_approval'
-              ? `Suspicious — ${risk.reasons?.[0] || 'be careful with this link.'}`
-              : 'No known threats found for this link.'
+          risk.decision === "block"
+            ? `Dangerous — ${risk.safe_warning_message || risk.reasons?.[0] || "do not open this link."}`
+            : risk.decision === "warn" || risk.decision === "require_approval"
+              ? `Suspicious — ${risk.reasons?.[0] || "be careful with this link."}`
+              : "No known threats found for this link.",
         );
     } catch {
-      setLinkResult('Could not check right now.');
+      setLinkResult("Could not check right now.");
     } finally {
-      setBusy('');
+      setBusy("");
     }
   };
 
   const scanScreenshot = async () => {
     if (!imgConsent) return;
-    setBusy('img');
-    setImgResult('');
+    setBusy("img");
+    setImgResult("");
     try {
-      const shot = await browser.tabs.captureVisibleTab(undefined as any, { format: 'png' });
+      const shot = await browser.tabs.captureVisibleTab(undefined as any, {
+        format: "png",
+      });
       const image = await downscale(shot);
-      const r = await api('/api/shield/image-scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const r = await api("/api/shield/image-scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image }),
       });
       setImgResult(
-        r.verdict === 'scam'
-          ? `Scam — ${r.title || ''} ${r.message || ''}`.trim()
-          : r.verdict === 'suspicious'
-            ? `Suspicious — ${r.message || 'be careful.'}`
-            : r.verdict === 'benign'
-              ? 'Nothing scam-like found on this screen.'
-              : r.reason === 'quota'
-                ? 'Monthly screenshot checks used up.'
-                : 'Screenshot check is unavailable right now.'
+        r.verdict === "scam"
+          ? `Scam — ${r.title || ""} ${r.message || ""}`.trim()
+          : r.verdict === "suspicious"
+            ? `Suspicious — ${r.message || "be careful."}`
+            : r.verdict === "benign"
+              ? "Nothing scam-like found on this screen."
+              : r.reason === "quota"
+                ? "Monthly screenshot checks used up."
+                : "Screenshot check is unavailable right now.",
       );
     } catch (e) {
       setImgResult(errText(e));
     } finally {
-      setBusy('');
+      setBusy("");
     }
   };
 
   const describeFile = (v: FileVerdict) =>
-    v.verdict === 'malicious'
+    v.verdict === "malicious"
       ? `Malicious — flagged by ${v.malicious} of ${v.engines} security engines. Delete it.`
-      : v.verdict === 'suspicious'
+      : v.verdict === "suspicious"
         ? `Suspicious — flagged by ${(v.malicious || 0) + (v.suspicious || 0)} of ${v.engines} engines.`
-        : v.verdict === 'clean'
+        : v.verdict === "clean"
           ? `No engine flagged this file (${v.engines} checked).`
-          : v.verdict === 'pending'
-            ? 'Scanning…'
-            : v.reason === 'quota'
-              ? 'Monthly file checks used up.'
-              : 'File check is unavailable right now.';
+          : v.verdict === "pending"
+            ? "Scanning…"
+            : v.reason === "quota"
+              ? "Monthly file checks used up."
+              : "File check is unavailable right now.";
 
   const checkFile = async (f: File | undefined) => {
     if (!f) return;
-    setBusy('file');
-    setFileResult('');
+    setBusy("file");
+    setFileResult("");
     setPendingUpload(null);
     try {
       const sha256 = await sha256Hex(await f.arrayBuffer());
-      const v = (await api('/api/shield/file-check', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const v = (await api("/api/shield/file-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sha256 }),
       })) as FileVerdict;
-      if (v.verdict === 'unknown') {
-        setFileResult('This file has never been seen by our threat feeds.');
-        if (auth?.config?.file_upload?.enabled !== false && f.size <= 32 * 1024 * 1024) setPendingUpload(f);
+      if (v.verdict === "unknown") {
+        setFileResult("This file has never been seen by our threat feeds.");
+        if (
+          auth?.config?.file_upload?.enabled !== false &&
+          f.size <= 32 * 1024 * 1024
+        )
+          setPendingUpload(f);
       } else setFileResult(describeFile(v));
     } catch (e) {
       setFileResult(errText(e));
     } finally {
-      setBusy('');
+      setBusy("");
     }
   };
 
@@ -294,25 +388,31 @@ export default function ShieldExtras() {
     const f = pendingUpload;
     if (!f) return;
     setPendingUpload(null);
-    setBusy('file');
+    setBusy("file");
     try {
       const fd = new FormData();
-      fd.append('file', f, 'upload.bin');
-      let v = (await api('/api/shield/file-upload', { method: 'POST', body: fd })) as FileVerdict;
-      for (let i = 0; i < 20 && v.verdict === 'pending' && v.analysis_id; i++) {
-        setFileResult('Scanning… this can take a minute.');
+      fd.append("file", f, "upload.bin");
+      let v = (await api("/api/shield/file-upload", {
+        method: "POST",
+        body: fd,
+      })) as FileVerdict;
+      for (let i = 0; i < 20 && v.verdict === "pending" && v.analysis_id; i++) {
+        setFileResult("Scanning… this can take a minute.");
         await new Promise((r) => setTimeout(r, 6000));
-        v = (await api(`/api/shield/file-analysis/${encodeURIComponent(v.analysis_id!)}`)) as FileVerdict;
+        v = (await api(
+          `/api/shield/file-analysis/${encodeURIComponent(v.analysis_id!)}`,
+        )) as FileVerdict;
       }
       setFileResult(describeFile(v));
     } catch (e) {
       setFileResult(errText(e));
     } finally {
-      setBusy('');
+      setBusy("");
     }
   };
 
   const shieldOn = !!auth?.active;
+  const feat = (name: string) => shieldOn && auth?.features?.[name] === true;
   const behaviorList = behaviors.kinds.filter((k) => BEHAVIOR_LABELS[k]);
 
   return (
@@ -323,26 +423,38 @@ export default function ShieldExtras() {
           <Eye className="w-4 h-4 text-brand-cyan" /> Privacy Report
         </div>
         {!tab.host ? (
-          <p className="text-xs text-slate-500">Open a website to see its privacy report.</p>
+          <p className="text-xs text-slate-500">
+            Open a website to see its privacy report.
+          </p>
         ) : (
           <div className="space-y-1.5 text-xs text-slate-700">
             {signals && !signals.isHttps && (
-              <p className="font-semibold text-rose-600">Not secure: this page uses plain HTTP.</p>
+              <p className="font-semibold text-rose-600">
+                Not secure: this page uses plain HTTP.
+              </p>
             )}
             {signals && signals.mixedContent > 0 && (
               <p className="font-semibold text-amber-700">
-                {signals.mixedContent} insecure (HTTP) resource{signals.mixedContent === 1 ? '' : 's'} on this secure page.
+                {signals.mixedContent} insecure (HTTP) resource
+                {signals.mixedContent === 1 ? "" : "s"} on this secure page.
               </p>
             )}
             <p>
-              <span className="font-bold">{signals ? signals.trackers.length : '–'}</span> tracker compan
-              {signals?.trackers.length === 1 ? 'y' : 'ies'} · {signals ? signals.thirdPartyHosts : '–'} third-party sites
+              <span className="font-bold">
+                {signals ? signals.trackers.length : "–"}
+              </span>{" "}
+              tracker compan
+              {signals?.trackers.length === 1 ? "y" : "ies"} ·{" "}
+              {signals ? signals.thirdPartyHosts : "–"} third-party sites
             </p>
             {signals && signals.trackers.length > 0 && (
               <ul className="pl-3 list-disc text-slate-600">
                 {signals.trackers.slice(0, 8).map((t) => (
                   <li key={`${t.company}-${t.category}`}>
-                    {t.company} <span className="text-slate-400">({t.category.replace('_', ' ')})</span>
+                    {t.company}{" "}
+                    <span className="text-slate-400">
+                      ({t.category.replace("_", " ")})
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -352,12 +464,18 @@ export default function ShieldExtras() {
                 {behaviorList.map((k) => (
                   <li key={k}>
                     {BEHAVIOR_LABELS[k]}
-                    {k === 'fingerprint' && behaviors.fingerprint.length ? ` (${behaviors.fingerprint.join(', ')})` : ''}
+                    {k === "fingerprint" && behaviors.fingerprint.length
+                      ? ` (${behaviors.fingerprint.join(", ")})`
+                      : ""}
                   </li>
                 ))}
               </ul>
             )}
-            {!shieldOn && <p className="text-slate-400">Behaviour alerts need always-on Shield (paid plans).</p>}
+            {!shieldOn && (
+              <p className="text-slate-400">
+                Behaviour alerts need always-on Shield (paid plans).
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -369,24 +487,53 @@ export default function ShieldExtras() {
         </div>
         {settings && shieldOn ? (
           <div className="space-y-2">
-            <Toggle on={settings.blockTrackers} onChange={(v) => void toggleTrackers(v)} label="Block trackers" />
-            {settings.blockTrackers && tab.host && (
-              <button onClick={toggleSiteAllow} className="text-[11px] font-semibold text-teal-700 hover:underline cursor-pointer">
-                {siteAllowed ? `Block trackers on ${tab.host} again` : `Allow trackers on ${tab.host} (if the site breaks)`}
+            {feat("tracker_blocking") && (
+              <Toggle
+                on={settings.blockTrackers}
+                onChange={(v) => void toggleTrackers(v)}
+                label="Block trackers"
+              />
+            )}
+            {feat("tracker_blocking") && settings.blockTrackers && tab.host && (
+              <button
+                onClick={toggleSiteAllow}
+                className="text-[11px] font-semibold text-teal-700 hover:underline cursor-pointer"
+              >
+                {siteAllowed
+                  ? `Block trackers on ${tab.host} again`
+                  : `Allow trackers on ${tab.host} (if the site breaks)`}
               </button>
             )}
-            <div className="flex items-center gap-1.5">
-              <Download className="w-3.5 h-3.5 text-slate-400" />
-              <div className="flex-1">
-                <Toggle on={settings.downloadGuard} onChange={(v) => void toggleDownloads(v)} label="Download protection" />
+            {feat("download_guard") && (
+              <div className="flex items-center gap-1.5">
+                <Download className="w-3.5 h-3.5 text-slate-400" />
+                <div className="flex-1">
+                  <Toggle
+                    on={settings.downloadGuard}
+                    onChange={(v) => void toggleDownloads(v)}
+                    label="Download protection"
+                  />
+                </div>
               </div>
-            </div>
+            )}
+            {!feat("tracker_blocking") && !feat("download_guard") && (
+              <p className="text-xs text-slate-500">
+                Tracker blocking and download protection are rolling out and
+                will appear here soon.
+              </p>
+            )}
           </div>
         ) : (
-          <p className="text-xs text-slate-500">Tracker blocking and download protection are part of always-on Shield (paid plans).</p>
+          <p className="text-xs text-slate-500">
+            Tracker blocking and download protection are part of always-on
+            Shield (paid plans).
+          </p>
         )}
         {tab.host && (
-          <button onClick={() => void viewCookies()} className={`${btn} flex items-center gap-1.5`}>
+          <button
+            onClick={() => void viewCookies()}
+            className={`${btn} flex items-center gap-1.5`}
+          >
             <Cookie className="w-3 h-3" /> View cookies for {tab.host}
           </button>
         )}
@@ -396,8 +543,20 @@ export default function ShieldExtras() {
             {cookies.map((c) => (
               <div key={c.name} className="flex justify-between gap-2">
                 <span className="truncate font-mono">{c.name}</span>
-                <span className={c.owner ? 'text-amber-700 font-semibold' : 'text-slate-400'}>
-                  {c.owner ? `Tracking · ${c.owner}` : [c.secure ? 'Secure' : 'Not secure', c.httpOnly ? 'HttpOnly' : '', c.session ? 'Session' : ''].filter(Boolean).join(' · ')}
+                <span
+                  className={
+                    c.owner ? "text-amber-700 font-semibold" : "text-slate-400"
+                  }
+                >
+                  {c.owner
+                    ? `Tracking · ${c.owner}`
+                    : [
+                        c.secure ? "Secure" : "Not secure",
+                        c.httpOnly ? "HttpOnly" : "",
+                        c.session ? "Session" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
                 </span>
               </div>
             ))}
@@ -417,49 +576,85 @@ export default function ShieldExtras() {
             <input
               value={linkInput}
               onChange={(e) => setLinkInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && void checkLink()}
+              onKeyDown={(e) => e.key === "Enter" && void checkLink()}
               placeholder="Paste a link"
               className="flex-1 px-2 py-1 text-xs border border-slate-900/10 rounded-lg bg-slate-50"
             />
-            <button onClick={() => void checkLink()} disabled={busy === 'link'} className={btn}>
+            <button
+              onClick={() => void checkLink()}
+              disabled={busy === "link"}
+              className={btn}
+            >
               Check
             </button>
           </div>
-          {linkResult && <p className="text-[11px] text-slate-700">{linkResult}</p>}
+          {linkResult && (
+            <p className="text-[11px] text-slate-700">{linkResult}</p>
+          )}
         </div>
 
-        {auth?.config?.image_scan?.enabled !== false && (
+        {feat("image_scan") && auth?.config?.image_scan?.enabled !== false && (
           <div className="space-y-1">
             <label className="flex items-start gap-1.5 text-[11px] text-slate-600">
-              <input type="checkbox" className="mt-0.5 accent-teal-600" checked={imgConsent} onChange={(e) => setImgConsent(e.target.checked)} />
-              <span>I agree to send a screenshot of this tab to XoraPass for AI analysis. It isn't stored. Don't use it on pages showing private data.</span>
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-teal-600"
+                checked={imgConsent}
+                onChange={(e) => setImgConsent(e.target.checked)}
+              />
+              <span>
+                I agree to send a screenshot of this tab to XoraPass for AI
+                analysis. It isn't stored. Don't use it on pages showing private
+                data.
+              </span>
             </label>
-            <button onClick={() => void scanScreenshot()} disabled={!imgConsent || busy === 'img' || !tab.host} className={`${btn} flex items-center gap-1.5`}>
-              <ImageIcon className="w-3 h-3" /> {busy === 'img' ? 'Checking…' : 'Check this screen'}
+            <button
+              onClick={() => void scanScreenshot()}
+              disabled={!imgConsent || busy === "img" || !tab.host}
+              className={`${btn} flex items-center gap-1.5`}
+            >
+              <ImageIcon className="w-3 h-3" />{" "}
+              {busy === "img" ? "Checking…" : "Check this screen"}
             </button>
-            {imgResult && <p className="text-[11px] text-slate-700">{imgResult}</p>}
+            {imgResult && (
+              <p className="text-[11px] text-slate-700">{imgResult}</p>
+            )}
           </div>
         )}
 
-        {auth?.config?.file_scan?.enabled !== false && (
+        {feat("file_scan") && auth?.config?.file_scan?.enabled !== false && (
           <div className="space-y-1">
             <label className={`${btn} inline-flex items-center gap-1.5`}>
-              <FileSearch className="w-3 h-3" /> {busy === 'file' ? 'Checking…' : 'Check a file'}
-              <input type="file" className="hidden" onChange={(e) => void checkFile(e.target.files?.[0])} disabled={busy === 'file'} />
+              <FileSearch className="w-3 h-3" />{" "}
+              {busy === "file" ? "Checking…" : "Check a file"}
+              <input
+                type="file"
+                className="hidden"
+                onChange={(e) => void checkFile(e.target.files?.[0])}
+                disabled={busy === "file"}
+              />
             </label>
-            <p className="text-[10px] text-slate-400">Only the file's fingerprint (SHA-256) is sent — not the file.</p>
-            {fileResult && <p className="text-[11px] text-slate-700">{fileResult}</p>}
+            <p className="text-[10px] text-slate-400">
+              Only the file's fingerprint (SHA-256) is sent — not the file.
+            </p>
+            {fileResult && (
+              <p className="text-[11px] text-slate-700">{fileResult}</p>
+            )}
             {pendingUpload && (
               <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 space-y-1">
                 <p>
-                  Upload it for a full scan? It's sent to VirusTotal, which <b>shares uploaded files with security companies</b>. Never upload
-                  private or confidential documents.
+                  Upload it for a full scan? It's sent to VirusTotal, which{" "}
+                  <b>shares uploaded files with security companies</b>. Never
+                  upload private or confidential documents.
                 </p>
                 <div className="flex gap-2">
                   <button onClick={() => void uploadFile()} className={btn}>
                     Upload & scan
                   </button>
-                  <button onClick={() => setPendingUpload(null)} className="text-xs font-semibold text-slate-600 cursor-pointer">
+                  <button
+                    onClick={() => setPendingUpload(null)}
+                    className="text-xs font-semibold text-slate-600 cursor-pointer"
+                  >
                     No thanks
                   </button>
                 </div>
