@@ -4,7 +4,8 @@
 //   • Block trackers (declarativeNetRequest, per-site allow)
 //   • Download protection
 //   • Cookie viewer (names only — values are never read or shown)
-//   • Is it Safe: a link, a screenshot (vision model, with consent) or a file
+//   • Is it Safe tools (inside the popup's "Is it Safe?" card): a screenshot
+//     (vision model, with consent) or a file
 //     (SHA-256 hash lookup first; upload only after explicit opt-in)
 //
 // Optional permissions are requested from the click handler itself, as the
@@ -18,8 +19,6 @@ import {
   Cookie,
   FileSearch,
   Image as ImageIcon,
-  Link2,
-  ShieldAlert,
   Ban,
 } from "lucide-react";
 import { trackingCookieOwner } from "../utils/trackerList";
@@ -126,7 +125,14 @@ function Toggle({
   );
 }
 
-export default function ShieldExtras() {
+/**
+ * section="privacy": Privacy Report + Secure Browsing cards (Shield tab).
+ * section="tools": screenshot + file checks, rendered inside the popup's
+ * single "Is it Safe?" card (which also does the text/link check).
+ */
+export default function ShieldExtras({
+  section = "privacy",
+}: { section?: "privacy" | "tools" } = {}) {
   const [tab, setTab] = useState<{ id?: number; url: string; host: string }>({
     url: "",
     host: "",
@@ -151,8 +157,6 @@ export default function ShieldExtras() {
   const [msg, setMsg] = useState("");
 
   // Is it Safe
-  const [linkInput, setLinkInput] = useState("");
-  const [linkResult, setLinkResult] = useState<string>("");
   const [imgConsent, setImgConsent] = useState(false);
   const [imgResult, setImgResult] = useState<string>("");
   const [fileResult, setFileResult] = useState<string>("");
@@ -183,7 +187,7 @@ export default function ShieldExtras() {
           .sendMessage({ type: "SHIELD_AUTH_HEADER" })
           .catch(() => null)) as AuthInfo | null,
       );
-      if (t?.id !== undefined && host) {
+      if (section === "privacy" && t?.id !== undefined && host) {
         const r = (await browser.tabs
           .sendMessage(t.id, { type: "GET_PRIVACY_SIGNALS" }, { frameId: 0 })
           .catch(() => null)) as {
@@ -283,34 +287,6 @@ export default function ShieldExtras() {
       : (e as Error)?.message === "signin"
         ? "Sign in to XoraPass to use this."
         : "Could not check right now. Try again later.";
-
-  const checkLink = async () => {
-    let url = linkInput.trim();
-    if (!url) return;
-    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
-    setBusy("link");
-    setLinkResult("");
-    try {
-      const r = (await browser.runtime.sendMessage({
-        type: "CHECK_DOMAIN_RISK",
-        payload: { currentUrl: url },
-      })) as any;
-      const risk = r?.risk;
-      if (!risk) setLinkResult("No verdict available right now.");
-      else
-        setLinkResult(
-          risk.decision === "block"
-            ? `Dangerous — ${risk.safe_warning_message || risk.reasons?.[0] || "do not open this link."}`
-            : risk.decision === "warn" || risk.decision === "require_approval"
-              ? `Suspicious — ${risk.reasons?.[0] || "be careful with this link."}`
-              : "No known threats found for this link.",
-        );
-    } catch {
-      setLinkResult("Could not check right now.");
-    } finally {
-      setBusy("");
-    }
-  };
 
   const scanScreenshot = async () => {
     if (!imgConsent) return;
@@ -417,252 +393,235 @@ export default function ShieldExtras() {
 
   return (
     <>
-      {/* PRIVACY REPORT */}
-      <div className={card}>
-        <div className={heading}>
-          <Eye className="w-4 h-4 text-brand-cyan" /> Privacy Report
-        </div>
-        {!tab.host ? (
-          <p className="text-xs text-slate-500">
-            Open a website to see its privacy report.
-          </p>
-        ) : (
-          <div className="space-y-1.5 text-xs text-slate-700">
-            {signals && !signals.isHttps && (
-              <p className="font-semibold text-rose-600">
-                Not secure: this page uses plain HTTP.
+      {section === "privacy" && (
+        <>
+          {/* PRIVACY REPORT */}
+          <div className={card}>
+            <div className={heading}>
+              <Eye className="w-4 h-4 text-brand-cyan" /> Privacy Report
+            </div>
+            {!tab.host ? (
+              <p className="text-xs text-slate-500">
+                Open a website to see its privacy report.
               </p>
-            )}
-            {signals && signals.mixedContent > 0 && (
-              <p className="font-semibold text-amber-700">
-                {signals.mixedContent} insecure (HTTP) resource
-                {signals.mixedContent === 1 ? "" : "s"} on this secure page.
-              </p>
-            )}
-            <p>
-              <span className="font-bold">
-                {signals ? signals.trackers.length : "–"}
-              </span>{" "}
-              tracker compan
-              {signals?.trackers.length === 1 ? "y" : "ies"} ·{" "}
-              {signals ? signals.thirdPartyHosts : "–"} third-party sites
-            </p>
-            {signals && signals.trackers.length > 0 && (
-              <ul className="pl-3 list-disc text-slate-600">
-                {signals.trackers.slice(0, 8).map((t) => (
-                  <li key={`${t.company}-${t.category}`}>
-                    {t.company}{" "}
-                    <span className="text-slate-400">
-                      ({t.category.replace("_", " ")})
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {behaviorList.length > 0 && (
-              <ul className="pl-3 list-disc text-amber-800">
-                {behaviorList.map((k) => (
-                  <li key={k}>
-                    {BEHAVIOR_LABELS[k]}
-                    {k === "fingerprint" && behaviors.fingerprint.length
-                      ? ` (${behaviors.fingerprint.join(", ")})`
-                      : ""}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {!shieldOn && (
-              <p className="text-slate-400">
-                Behaviour alerts need always-on Shield (paid plans).
-              </p>
+            ) : (
+              <div className="space-y-1.5 text-xs text-slate-700">
+                {signals && !signals.isHttps && (
+                  <p className="font-semibold text-rose-600">
+                    Not secure: this page uses plain HTTP.
+                  </p>
+                )}
+                {signals && signals.mixedContent > 0 && (
+                  <p className="font-semibold text-amber-700">
+                    {signals.mixedContent} insecure (HTTP) resource
+                    {signals.mixedContent === 1 ? "" : "s"} on this secure page.
+                  </p>
+                )}
+                <p>
+                  <span className="font-bold">
+                    {signals ? signals.trackers.length : "–"}
+                  </span>{" "}
+                  tracker compan
+                  {signals?.trackers.length === 1 ? "y" : "ies"} ·{" "}
+                  {signals ? signals.thirdPartyHosts : "–"} third-party sites
+                </p>
+                {signals && signals.trackers.length > 0 && (
+                  <ul className="pl-3 list-disc text-slate-600">
+                    {signals.trackers.slice(0, 8).map((t) => (
+                      <li key={`${t.company}-${t.category}`}>
+                        {t.company}{" "}
+                        <span className="text-slate-400">
+                          ({t.category.replace("_", " ")})
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {behaviorList.length > 0 && (
+                  <ul className="pl-3 list-disc text-amber-800">
+                    {behaviorList.map((k) => (
+                      <li key={k}>
+                        {BEHAVIOR_LABELS[k]}
+                        {k === "fingerprint" && behaviors.fingerprint.length
+                          ? ` (${behaviors.fingerprint.join(", ")})`
+                          : ""}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {!shieldOn && (
+                  <p className="text-slate-400">
+                    Behaviour alerts need always-on Shield (paid plans).
+                  </p>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
 
-      {/* TRACKERS + DOWNLOADS + COOKIES */}
-      <div className={card}>
-        <div className={heading}>
-          <Ban className="w-4 h-4 text-brand-cyan" /> Secure Browsing
-        </div>
-        {settings && shieldOn ? (
-          <div className="space-y-2">
-            {feat("tracker_blocking") && (
-              <Toggle
-                on={settings.blockTrackers}
-                onChange={(v) => void toggleTrackers(v)}
-                label="Block trackers"
-              />
+          {/* TRACKERS + DOWNLOADS + COOKIES */}
+          <div className={card}>
+            <div className={heading}>
+              <Ban className="w-4 h-4 text-brand-cyan" /> Secure Browsing
+            </div>
+            {settings && shieldOn ? (
+              <div className="space-y-2">
+                {feat("tracker_blocking") && (
+                  <Toggle
+                    on={settings.blockTrackers}
+                    onChange={(v) => void toggleTrackers(v)}
+                    label="Block trackers"
+                  />
+                )}
+                {feat("tracker_blocking") &&
+                  settings.blockTrackers &&
+                  tab.host && (
+                    <button
+                      onClick={toggleSiteAllow}
+                      className="text-[11px] font-semibold text-teal-700 hover:underline cursor-pointer"
+                    >
+                      {siteAllowed
+                        ? `Block trackers on ${tab.host} again`
+                        : `Allow trackers on ${tab.host} (if the site breaks)`}
+                    </button>
+                  )}
+                {feat("download_guard") && (
+                  <div className="flex items-center gap-1.5">
+                    <Download className="w-3.5 h-3.5 text-slate-400" />
+                    <div className="flex-1">
+                      <Toggle
+                        on={settings.downloadGuard}
+                        onChange={(v) => void toggleDownloads(v)}
+                        label="Download protection"
+                      />
+                    </div>
+                  </div>
+                )}
+                {!feat("tracker_blocking") && !feat("download_guard") && (
+                  <p className="text-xs text-slate-500">
+                    Tracker blocking and download protection are rolling out and
+                    will appear here soon.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">
+                Tracker blocking and download protection are part of always-on
+                Shield (paid plans).
+              </p>
             )}
-            {feat("tracker_blocking") && settings.blockTrackers && tab.host && (
+            {tab.host && (
               <button
-                onClick={toggleSiteAllow}
-                className="text-[11px] font-semibold text-teal-700 hover:underline cursor-pointer"
+                onClick={() => void viewCookies()}
+                className={`${btn} flex items-center gap-1.5`}
               >
-                {siteAllowed
-                  ? `Block trackers on ${tab.host} again`
-                  : `Allow trackers on ${tab.host} (if the site breaks)`}
+                <Cookie className="w-3 h-3" /> View cookies for {tab.host}
               </button>
             )}
-            {feat("download_guard") && (
-              <div className="flex items-center gap-1.5">
-                <Download className="w-3.5 h-3.5 text-slate-400" />
-                <div className="flex-1">
-                  <Toggle
-                    on={settings.downloadGuard}
-                    onChange={(v) => void toggleDownloads(v)}
-                    label="Download protection"
+            {cookies && (
+              <div className="max-h-32 overflow-y-auto custom-scrollbar text-[11px] text-slate-700 space-y-0.5">
+                {cookies.length === 0 && <p>No cookies.</p>}
+                {cookies.map((c) => (
+                  <div key={c.name} className="flex justify-between gap-2">
+                    <span className="truncate font-mono">{c.name}</span>
+                    <span
+                      className={
+                        c.owner
+                          ? "text-amber-700 font-semibold"
+                          : "text-slate-400"
+                      }
+                    >
+                      {c.owner
+                        ? `Tracking · ${c.owner}`
+                        : [
+                            c.secure ? "Secure" : "Not secure",
+                            c.httpOnly ? "HttpOnly" : "",
+                            c.session ? "Session" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {msg && <p className="text-[11px] text-amber-700">{msg}</p>}
+          </div>
+        </>
+      )}
+      {section === "tools" && (feat("image_scan") || feat("file_scan")) && (
+        <div className="space-y-2.5 pt-2.5 border-t border-slate-900/10">
+          {feat("image_scan") &&
+            auth?.config?.image_scan?.enabled !== false && (
+              <div className="space-y-1">
+                <label className="flex items-start gap-1.5 text-[11px] text-slate-600">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 accent-teal-600"
+                    checked={imgConsent}
+                    onChange={(e) => setImgConsent(e.target.checked)}
                   />
-                </div>
-              </div>
-            )}
-            {!feat("tracker_blocking") && !feat("download_guard") && (
-              <p className="text-xs text-slate-500">
-                Tracker blocking and download protection are rolling out and
-                will appear here soon.
-              </p>
-            )}
-          </div>
-        ) : (
-          <p className="text-xs text-slate-500">
-            Tracker blocking and download protection are part of always-on
-            Shield (paid plans).
-          </p>
-        )}
-        {tab.host && (
-          <button
-            onClick={() => void viewCookies()}
-            className={`${btn} flex items-center gap-1.5`}
-          >
-            <Cookie className="w-3 h-3" /> View cookies for {tab.host}
-          </button>
-        )}
-        {cookies && (
-          <div className="max-h-32 overflow-y-auto custom-scrollbar text-[11px] text-slate-700 space-y-0.5">
-            {cookies.length === 0 && <p>No cookies.</p>}
-            {cookies.map((c) => (
-              <div key={c.name} className="flex justify-between gap-2">
-                <span className="truncate font-mono">{c.name}</span>
-                <span
-                  className={
-                    c.owner ? "text-amber-700 font-semibold" : "text-slate-400"
-                  }
+                  <span>
+                    I agree to send a screenshot of this tab to XoraPass for AI
+                    analysis. It isn't stored. Don't use it on pages showing
+                    private data.
+                  </span>
+                </label>
+                <button
+                  onClick={() => void scanScreenshot()}
+                  disabled={!imgConsent || busy === "img" || !tab.host}
+                  className={`${btn} flex items-center gap-1.5`}
                 >
-                  {c.owner
-                    ? `Tracking · ${c.owner}`
-                    : [
-                        c.secure ? "Secure" : "Not secure",
-                        c.httpOnly ? "HttpOnly" : "",
-                        c.session ? "Session" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                </span>
+                  <ImageIcon className="w-3 h-3" />{" "}
+                  {busy === "img" ? "Checking…" : "Check this screen"}
+                </button>
+                {imgResult && (
+                  <p className="text-[11px] text-slate-700">{imgResult}</p>
+                )}
               </div>
-            ))}
-          </div>
-        )}
-        {msg && <p className="text-[11px] text-amber-700">{msg}</p>}
-      </div>
+            )}
 
-      {/* IS IT SAFE */}
-      <div className={card}>
-        <div className={heading}>
-          <ShieldAlert className="w-4 h-4 text-brand-cyan" /> Is it Safe?
-        </div>
-        <div className="space-y-1">
-          <div className="flex items-center gap-1.5">
-            <Link2 className="w-3.5 h-3.5 text-slate-400" />
-            <input
-              value={linkInput}
-              onChange={(e) => setLinkInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void checkLink()}
-              placeholder="Paste a link"
-              className="flex-1 px-2 py-1 text-xs border border-slate-900/10 rounded-lg bg-slate-50"
-            />
-            <button
-              onClick={() => void checkLink()}
-              disabled={busy === "link"}
-              className={btn}
-            >
-              Check
-            </button>
-          </div>
-          {linkResult && (
-            <p className="text-[11px] text-slate-700">{linkResult}</p>
+          {feat("file_scan") && auth?.config?.file_scan?.enabled !== false && (
+            <div className="space-y-1">
+              <label className={`${btn} inline-flex items-center gap-1.5`}>
+                <FileSearch className="w-3 h-3" />{" "}
+                {busy === "file" ? "Checking…" : "Check a file"}
+                <input
+                  type="file"
+                  className="hidden"
+                  onChange={(e) => void checkFile(e.target.files?.[0])}
+                  disabled={busy === "file"}
+                />
+              </label>
+              <p className="text-[10px] text-slate-400">
+                Only the file's fingerprint (SHA-256) is sent — not the file.
+              </p>
+              {fileResult && (
+                <p className="text-[11px] text-slate-700">{fileResult}</p>
+              )}
+              {pendingUpload && (
+                <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 space-y-1">
+                  <p>
+                    Upload it for a full scan? It's sent to VirusTotal, which{" "}
+                    <b>shares uploaded files with security companies</b>. Never
+                    upload private or confidential documents.
+                  </p>
+                  <div className="flex gap-2">
+                    <button onClick={() => void uploadFile()} className={btn}>
+                      Upload & scan
+                    </button>
+                    <button
+                      onClick={() => setPendingUpload(null)}
+                      className="text-xs font-semibold text-slate-600 cursor-pointer"
+                    >
+                      No thanks
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
-
-        {feat("image_scan") && auth?.config?.image_scan?.enabled !== false && (
-          <div className="space-y-1">
-            <label className="flex items-start gap-1.5 text-[11px] text-slate-600">
-              <input
-                type="checkbox"
-                className="mt-0.5 accent-teal-600"
-                checked={imgConsent}
-                onChange={(e) => setImgConsent(e.target.checked)}
-              />
-              <span>
-                I agree to send a screenshot of this tab to XoraPass for AI
-                analysis. It isn't stored. Don't use it on pages showing private
-                data.
-              </span>
-            </label>
-            <button
-              onClick={() => void scanScreenshot()}
-              disabled={!imgConsent || busy === "img" || !tab.host}
-              className={`${btn} flex items-center gap-1.5`}
-            >
-              <ImageIcon className="w-3 h-3" />{" "}
-              {busy === "img" ? "Checking…" : "Check this screen"}
-            </button>
-            {imgResult && (
-              <p className="text-[11px] text-slate-700">{imgResult}</p>
-            )}
-          </div>
-        )}
-
-        {feat("file_scan") && auth?.config?.file_scan?.enabled !== false && (
-          <div className="space-y-1">
-            <label className={`${btn} inline-flex items-center gap-1.5`}>
-              <FileSearch className="w-3 h-3" />{" "}
-              {busy === "file" ? "Checking…" : "Check a file"}
-              <input
-                type="file"
-                className="hidden"
-                onChange={(e) => void checkFile(e.target.files?.[0])}
-                disabled={busy === "file"}
-              />
-            </label>
-            <p className="text-[10px] text-slate-400">
-              Only the file's fingerprint (SHA-256) is sent — not the file.
-            </p>
-            {fileResult && (
-              <p className="text-[11px] text-slate-700">{fileResult}</p>
-            )}
-            {pendingUpload && (
-              <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 space-y-1">
-                <p>
-                  Upload it for a full scan? It's sent to VirusTotal, which{" "}
-                  <b>shares uploaded files with security companies</b>. Never
-                  upload private or confidential documents.
-                </p>
-                <div className="flex gap-2">
-                  <button onClick={() => void uploadFile()} className={btn}>
-                    Upload & scan
-                  </button>
-                  <button
-                    onClick={() => setPendingUpload(null)}
-                    className="text-xs font-semibold text-slate-600 cursor-pointer"
-                  >
-                    No thanks
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+      )}
     </>
   );
 }

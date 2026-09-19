@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
-import { GOOGLE_NO_GUARANTEE_NOTICE } from '../utils/webRiskAttribution';
+import { GOOGLE_NO_GUARANTEE_NOTICE, webRiskAdvisoryFromSignals, type ThreatAdvisory } from '../utils/webRiskAttribution';
 import {
   Shield,
   Search,
@@ -445,6 +445,10 @@ export const PopupApp: React.FC = () => {
   // XoraPass Shield - "Is This Safe?" Analyzer state
   const [promptQuery, setPromptQuery] = useState('');
   const [promptResult, setPromptResult] = useState<PromptAnalysisResult | null>(null);
+  // Server-side threat-intelligence verdicts for links found in the checked text.
+  const [linkIntel, setLinkIntel] = useState<
+    { url: string; decision: string; reason: string; advisory: ThreatAdvisory | null }[] | null
+  >(null);
   const [isAnalyzingPrompt, setIsAnalyzingPrompt] = useState(false);
 
   // XoraPass Shield - Installed Extension Security Checkup state
@@ -695,31 +699,67 @@ export const PopupApp: React.FC = () => {
     browser.tabs.create({ url: target });
   };
 
-  const handleAnalyzePrompt = (customText?: string) => {
+  /**
+   * "Is it Safe?": the text is analysed on the device (lookalikes of saved
+   * sites, scam wording); every link found in it (max 3) is ALSO checked
+   * against threat intelligence via the backend — address only, the
+   * surrounding text never leaves the device.
+   */
+  const handleAnalyzePrompt = async (customText?: string) => {
     const textToAnalyze = (customText !== undefined ? customText : promptQuery).trim();
     if (!textToAnalyze) return;
 
     setIsAnalyzingPrompt(true);
+    setLinkIntel(null);
     // Gather known hosts from user vault items for lookalike / credential impersonation context
     const vaultHosts = vaultItems.map((item) => item.url || item.label).filter(Boolean);
 
-    // Simulate brief scan animation for premium UX
-    setTimeout(() => {
-      try {
-        const result = analyzePromptSafety(textToAnalyze, vaultHosts);
-        setPromptResult(result);
-      } catch (err) {
-        console.error('Failed to analyze prompt safety', err);
-      } finally {
-        setIsAnalyzingPrompt(false);
+    try {
+      const local = analyzePromptSafety(textToAnalyze, vaultHosts);
+      setPromptResult(local);
+
+      const urls = local.extractedUrls.slice(0, 3).map((u) => (/^https?:\/\//i.test(u) ? u : `https://${u}`));
+      if (urls.length === 0) return;
+      const intel = await Promise.all(
+        urls.map(async (url) => {
+          const r = (await browser.runtime
+            .sendMessage({ type: 'CHECK_DOMAIN_RISK', payload: { currentUrl: url } })
+            .catch(() => null)) as { risk?: any } | null;
+          const risk = r?.risk;
+          return {
+            url,
+            decision: typeof risk?.decision === 'string' ? risk.decision : 'unavailable',
+            reason: risk?.safe_warning_message || risk?.reasons?.[0] || '',
+            advisory: webRiskAdvisoryFromSignals(risk?.threat_intel_signals),
+            score: typeof risk?.risk_score === 'number' ? risk.risk_score : 0,
+          };
+        })
+      );
+      setLinkIntel(intel.map(({ score: _s, ...rest }) => rest));
+
+      // A server "block" outranks a softer local verdict.
+      const worst = intel.reduce((m, i) => Math.max(m, i.score), 0);
+      if (intel.some((i) => i.decision === 'block')) {
+        setPromptResult({
+          ...local,
+          verdict: 'phishing',
+          riskScore: Math.max(local.riskScore, worst),
+          title: local.verdict === 'phishing' ? local.title : 'Dangerous link',
+        });
+      } else if (local.verdict === 'safe' && intel.some((i) => i.decision === 'warn' || i.decision === 'require_approval')) {
+        setPromptResult({ ...local, verdict: 'suspicious', riskScore: Math.max(local.riskScore, worst), title: 'Suspicious link' });
       }
-    }, 450);
+    } catch (err) {
+      console.error('Failed to analyze prompt safety', err);
+    } finally {
+      setIsAnalyzingPrompt(false);
+    }
   };
 
   const handleScanCurrentUrlToPrompt = () => {
     if (!activeTabUrl) return;
     setPromptQuery(activeTabUrl);
-    handleAnalyzePrompt(activeTabUrl);
+    void handleAnalyzePrompt(activeTabUrl);
   };
 
   const handleAuditExtensions = () => {
@@ -3266,11 +3306,11 @@ export const PopupApp: React.FC = () => {
                   ) : null}
                 </div>
 
-                {/* 2. AI "IS THIS SAFE?" SCANNER CARD */}
+                {/* 2. "IS IT SAFE?" — text/link check + screenshot + file */}
                 <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                      <HelpCircle className="w-4 h-4 text-brand-cyan" /> AI "Is This Safe?"
+                      <HelpCircle className="w-4 h-4 text-brand-cyan" /> Is it Safe?
                     </div>
                     {activeTabUrl && (
                       <button
@@ -3285,7 +3325,7 @@ export const PopupApp: React.FC = () => {
                   </div>
 
                   <p className="text-xs text-slate-500 leading-snug">
-                    Paste any suspicious link, SMS message, or email snippet to analyze lookalike risks, urgent phishing traps, or scam lures.
+                    Paste a suspicious link, text message or email. We check the wording for scam tricks and lookalike sites, and check any links against threat-intelligence services.
                   </p>
 
                   <div className="relative">
@@ -3298,7 +3338,7 @@ export const PopupApp: React.FC = () => {
                     />
                     {promptQuery && (
                       <button
-                        onClick={() => { setPromptQuery(''); setPromptResult(null); }}
+                        onClick={() => { setPromptQuery(''); setPromptResult(null); setLinkIntel(null); }}
                         className="absolute top-2 right-2 p-1 text-slate-400 hover:text-slate-600 rounded-full cursor-pointer"
                         title="Clear"
                       >
@@ -3309,22 +3349,22 @@ export const PopupApp: React.FC = () => {
 
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[10px] text-slate-400 font-medium">
-                      🔒 Zero-Knowledge: Analyzed locally against vault context.
+                      🔒 Text is checked on your device. Only link addresses are sent for threat checks.
                     </span>
                     <button
-                      onClick={() => handleAnalyzePrompt()}
+                      onClick={() => void handleAnalyzePrompt()}
                       disabled={isAnalyzingPrompt || !promptQuery.trim()}
                       className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs shrink-0"
                     >
                       {isAnalyzingPrompt ? (
                         <>
                           <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          <span>Analyzing...</span>
+                          <span>Checking...</span>
                         </>
                       ) : (
                         <>
                           <ShieldCheck className="w-3.5 h-3.5 text-brand-cyan" />
-                          <span>Analyze Safety</span>
+                          <span>Check</span>
                         </>
                       )}
                     </button>
@@ -3378,6 +3418,47 @@ export const PopupApp: React.FC = () => {
                         </div>
                       )}
 
+                      {/* Threat intelligence (server) for links in the text */}
+                      {linkIntel && linkIntel.length > 0 && (
+                        <div className="space-y-1">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Threat Intelligence</div>
+                          {linkIntel.map((i) => (
+                            <div key={i.url} className="text-[11px] bg-slate-50 border border-slate-900/5 px-2 py-1 rounded-md space-y-0.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate font-mono text-slate-700">{i.url.replace(/^https?:\/\//, '')}</span>
+                                <span
+                                  className={`shrink-0 font-bold ${
+                                    i.decision === 'block'
+                                      ? 'text-rose-700'
+                                      : i.decision === 'warn' || i.decision === 'require_approval'
+                                      ? 'text-amber-700'
+                                      : i.decision === 'allow'
+                                      ? 'text-emerald-700'
+                                      : 'text-slate-400'
+                                  }`}
+                                >
+                                  {i.decision === 'block'
+                                    ? 'Likely dangerous'
+                                    : i.decision === 'warn' || i.decision === 'require_approval'
+                                    ? 'Suspicious'
+                                    : i.decision === 'allow'
+                                    ? 'No known threats'
+                                    : 'Not checked'}
+                                </span>
+                              </div>
+                              {i.reason && i.decision !== 'allow' && <p className="text-slate-600">{i.reason}</p>}
+                              {i.advisory && (
+                                <p className="text-[10px] text-slate-500">
+                                  <a href={i.advisory.url} target="_blank" rel="noopener noreferrer" className="underline">{i.advisory.text}</a>
+                                  {' · '}
+                                  <a href={i.advisory.learnMoreUrl} target="_blank" rel="noopener noreferrer" className="underline">Learn more</a>
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
                       {/* Actionable recommendations */}
                       {promptResult.recommendations.length > 0 && (
                         <div className="space-y-1">
@@ -3394,6 +3475,8 @@ export const PopupApp: React.FC = () => {
                       )}
                     </div>
                   )}
+                  {/* Screenshot + file checks (paid, rolled out) */}
+                  <ShieldExtras section="tools" />
                 </div>
 
                 {/* AI Secret Leak Protection */}
