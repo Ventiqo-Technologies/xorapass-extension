@@ -242,6 +242,11 @@ export default function ShieldExtras({
   };
 
   const viewCookies = async () => {
+    // Second click hides the list.
+    if (cookies) {
+      setCookies(null);
+      return;
+    }
     if (!tab.url) return;
     // One request (a user gesture is needed): cookies + this one site only.
     let granted = false;
@@ -514,7 +519,7 @@ export default function ShieldExtras({
                 onClick={() => void viewCookies()}
                 className={`${btn} flex items-center gap-1.5`}
               >
-                <Cookie className="w-3 h-3" /> View cookies for {tab.host}
+                <Cookie className="w-3 h-3" /> {cookies ? "Hide cookies" : `View cookies for ${tab.host}`}
               </button>
             )}
             {cookies && (
