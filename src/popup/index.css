@@ -465,3 +465,30 @@ input:-webkit-autofill:focus {
   animation: pulse-ring 1.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
+
+/* Caps Lock hint: a small chip inside the master-password field (no layout
+   shift), plus an amber edge on the field itself. */
+.caps-chip {
+  background: #fef3c7;
+  color: #92400e;
+  box-shadow: inset 0 0 0 1px #fcd34d;
+}
+.auth-input.caps-on {
+  border-color: #f59e0b;
+}
+.auth-input.caps-on:focus {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18);
+}
+.dark .caps-chip {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.35);
+}
+.dark .auth-input.caps-on,
+.dark .auth-input.caps-on:focus {
+  border-color: rgba(245, 158, 11, 0.7);
+}
+.dark .auth-input.caps-on:focus {
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
+}

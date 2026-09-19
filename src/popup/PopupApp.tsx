@@ -43,6 +43,7 @@ import {
   Clock,
   Sparkles,
   Zap,
+  ArrowBigUp,
   Star,
   HelpCircle,
   Puzzle,
@@ -1665,8 +1666,24 @@ export const PopupApp: React.FC = () => {
                   if (e.key === 'Enter' && !loading) handleLogin();
                 }}
                 onKeyUp={(e) => setCapsLockOn(e.getModifierState('CapsLock'))}
-                className="auth-input w-full pl-10 pr-10 py-3 rounded-xl text-sm text-slate-900 placeholder-slate-400 font-sans shadow-xs"
+                // Also catch Caps Lock that was already on before typing, and
+                // hide the hint when the field isn't in use.
+                onMouseDown={(e) => setCapsLockOn(e.getModifierState('CapsLock'))}
+                onBlur={() => setCapsLockOn(false)}
+                aria-describedby={capsLockOn ? 'caps-lock-hint' : undefined}
+                className={`auth-input w-full pl-10 ${capsLockOn ? 'pr-28 caps-on' : 'pr-10'} py-3 rounded-xl text-sm text-slate-900 placeholder-slate-400 font-sans shadow-xs`}
               />
+              {capsLockOn && (
+                <span
+                  id="caps-lock-hint"
+                  role="status"
+                  aria-live="polite"
+                  className="caps-chip absolute right-10 top-1/2 -translate-y-1/2 flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-md text-[11px] font-bold pointer-events-none animate-fade-in"
+                >
+                  <ArrowBigUp className="w-3.5 h-3.5" strokeWidth={2.5} />
+                  Caps Lock
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
@@ -1675,13 +1692,6 @@ export const PopupApp: React.FC = () => {
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
-
-            {capsLockOn && (
-              <div className="p-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-sm font-bold flex items-center gap-2 animate-fade-in">
-                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>Caps Lock is ON</span>
-              </div>
-            )}
 
             <button
               type="button"
