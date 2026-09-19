@@ -193,6 +193,29 @@ function scanEmailNow(host: string): void {
   }
 }
 
+// ── Login pages with no real website behind them ───────────────────────────
+// HTML "smuggling": an email attachment or download builds the phishing page
+// in the browser (blob:, data:) or opens it as a local file (file:), so no
+// web address — and none of the address-based checks — ever applies. A
+// password field on such a page is almost always phishing. Local, not rolled
+// out (near-zero false positives).
+
+let opaqueWarned = false;
+
+export function checkOpaqueOriginLogin(): void {
+  if (opaqueWarned || !/^(blob|data|file):$/.test(location.protocol)) return;
+  if (!document.querySelector('input[type="password"]')) return;
+  opaqueWarned = true;
+  showRiskWarning({
+    severity: 'block',
+    title: 'Fake Login Page',
+    message:
+      "This login page doesn't come from a real website — it was built from a file or email attachment. Phishing attachments use this trick to steal passwords. Don't enter anything here; close this tab.",
+    currentDomain: location.protocol === 'file:' ? 'Local file' : 'No real website',
+    riskLevel: 'critical',
+  });
+}
+
 // ── Insecure forms ─────────────────────────────────────────────────────────
 
 let insecureWarned = false;

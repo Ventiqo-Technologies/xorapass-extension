@@ -52,7 +52,7 @@ import { collectPageSignals, isWorthAssessing, primeFaviconBrand, type PageSigna
 import { collectPageText, shouldAiScan } from '../utils/pageContent';
 import { WEB_APP_URL } from '../utils/config';
 import { webRiskAdvisoryFromSignals } from '../utils/webRiskAttribution';
-import { scanEmailContent, checkInsecureForms, collectPrivacySignals, showDownloadPrompt, showDownloadBlocked } from './secureBrowsing';
+import { scanEmailContent, checkInsecureForms, checkOpaqueOriginLogin, collectPrivacySignals, showDownloadPrompt, showDownloadBlocked } from './secureBrowsing';
 
 let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
@@ -995,7 +995,10 @@ function scanForPaymentFields(): void {
 const warnedSendersOnPage = new Set<string>();
 
 function scanWebmailMessages(): void {
-  if (window === window.top) checkInsecureForms();
+  if (window === window.top) {
+    checkInsecureForms();
+    checkOpaqueOriginLogin();
+  }
   if (!webmailGuardEnabled || !isSupportedWebmail(window.location.hostname)) return;
   scanEmailContent(window.location.hostname);
 
@@ -2285,6 +2288,7 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   initOverlayTheme();
   initPasteGuard();
   initWebBridge();
+  if (window === window.top) setTimeout(checkOpaqueOriginLogin, 300);
   // The first risk check includes the on-device favicon match. The tab icon
   // is normally cached, so this waits a few ms (400 ms at most).
   if (window === window.top && /^https?:$/.test(location.protocol)) {

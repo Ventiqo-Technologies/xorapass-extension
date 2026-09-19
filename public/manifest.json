@@ -66,7 +66,8 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "match_origin_as_fallback": true
     },
     {
       "matches": ["<all_urls>"],

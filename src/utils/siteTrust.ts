@@ -80,6 +80,29 @@ export const USER_CONTENT_HOST_SUFFIXES: readonly string[] = [
   'canva.site', 'dropboxusercontent.com', 'box.net',
 ];
 
+/**
+ * Free web-hosting, serverless and tunnel domains where anyone can publish a
+ * page in minutes. Harmless on their own; a brand LOGIN page on one is a
+ * strong phishing signal (see utils/pageRisk.ts).
+ */
+export const FREE_HOSTING_SUFFIXES: readonly string[] = [
+  'pages.dev', 'workers.dev', 'r2.dev', 'web.app', 'firebaseapp.com', 'netlify.app', 'vercel.app',
+  'github.io', 'gitlab.io', 'glitch.me', 'repl.co', 'replit.dev', 'replit.app', 'herokuapp.com',
+  'onrender.com', 'fly.dev', 'railway.app', 'surge.sh', 'deno.dev', 'azurewebsites.net',
+  'azurestaticapps.net', 'appspot.com', 'cloudfunctions.net', 'run.app', 'ngrok.io', 'ngrok.app',
+  'ngrok-free.app', 'trycloudflare.com', 'loca.lt', 'serveo.net', 'duckdns.org', 'no-ip.org',
+  'ddns.net', '000webhostapp.com', 'weebly.com', 'wixsite.com', 'webflow.io', 'square.site',
+  'blogspot.com', 'wordpress.com', 'godaddysites.com', 'mystrikingly.com', 'jimdosite.com',
+  'ipfs.io', 'dweb.link', 'ipfs.dweb.link', 'framer.app', 'framer.website', 'notion.site',
+  'typedream.app', 'carrd.co', 'tiiny.site',
+];
+
+export function isFreeHostingHost(host: string): boolean {
+  const h = normalizeHostname(host);
+  if (!h) return false;
+  return FREE_HOSTING_SUFFIXES.some((suf) => h.endsWith('.' + suf));
+}
+
 /** True when `host` is (or is under) a customer-content hosting suffix. */
 export function isUserContentHost(host: string): boolean {
   const h = normalizeHostname(host);

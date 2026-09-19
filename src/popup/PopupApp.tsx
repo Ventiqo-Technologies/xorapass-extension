@@ -52,7 +52,8 @@ import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptS
 import { type ExtensionAuditSummary } from '../utils/extensionAudit';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
-import { isDomainMatch, findLookalikeTarget, extractHostname, assessDomainRisk } from '../utils/siteTrust';
+import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
+import { assessWithCatalog } from '../utils/domainRisk';
 import { type SiteSafetyReport } from '../utils/siteScanner';
 import {
   mergeLocalAndRemoteRisk,
@@ -1470,7 +1471,7 @@ export const PopupApp: React.FC = () => {
   // knownHosts list gracefully (a clean, all-false assessment).
   const localDomainRisk =
     currentHostname && !siteDisabled
-      ? assessDomainRisk(currentHostname, knownHosts, domainAllowlist, `${currentProtocol}//${currentHostname}`)
+      ? assessWithCatalog(currentHostname, knownHosts, domainAllowlist, `${currentProtocol}//${currentHostname}`)
       : null;
 
   const lookalike =

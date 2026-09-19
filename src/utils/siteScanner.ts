@@ -10,7 +10,8 @@ import { webRiskAdvisoryFromSignals } from './webRiskAttribution';
 // are inspected.
 
 import { extractHostname, isDomainMatch, findLookalikeTarget } from './siteTrust';
-import { assessDomainRisk, disabledDomainRiskAssessment } from './domainRisk';
+import { assessWithCatalog, disabledDomainRiskAssessment } from './domainRisk';
+import { scorePageSignals, applyPageRisk } from './pageRisk';
 import type { PageSignals } from './pageSignals';
 import type { RemoteDomainRiskResponse } from './domainRiskService';
 
@@ -105,7 +106,7 @@ export function buildSiteSafetyReport(params: {
   // 1. Vault domain matching & lookalike detection
   const hasSavedCredential = savedDomains.some((d) => isDomainMatch(hostname, d));
   const localRisk = domainRiskEnabled
-    ? assessDomainRisk(hostname, savedDomains, allowlist, url)
+    ? applyPageRisk(assessWithCatalog(hostname, savedDomains, allowlist, url), scorePageSignals(pageSignals, hostname))
     : disabledDomainRiskAssessment(hostname);
   const lookalike =
     domainRiskEnabled && !hasSavedCredential ? findLookalikeTarget(hostname, savedDomains, allowlist) : null;

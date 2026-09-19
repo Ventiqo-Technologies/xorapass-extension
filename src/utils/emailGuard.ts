@@ -3,9 +3,8 @@
 // content is sent anywhere.
 
 import { extractHostname, registrableDomain } from './siteTrust';
-import { assessDomainRisk } from './domainRisk';
+import { assessWithCatalog } from './domainRisk';
 import { unwrapLink, isShortenerUrl } from './linkInspect';
-import { KNOWN_BRAND_DOMAINS } from './promptSafety';
 
 export interface EmailFinding {
   level: 'danger' | 'caution';
@@ -51,7 +50,7 @@ export function analyzeEmailLink(text: string, href: string, knownHosts: readonl
     raise('danger', `Link text shows ${claimed} but it really goes to ${actual}`);
   }
 
-  const risk = assessDomainRisk(host, Array.from(new Set([...knownHosts, ...KNOWN_BRAND_DOMAINS])), [], finalUrl);
+  const risk = assessWithCatalog(host, [...knownHosts], [], finalUrl);
   if (risk.signals.isHomograph || risk.signals.hasPunycode) raise('danger', `Uses look-alike characters to imitate ${risk.matchedTarget || 'a real site'}`);
   else if (risk.signals.typosquatTarget) raise('danger', `Misspelled look-alike of ${risk.signals.typosquatTarget}`);
   else if (risk.signals.brandAbuse) raise('danger', `Uses the ${risk.signals.brandAbuse.brand} name on a site it doesn't own`);

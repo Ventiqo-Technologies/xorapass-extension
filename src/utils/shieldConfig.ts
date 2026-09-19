@@ -28,6 +28,8 @@ export interface ShieldConfig {
   file_scan: { enabled: boolean };
   file_upload: { enabled: boolean };
   trusted_domains: string[];
+  /** Brands added to the built-in catalog without an extension release. */
+  extra_brands: { token: string; name: string; domains: string[] }[];
 }
 
 export const DEFAULT_SHIELD_CONFIG: ShieldConfig = Object.freeze({
@@ -43,6 +45,7 @@ export const DEFAULT_SHIELD_CONFIG: ShieldConfig = Object.freeze({
   file_scan: { enabled: true },
   file_upload: { enabled: true },
   trusted_domains: [],
+  extra_brands: [],
 }) as ShieldConfig;
 
 function obj(v: unknown): Record<string, unknown> {
@@ -120,5 +123,21 @@ export function coerceShieldConfig(input: unknown): ShieldConfig {
     file_scan: { enabled: bool(obj(o.file_scan).enabled, d.file_scan.enabled) },
     file_upload: { enabled: bool(obj(o.file_upload).enabled, d.file_upload.enabled) },
     trusted_domains: trusted,
+    extra_brands: Array.isArray(o.extra_brands)
+      ? (o.extra_brands as unknown[])
+          .map((b) => obj(b))
+          .filter((b) => typeof b.token === 'string' && Array.isArray(b.domains))
+          .slice(0, 200)
+          .map((b) => ({
+            token: String(b.token).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40),
+            name: typeof b.name === 'string' ? b.name.slice(0, 60) : String(b.token),
+            domains: (b.domains as unknown[])
+              .filter((d): d is string => typeof d === 'string')
+              .map((d) => d.trim().toLowerCase().replace(/^www\./, ''))
+              .filter((d) => HOST_RE.test(d))
+              .slice(0, 30),
+          }))
+          .filter((b) => b.token.length >= 3 && b.domains.length > 0)
+      : [],
   };
 }

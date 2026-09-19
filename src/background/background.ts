@@ -1,6 +1,6 @@
 import browser from 'webextension-polyfill';
-import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain, assessDomainRisk } from '../utils/siteTrust';
-import { disabledDomainRiskAssessment, type DomainRiskAssessment } from '../utils/domainRisk';
+import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
+import { disabledDomainRiskAssessment, assessWithCatalog, type DomainRiskAssessment } from '../utils/domainRisk';
 import {
   checkDomainRiskRemote,
   mergeLocalAndRemoteRisk,
@@ -45,7 +45,8 @@ import { decideNavigation, isTrustedHost, isAllowlistedHost, shouldEscalateRemot
 import { sanitizeUrlForRiskCheck, authHeaderValue } from '../utils/domainRiskService';
 import type { ShieldConfig } from '../utils/shieldConfig';
 import { unwrapLink, isShortenerUrl, buildLinkVerdict } from '../utils/linkInspect';
-import { KNOWN_BRAND_DOMAINS } from '../utils/promptSafety';
+import { mergeExtraBrands } from '../utils/brandCatalog';
+import { scorePageSignals, applyPageRisk } from '../utils/pageRisk';
 import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
@@ -1125,7 +1126,8 @@ async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
     .filter(Boolean);
 
   const blocklistHit = await checkBlocklist(url);
-  const local = knownHosts.length > 0 ? assessDomainRisk(host, knownHosts, allowlist, url, shieldAssessOptions(cfg)) : null;
+  // Saved sites + built-in brand catalog, so this works while locked too.
+  const local = assessWithCatalog(host, knownHosts, allowlist, url, shieldAssessOptions(cfg), mergeExtraBrands(cfg.extra_brands));
   const decision = decideNavigation({ url, config: cfg, active, userAllowlist: allowlist, knownHosts, blocklistHit, local });
   return { ...decision, typingGuardMs, hooks };
 }
@@ -1157,7 +1159,11 @@ async function evaluateDomainRisk(opts: {
     : await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
   if (!domainRiskOn || isLocalOrPrivateHost(opts.hostname)) return disabledDomainRiskAssessment(opts.hostname);
 
-  let risk = assessDomainRisk(opts.hostname, opts.knownHosts, opts.allowlist, opts.currentUrl, shieldAssessOptions(cfg));
+  const brands = mergeExtraBrands(cfg.extra_brands);
+  let risk = assessWithCatalog(opts.hostname, opts.knownHosts, opts.allowlist, opts.currentUrl, shieldAssessOptions(cfg), brands);
+  // Page structure (brand shown vs. real domain, password field, hosting,
+  // fake windows), scored locally — works offline and without the server.
+  risk = applyPageRisk(risk, scorePageSignals(opts.pageSignals, opts.hostname, brands), shieldAssessOptions(cfg));
 
   // Remote kill switch applies to every path; the gate only to the listing.
   if (!cfg.remote.enabled || (opts.remoteGate && !opts.remoteGate(risk, cfg))) return risk;
@@ -2083,7 +2089,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // just whichever vault item happens to be first.
       let risk = null;
       if (domainRiskOn) {
-        const local = assessDomainRisk(extractHostname(targetUrl), savedDomains, allowlist, targetUrl);
+        const local = assessWithCatalog(extractHostname(targetUrl), savedDomains, allowlist, targetUrl);
         const savedDomain = matching[0]?.url
           ? extractHostname(matching[0].url)
           : local.matchedTarget || findLookalikeTarget(extractHostname(targetUrl), savedDomains, allowlist)?.target || '';
@@ -2724,12 +2730,11 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
     //    unlocked session) plus commonly phished brands.
     const destHost = extractHostname(finalUrl);
     const vaultHosts = await getVaultHostsIfUnlocked();
-    const knownHosts = Array.from(new Set([...vaultHosts, ...KNOWN_BRAND_DOMAINS]));
     const allowlist = await getDomainAllowlist();
 
     let risk: DomainRiskAssessment = isCustomScheme
       ? disabledDomainRiskAssessment(destHost)
-      : assessDomainRisk(destHost, knownHosts, allowlist, finalUrl);
+      : assessWithCatalog(destHost, vaultHosts, allowlist, finalUrl);
 
     // 4. Threat intel for the destination (query-stripped; plan-gated).
     if (!isCustomScheme && destHost && !unresolvedShortener) {
