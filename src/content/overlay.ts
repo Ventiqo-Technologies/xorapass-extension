@@ -2319,6 +2319,8 @@ export interface InterstitialOptions {
   reasons?: string[];
   onGoToOfficial?: () => void;
   onReportPhishing?: () => Promise<{ success: boolean }>;
+  /** Asks an admin to review the site (false positive). */
+  onRequestAllowlist?: () => Promise<{ success: boolean; reason?: string }>;
   onLeave: () => void;
   /**
    * Dismisses the interstitial and records the user's decision. Gated behind a
@@ -2421,6 +2423,26 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
       report.disabled = res.success;
     });
     actions.appendChild(report);
+  }
+
+  if (opts.onRequestAllowlist) {
+    const request = document.createElement('button');
+    request.type = 'button';
+    request.className = 'xp-int-secondary';
+    request.textContent = 'Request review';
+    request.title = 'Think this site is safe? Ask an admin to review it.';
+    request.addEventListener('click', async () => {
+      request.disabled = true;
+      request.textContent = 'Sending\u2026';
+      const res = await opts.onRequestAllowlist!().catch(() => ({ success: false, reason: 'network' }));
+      request.textContent = res.success
+        ? 'Sent to admin'
+        : res.reason === 'not_authenticated'
+          ? 'Log in to request'
+          : 'Try again';
+      request.disabled = res.success;
+    });
+    actions.appendChild(request);
   }
 
   card.appendChild(actions);

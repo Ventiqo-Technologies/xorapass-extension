@@ -420,6 +420,11 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
         if (window.history.length > 1) window.history.back();
         else window.location.href = 'about:blank';
       },
+      onRequestAllowlist: () =>
+        browser.runtime
+          .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: window.location.hostname } })
+          .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
+          .catch(() => ({ success: false, reason: 'network' })),
       onReportPhishing: () =>
         browser.runtime
           .sendMessage({

@@ -420,6 +420,9 @@ export const PopupApp: React.FC = () => {
   const [copiedField, setCopiedField] = useState<{ id: string; field: string } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  // Report / request-review actions for the current site (Site Scanner card).
+  const [siteReportState, setSiteReportState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
+  const [siteRequestState, setSiteRequestState] = useState<'idle' | 'busy' | 'done' | 'error' | 'login'>('idle');
   const [reauthPassword, setReauthPassword] = useState('');
   const [reauthBusy, setReauthBusy] = useState(false);
   const [reauthError, setReauthError] = useState<string | null>(null);
@@ -937,6 +940,54 @@ export const PopupApp: React.FC = () => {
       })
       .catch(() => {});
   }, [unlocked, tab]);
+
+  const reloadSecurityEvents = () => {
+    browser.runtime
+      .sendMessage({ type: 'GET_DOMAIN_RISK_REPORTS' })
+      .then((r: any) => {
+        if (Array.isArray(r?.reports)) setDomainRiskReports(r.reports);
+      })
+      .catch(() => {});
+    browser.runtime
+      .sendMessage({ type: 'GET_DOMAIN_RISK_ALLOWLIST_REQUESTS' })
+      .then((r: any) => {
+        if (Array.isArray(r?.requests)) setDomainRiskAllowlistRequests(r.requests);
+      })
+      .catch(() => {});
+  };
+
+  // Reset per-site action state when the active site changes.
+  useEffect(() => {
+    setSiteReportState('idle');
+    setSiteRequestState('idle');
+  }, [currentHostname]);
+
+  const reportCurrentSite = async () => {
+    if (!currentHostname) return;
+    setSiteReportState('busy');
+    const res: any = await browser.runtime
+      .sendMessage({
+        type: 'REPORT_PHISHING',
+        payload: {
+          hostname: currentHostname,
+          decision: domainRiskAssessment?.decision || 'allow',
+          riskLevel: domainRiskAssessment?.riskLevel || 'safe',
+        },
+      })
+      .catch(() => null);
+    setSiteReportState(res?.success ? 'done' : 'error');
+    if (res?.success) reloadSecurityEvents();
+  };
+
+  const requestReviewForCurrentSite = async () => {
+    if (!currentHostname) return;
+    setSiteRequestState('busy');
+    const res: any = await browser.runtime
+      .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: currentHostname } })
+      .catch(() => null);
+    setSiteRequestState(res?.success ? 'done' : res?.reason === 'not_authenticated' ? 'login' : 'error');
+    if (res?.success) reloadSecurityEvents();
+  };
 
   const focusTab = (tabId?: number, windowId?: number) => {
     if (tabId !== undefined) {
@@ -3386,6 +3437,54 @@ export const PopupApp: React.FC = () => {
                       </div>
                     </div>
                   ) : null}
+
+                  {/* Report / request review for the current site */}
+                  {currentHostname && /^https?:$/.test(currentProtocol) && !isLocalHost && (() => {
+                    const flagged =
+                      domainRiskAssessment?.decision === 'block' ||
+                      domainRiskAssessment?.decision === 'warn' ||
+                      domainRiskAssessment?.decision === 'require_approval';
+                    const existingRequest = domainRiskAllowlistRequests.find((r) => r.hostname === currentHostname);
+                    const alreadyReported = domainRiskReports.some((r) => r.hostname === currentHostname);
+                    return (
+                      <div className="pt-2.5 border-t border-slate-900/10 flex flex-wrap items-center gap-1.5">
+                        <button
+                          onClick={() => void reportCurrentSite()}
+                          disabled={siteReportState === 'busy' || siteReportState === 'done' || alreadyReported}
+                          className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 disabled:opacity-60 cursor-pointer"
+                          title="Tell XoraPass this site looks like phishing or a scam"
+                        >
+                          {alreadyReported || siteReportState === 'done'
+                            ? 'Reported'
+                            : siteReportState === 'busy'
+                            ? 'Reporting…'
+                            : siteReportState === 'error'
+                            ? 'Try again'
+                            : 'Report this site'}
+                        </button>
+                        {flagged && (
+                          <button
+                            onClick={() => void requestReviewForCurrentSite()}
+                            disabled={siteRequestState === 'busy' || siteRequestState === 'done' || !!existingRequest}
+                            className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-slate-900/10 text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
+                            title="Think this site is safe? Ask an admin to review it"
+                          >
+                            {existingRequest
+                              ? `Review ${existingRequest.status}`
+                              : siteRequestState === 'done'
+                              ? 'Sent to admin'
+                              : siteRequestState === 'busy'
+                              ? 'Sending…'
+                              : siteRequestState === 'login'
+                              ? 'Log in to request'
+                              : siteRequestState === 'error'
+                              ? 'Try again'
+                              : 'Request review'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* 2. "IS IT SAFE?" — text/link check + screenshot + file */}
@@ -3850,7 +3949,7 @@ export const PopupApp: React.FC = () => {
                       {domainRiskSubTab === 'reports' &&
                         (domainRiskReports.length === 0 ? (
                           <div className="py-6 text-center">
-                            <p className="text-xs text-slate-400 px-4">No phishing reports filed yet.</p>
+                            <p className="text-xs text-slate-400 px-4">No phishing reports filed yet. Use "Report this site" in the Site Scanner above, or "Report phishing" on any Shield warning.</p>
                           </div>
                         ) : (
                           domainRiskReports.map((r) => (
@@ -3864,7 +3963,7 @@ export const PopupApp: React.FC = () => {
                       {domainRiskSubTab === 'requests' &&
                         (domainRiskAllowlistRequests.length === 0 ? (
                           <div className="py-6 text-center">
-                            <p className="text-xs text-slate-400 px-4">No allowlist requests yet.</p>
+                            <p className="text-xs text-slate-400 px-4">No allowlist requests yet. If Shield warns about or blocks a site you trust, use "Request review" on the warning or in the Site Scanner.</p>
                           </div>
                         ) : (
                           domainRiskAllowlistRequests.map((r) => (

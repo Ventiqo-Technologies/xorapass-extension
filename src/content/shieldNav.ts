@@ -94,6 +94,11 @@ const MAX_GUARD_MS = 1500;
           })
           .then((res: any) => ({ success: !!res?.success }))
           .catch(() => ({ success: false })),
+      onRequestAllowlist: () =>
+        browser.runtime
+          .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: location.hostname } })
+          .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
+          .catch(() => ({ success: false, reason: 'network' })),
       onProceedAnyway: () =>
         browser.runtime
           .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: location.hostname } })
