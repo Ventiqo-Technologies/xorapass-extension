@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
+
+const SESSION_EXPIRED = 'Your server session ended. Enter your master password to keep syncing.';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import { GOOGLE_NO_GUARANTEE_NOTICE, webRiskAdvisoryFromSignals, type ThreatAdvisory } from '../utils/webRiskAttribution';
 import {
@@ -418,6 +420,9 @@ export const PopupApp: React.FC = () => {
   const [copiedField, setCopiedField] = useState<{ id: string; field: string } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [reauthPassword, setReauthPassword] = useState('');
+  const [reauthBusy, setReauthBusy] = useState(false);
+  const [reauthError, setReauthError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
 
   // Add Item Modal state
@@ -998,7 +1003,8 @@ export const PopupApp: React.FC = () => {
     encKey: Uint8Array,
     accountEmail: string,
     isOffline = false,
-    refreshToken = ''
+    refreshToken = '',
+    offlineAuthHash?: string
   ) =>
     browser.runtime.sendMessage({
       type: 'UNLOCK_VAULT',
@@ -1010,6 +1016,7 @@ export const PopupApp: React.FC = () => {
         jwt: token,
         offline: isOffline,
         refreshToken,
+        ...(offlineAuthHash ? { offlineAuthHash } : {}),
       }
     });
 
@@ -1037,9 +1044,10 @@ export const PopupApp: React.FC = () => {
     }
   };
 
-  const unlockFromCache = async (cache: VaultCache, encKey: Uint8Array) => {
+  const unlockFromCache = async (cache: VaultCache, encKey: Uint8Array, clientAuthHash?: string) => {
     const decrypted = decryptEntries(cache.entries, encKey);
-    const res: any = await storeSession(decrypted, '', encKey, cache.email, true);
+    // clientAuthHash lets the background sign in once the server is back.
+    const res: any = await storeSession(decrypted, '', encKey, cache.email, true, '', clientAuthHash);
     if (!res || !res.success) {
       setError("Couldn't start the extension session. Try unlocking again.");
       return;
@@ -1065,10 +1073,61 @@ export const PopupApp: React.FC = () => {
     setVaultItems(decrypted);
   };
 
+  // "Sign in again": the server session ended (token expired, revoked or
+  // rotated away) but the vault is still unlocked here. Re-authenticate with
+  // the master password and keep the vault open.
+  const handleReauth = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!reauthPassword) return;
+    setReauthBusy(true);
+    setReauthError(null);
+    try {
+      const session = await browser.storage.session.get(['email', 'encKey']);
+      const accountEmail = (session.email as string) || email;
+      const cache = await readVaultCache(accountEmail);
+      const salt = cache
+        ? cache.masterSalt
+        : (await axios.post(`${API_BASE_URL}/api/auth/discover`, { email: accountEmail })).data.master_salt;
+      const derived = await splitMasterKey(await deriveMasterKey(reauthPassword, salt));
+      if (session.encKey && bytesToHex(derived.encKey) !== session.encKey) {
+        setReauthError('Incorrect master password.');
+        return;
+      }
+      const res = await axios.post(`${API_BASE_URL}/api/auth/login`, {
+        email: accountEmail,
+        client_auth_hash: derived.clientAuthHash,
+      });
+      if (res.data.mfa_required) {
+        setReauthError('Your account uses 2-step verification — lock and unlock to sign in again.');
+        return;
+      }
+      const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
+        headers: { Authorization: `Bearer ${res.data.access_token}` },
+      });
+      const decrypted = decryptEntries(vaultRes.data, derived.encKey);
+      await storeSession(decrypted, res.data.access_token, derived.encKey, accountEmail, false, res.data.refresh_token);
+      await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
+      setVaultItems(decrypted);
+      setOffline(false);
+      setSyncError(null);
+      setReauthPassword('');
+    } catch (err: any) {
+      setReauthError(isAuthError(err) ? 'Incorrect master password.' : "Couldn't reach the server.");
+    } finally {
+      setReauthBusy(false);
+    }
+  };
+
   const refreshVault = async (manual = false) => {
-    const session = await browser.storage.session.get(['token', 'encKey', 'email']);
-    const token = session.token as string | undefined;
+    const session = await browser.storage.session.get(['token', 'encKey', 'email', 'offline']);
+    let token = session.token as string | undefined;
     const encKeyHex = session.encKey as string | undefined;
+    // Offline unlock: the background signs in once the server is reachable.
+    if (!token && session.offline && encKeyHex) {
+      const resp: any = await browser.runtime.sendMessage({ type: 'REFRESH_TOKEN' }).catch(() => null);
+      token = resp?.accessToken || undefined;
+      if (token) setOffline(false);
+    }
     if (!token || !encKeyHex) return;
     const accountEmail = (session.email as string) || email;
 
@@ -1095,7 +1154,7 @@ export const PopupApp: React.FC = () => {
           /* renewal or the retried fetch failed -- fall through below */
         }
         if (!renewed) {
-          setSyncError('Session expired — lock and unlock to sync.');
+          setSyncError(SESSION_EXPIRED);
         }
       } else if (manual) {
         setSyncError("Couldn't reach the server.");
@@ -1219,7 +1278,7 @@ export const PopupApp: React.FC = () => {
           if (!verifiesAgainstCache(cache, (entry) => canDecrypt(entry, derived.encKey))) {
             throw new Error('Incorrect master password.');
           }
-          await unlockFromCache(cache, derived.encKey);
+          await unlockFromCache(cache, derived.encKey, derived.clientAuthHash);
           return;
         }
 
@@ -1759,9 +1818,31 @@ export const PopupApp: React.FC = () => {
             )}
 
             {syncError && (
-              <div className="p-2.5 bg-amber-50 border border-amber-200/80 text-amber-800 rounded-xl text-[10px] flex items-start gap-2 leading-snug shrink-0 shadow-xs">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                <span>{syncError}</span>
+              <div className="p-2.5 bg-amber-50 border border-amber-200/80 text-amber-800 rounded-xl text-[10px] leading-snug shrink-0 shadow-xs space-y-2">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                  <span>{syncError}</span>
+                </div>
+                {syncError === SESSION_EXPIRED && (
+                  <form onSubmit={handleReauth} className="flex items-center gap-1.5">
+                    <input
+                      type="password"
+                      autoComplete="current-password"
+                      value={reauthPassword}
+                      onChange={(e) => setReauthPassword(e.target.value)}
+                      placeholder="Master password"
+                      className="flex-1 min-w-0 px-2 py-1 text-xs bg-white border border-amber-200 rounded-lg focus:outline-none focus:border-brand-cyan text-slate-800"
+                    />
+                    <button
+                      type="submit"
+                      disabled={reauthBusy || !reauthPassword}
+                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-[11px] font-bold disabled:opacity-40 cursor-pointer shrink-0"
+                    >
+                      {reauthBusy ? 'Signing in…' : 'Sign in again'}
+                    </button>
+                  </form>
+                )}
+                {syncError === SESSION_EXPIRED && reauthError && <p className="text-rose-700">{reauthError}</p>}
               </div>
             )}
 

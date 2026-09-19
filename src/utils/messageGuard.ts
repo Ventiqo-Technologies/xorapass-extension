@@ -311,6 +311,14 @@ export function validateMessage(
       if (payload.refreshToken !== undefined && typeof payload.refreshToken !== 'string') {
         return { ok: false, reason: 'bad-payload' };
       }
+      // offlineAuthHash: only on an OFFLINE unlock, so the background can sign
+      // in once the server is reachable again (UNLOCK_VAULT is popup-only).
+      if (
+        payload.offlineAuthHash !== undefined &&
+        (typeof payload.offlineAuthHash !== 'string' || !/^[0-9a-f]{32,256}$/i.test(payload.offlineAuthHash))
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
       break;
     case 'GET_MATCHING_CREDENTIALS':
       if (!payload || typeof payload.hostname !== 'string') {

@@ -550,17 +550,65 @@ async function apiRefresh(): Promise<string> {
   return refreshInFlight;
 }
 
+/**
+ * After an OFFLINE unlock (vault opened from the local cache because the
+ * server was unreachable) there is no access or refresh token. Once the
+ * server answers again, sign in with the login proof kept for exactly this
+ * (storage.session, memory-only, cleared on lock) and turn the session into
+ * a normal online one. Accounts with 2-step verification can't do this
+ * silently — the popup then offers "Sign in again".
+ */
+async function offlineReauth(): Promise<string> {
+  const res = await browser.storage.session.get(['offlineReauth', 'unlocked']);
+  const r = (res as Record<string, any>).offlineReauth as { email?: string; clientAuthHash?: string } | undefined;
+  if (!res.unlocked || !r?.email || !r?.clientAuthHash) return '';
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: r.email, client_auth_hash: r.clientAuthHash }),
+    });
+  } catch {
+    return ''; // still offline — keep it for the next attempt
+  }
+  const data = resp.ok ? await resp.json().catch(() => null) : null;
+  if (!data || data.mfa_required || typeof data.access_token !== 'string') {
+    // Wrong/changed password or 2-step verification: stop retrying.
+    await browser.storage.session.remove('offlineReauth');
+    return '';
+  }
+  const update: Record<string, unknown> = { jwt: data.access_token, token: data.access_token, offline: false };
+  if (typeof data.refresh_token === 'string') update.refreshToken = data.refresh_token;
+  await browser.storage.session.set(update);
+  await browser.storage.session.remove('offlineReauth');
+  void ensureShieldDeviceToken(data.access_token, r.email);
+  return data.access_token;
+}
+
 async function doTokenRefresh(): Promise<string> {
   const res = await browser.storage.session.get(['refreshToken', 'unlocked']);
   const refreshToken = (res as Record<string, unknown>).refreshToken;
-  if (!res.unlocked || typeof refreshToken !== 'string' || !refreshToken) return '';
+  if (!res.unlocked) return '';
+  if (typeof refreshToken !== 'string' || !refreshToken) return offlineReauth();
 
-  try {
-    const resp = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+  // A network error may mean the server rotated the token but the answer was
+  // lost; the server accepts one retry of the old token (reuse grace), so try
+  // again once right away instead of waiting for the next alarm.
+  const post = () =>
+    fetch(`${API_BASE_URL}/api/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
+  try {
+    let resp: Response;
+    try {
+      resp = await post();
+    } catch {
+      await new Promise((r) => setTimeout(r, 2000));
+      resp = await post();
+    }
     if (!resp.ok) {
       console.debug('[XoraPass] token refresh failed:', resp.status);
       return '';
@@ -1201,8 +1249,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       token?: string;
       offline?: boolean;
       refreshToken?: string;
+      offlineAuthHash?: string;
     };
-    const { decryptedItems, email, jwt, encKey, token, offline, refreshToken } = payload;
+    const { decryptedItems, email, jwt, encKey, token, offline, refreshToken, offlineAuthHash } = payload;
     // token and encKey are held so the popup can re-fetch and decrypt the vault
     // without a full re-authentication. They live in storage.session, which is
     // memory-only, cleared on browser restart, and already restricted to
@@ -1228,6 +1277,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // never has one to begin with, and everything falls back to today's
     // behavior: the access token dies at its own natural expiry.
     if (refreshToken) sessionData.refreshToken = refreshToken;
+    // Offline unlock: keep the login proof (memory-only, cleared on lock) so
+    // the session can sign in to the server once it is reachable again.
+    if (offline && offlineAuthHash) sessionData.offlineReauth = { email, clientAuthHash: offlineAuthHash };
     return browser.storage.session
       .set(sessionData)
       .then(() => {
