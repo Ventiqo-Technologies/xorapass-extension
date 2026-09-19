@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
+import { isLocalOrPrivateHost } from '../utils/localHosts';
 import { GOOGLE_NO_GUARANTEE_NOTICE, webRiskAdvisoryFromSignals, type ThreatAdvisory } from '../utils/webRiskAttribution';
 import {
   Shield,
@@ -1348,7 +1349,7 @@ export const PopupApp: React.FC = () => {
     });
   };
 
-  const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(currentHostname);
+  const isLocalHost = isLocalOrPrivateHost(currentHostname);
   const isInsecure = currentProtocol === 'http:' && !isLocalHost;
   const knownHosts = vaultItems.map((i) => (i.url ? extractHostname(i.url) : '')).filter(Boolean);
 
@@ -3793,7 +3794,13 @@ export const PopupApp: React.FC = () => {
                                   DOMAIN_RISK_REQUEST_STATUS_STYLES[r.status] || 'bg-slate-50 text-slate-500 border-slate-200'
                                 }`}
                               >
-                                {r.status}
+                                {r.status === 'approved' && r.scope === 'global'
+                                  ? 'approved · everyone'
+                                  : r.status === 'approved' && r.scope === 'workspace'
+                                  ? 'approved · team'
+                                  : r.status === 'approved'
+                                  ? 'approved · you'
+                                  : r.status}
                               </span>
                             </div>
                           ))

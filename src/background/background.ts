@@ -48,6 +48,7 @@ import { unwrapLink, isShortenerUrl, buildLinkVerdict } from '../utils/linkInspe
 import { KNOWN_BRAND_DOMAINS } from '../utils/promptSafety';
 import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
+import { isLocalOrPrivateHost } from '../utils/localHosts';
 import {
   encryptPayload,
   decryptPayload,
@@ -979,7 +980,7 @@ async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload
   const none: AiScanResult = { verdict: 'unavailable', risk_score: 0 };
   if (sender.frameId !== 0) return none;
   const url = sender.url || sender.tab?.url || '';
-  if (!/^https?:\/\//i.test(url)) return none;
+  if (!/^https?:\/\//i.test(url) || isLocalOrPrivateHost(extractHostname(url))) return none;
   const cfg = await getShieldConfig();
   if (!cfg.shield_enabled || !cfg.ai_scan.enabled) return none;
   if (!(await shieldFeature('ai_scan'))) return none;
@@ -1054,6 +1055,7 @@ async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
   const typingGuardMs = cfg.nav_guard.typing_guard_ms;
   const allow = { action: 'allow' as const, layer: 'disabled', reasons: [] as string[], typingGuardMs };
   if (sender.frameId !== 0 || !/^https?:\/\//i.test(url)) return allow;
+  if (isLocalOrPrivateHost(extractHostname(url))) return allow;
   const active = await isShieldActive();
   if (!active) return allow;
 
@@ -1105,7 +1107,7 @@ async function evaluateDomainRisk(opts: {
   const domainRiskOn = opts.locked
     ? await isShieldActive()
     : await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
-  if (!domainRiskOn) return disabledDomainRiskAssessment(opts.hostname);
+  if (!domainRiskOn || isLocalOrPrivateHost(opts.hostname)) return disabledDomainRiskAssessment(opts.hostname);
 
   let risk = assessDomainRisk(opts.hostname, opts.knownHosts, opts.allowlist, opts.currentUrl, shieldAssessOptions(cfg));
 

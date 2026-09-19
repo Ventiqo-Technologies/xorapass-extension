@@ -329,6 +329,22 @@ export function mergeLocalAndRemoteRisk(
     return local;
   }
 
+  // An admin approved this site for this user (server-side, per account):
+  // the server already refused to apply it over policies or threat-intel
+  // hits, so honour it over local heuristics too.
+  if (remote.decision === 'allow' && (remote.reason_codes || []).includes('USER_ALLOWLIST_APPROVED')) {
+    return {
+      ...local,
+      riskScore: Math.min(local.riskScore, remote.risk_score),
+      riskLevel: 'safe',
+      decision: 'allow',
+      reasons: Array.from(new Set([...(remote.reasons || [])])),
+      isAllowlisted: true,
+      showInterstitial: false,
+      threatIntelSignals: remote.threat_intel_signals,
+    };
+  }
+
   // Choose stricter decision & higher score
   const score = Math.max(local.riskScore, remote.risk_score);
   let decision: Decision = local.decision;
@@ -582,6 +598,8 @@ export interface DomainRiskAllowlistRequestRecord {
   id: string;
   hostname: string;
   status: 'pending' | 'approved' | 'denied';
+  /** Who an approval applies to: the requester, their workspace, or everyone. */
+  scope?: 'user' | 'workspace' | 'global' | '';
   requested_at: string;
 }
 

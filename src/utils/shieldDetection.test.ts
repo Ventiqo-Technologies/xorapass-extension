@@ -212,3 +212,29 @@ describe('Google Web Risk attribution', () => {
     expect(GOOGLE_NO_GUARANTEE_NOTICE).toMatch(/cannot guarantee/);
   });
 });
+
+import { isLocalOrPrivateHost } from './localHosts';
+import { mergeLocalAndRemoteRisk } from './domainRiskService';
+import { assessDomainRisk } from './domainRisk';
+
+describe('local and private hosts', () => {
+  it('skips the user\'s own machine and network', () => {
+    for (const h of ['localhost', 'localhost:3000', 'app.localhost', '127.0.0.1', '192.168.1.20', '10.0.0.5', '172.20.1.1', '[::1]', '[::1]:8080', 'printer.local', 'nas.home.arpa', '100.101.1.2', 'api.internal'])
+      expect(isLocalOrPrivateHost(h)).toBe(true);
+    for (const h of ['yify.pro', '8.8.8.8', 'paypal.com', 'local.example.com', '172.32.0.1'])
+      expect(isLocalOrPrivateHost(h)).toBe(false);
+  });
+});
+
+describe('per-user allowlist approval', () => {
+  it('an approval for this account overrides local heuristics', () => {
+    const local = { ...assessDomainRisk('paypa1.com', ['paypal.com'], [], 'https://paypa1.com/'), decision: 'block' as const };
+    const merged = mergeLocalAndRemoteRisk(local, {
+      decision: 'allow', risk_score: 20, risk_level: 'safe', reasons: ['An administrator approved this site for your account.'],
+      reason_codes: ['TYPOSQUATTING_DETECTED', 'USER_ALLOWLIST_APPROVED'],
+    } as any);
+    expect(merged.decision).toBe('allow');
+    const notApproved = mergeLocalAndRemoteRisk(local, { decision: 'allow', risk_score: 0, risk_level: 'safe', reasons: [], reason_codes: [] } as any);
+    expect(notApproved.decision).toBe('block');
+  });
+});
