@@ -42,7 +42,7 @@
       "id": "addon@xorapass.com",
       "strict_min_version": "140.0",
       "data_collection_permissions": {
-        "required": ["personallyIdentifyingInfo", "authenticationInfo", "browsingActivity", "websiteContent"]
+        "required": ["personallyIdentifyingInfo", "authenticationInfo", "browsingActivity", "websiteContent", "personalCommunications"]
       }
     }
   },

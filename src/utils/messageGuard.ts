@@ -111,6 +111,9 @@ export const KNOWN_MESSAGE_TYPES = [
   // Page-behaviour summary from the document_start script (shieldNav.ts):
   // a behaviour kind only, never page content.
   'SHIELD_BEHAVIOR',
+  // AI analysis of the email open in webmail (content script; minimised,
+  // redacted fields only — see content/emailInsight.ts).
+  'SHIELD_EMAIL_SCAN',
   // Secure browsing / Is it Safe (popup only).
   'SHIELD_TAB_PRIVACY',
   'SHIELD_GET_PRIVACY_SETTINGS',
@@ -476,6 +479,30 @@ export function validateMessage(
         return { ok: false, reason: 'bad-payload' };
       }
       break;
+    case 'SHIELD_EMAIL_SCAN': {
+      const e = payload?.email as Record<string, unknown> | undefined;
+      const str = (v: unknown, max: number) => v === undefined || (typeof v === 'string' && v.length <= max);
+      const links = e?.links;
+      if (
+        !e ||
+        !str(e.sender_name, 200) ||
+        !str(e.sender_email, 254) ||
+        !str(e.reply_to, 254) ||
+        !str(e.subject, 400) ||
+        !str(e.body_excerpt, 2000) ||
+        !Array.isArray(links) ||
+        links.length > 20 ||
+        !links.every((l: any) => l && str(l.text, 200) && typeof l.href === 'string' && l.href.length <= 2048) ||
+        !Array.isArray(e.attachments) ||
+        (e.attachments as unknown[]).length > 10 ||
+        !(e.attachments as unknown[]).every((a) => typeof a === 'string' && a.length <= 200) ||
+        !Array.isArray(e.local_flags) ||
+        (e.local_flags as unknown[]).length > 12
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    }
     case 'SHIELD_TAB_PRIVACY':
       if (!payload || typeof payload.tabId !== 'number' || typeof payload.url !== 'string') {
         return { ok: false, reason: 'bad-payload' };

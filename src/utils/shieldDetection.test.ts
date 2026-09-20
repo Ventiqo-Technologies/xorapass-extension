@@ -238,3 +238,27 @@ describe('per-user allowlist approval', () => {
     expect(notApproved.decision).toBe('block');
   });
 });
+
+import { summarizeEmailLocal } from './emailGuard';
+
+describe('whole-email local summary', () => {
+  it('flags a PayPal-impersonation email with a mismatched link and a risky attachment', () => {
+    const s = summarizeEmailLocal({
+      sender: 'PayPal Service <service@paypa1-support.xyz>',
+      replyTo: 'help.paypal@gmail.com',
+      links: [{ text: 'https://www.paypal.com/signin', href: 'https://paypa1-support.xyz/login' }],
+      attachments: ['invoice.pdf.exe'],
+    });
+    expect(s.danger).toBe(true);
+    expect(s.flags).toEqual(expect.arrayContaining(['sender_brand_mismatch', 'link_mismatch', 'risky_attachment', 'reply_to_mismatch']));
+  });
+  it('leaves a normal email alone', () => {
+    const s = summarizeEmailLocal({
+      sender: 'GitHub <noreply@github.com>',
+      links: [{ text: 'View pull request', href: 'https://github.com/org/repo/pull/1' }],
+      attachments: ['report.pdf'],
+    });
+    expect(s.findings).toEqual([]);
+    expect(s.danger).toBe(false);
+  });
+});

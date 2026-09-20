@@ -51,7 +51,8 @@ export type ShieldFeature =
   | 'download_guard'
   | 'ai_scan'
   | 'image_scan'
-  | 'file_scan';
+  | 'file_scan'
+  | 'email_ai';
 
 export interface ShieldEntitlement {
   active: boolean;

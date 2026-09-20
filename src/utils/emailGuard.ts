@@ -5,6 +5,7 @@
 import { extractHostname, registrableDomain } from './siteTrust';
 import { assessWithCatalog } from './domainRisk';
 import { unwrapLink, isShortenerUrl } from './linkInspect';
+import { analyzeEmailSender } from './webmailGuard';
 
 export interface EmailFinding {
   level: 'danger' | 'caution';
@@ -112,4 +113,69 @@ export function analyzeReplyTo(senderEmail: string, replyToEmail: string): Email
 export function findReplyTo(headerText: string): string | null {
   const m = (headerText || '').match(/reply[- ]to:?\s*(?:[^<\n]*<)?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/i);
   return m ? m[1].toLowerCase() : null;
+}
+
+// ── Whole-email summary (on device) ─────────────────────────────────────────
+
+
+export interface EmailLocalSummary {
+  /** Short codes sent to the AI as context (no content). */
+  flags: string[];
+  findings: EmailFinding[];
+  danger: boolean;
+  cautions: number;
+  claimedBrand: string | null;
+  senderDomain: string;
+}
+
+/**
+ * Combines the per-part checks for one open email. `sender` is
+ * "Display Name <addr@domain>" (or just the address).
+ */
+export function summarizeEmailLocal(input: {
+  sender: string;
+  replyTo?: string | null;
+  links: { text: string; href: string }[];
+  attachments: string[];
+}): EmailLocalSummary {
+  const flags = new Set<string>();
+  const findings: EmailFinding[] = [];
+  const s = analyzeEmailSender(input.sender || '');
+  if (s.isImpersonation) {
+    flags.add('sender_brand_mismatch');
+    findings.push({ level: 'danger', reasons: s.reasons.length ? s.reasons.slice(0, 2) : ['Sender name claims a brand the address doesn\'t belong to'] });
+  }
+  const senderEmail = (input.sender.match(/<([^>]+)>/)?.[1] || input.sender).trim().toLowerCase();
+  if (input.replyTo && senderEmail.includes('@')) {
+    const r = analyzeReplyTo(senderEmail, input.replyTo);
+    if (r) {
+      flags.add('reply_to_mismatch');
+      findings.push(r);
+    }
+  }
+  for (const l of input.links.slice(0, 50)) {
+    const f = analyzeEmailLink(l.text, l.href);
+    if (!f) continue;
+    const joined = f.reasons.join(' ');
+    if (/really goes to/i.test(joined)) flags.add('link_mismatch');
+    if (/look-alike|Misspelled|name on a site/i.test(joined)) flags.add('lookalike_link');
+    if (/shortener/i.test(joined)) flags.add('shortener_link');
+    if (/IP address|runs code/i.test(joined)) flags.add('dangerous_link');
+    findings.push(f);
+  }
+  for (const a of input.attachments.slice(0, 20)) {
+    const f = analyzeAttachmentName(a);
+    if (f) {
+      flags.add('risky_attachment');
+      findings.push({ level: f.level, reasons: [`${a}: ${f.reasons[0]}`] });
+    }
+  }
+  return {
+    flags: Array.from(flags),
+    findings,
+    danger: findings.some((f) => f.level === 'danger'),
+    cautions: findings.filter((f) => f.level === 'caution').length,
+    claimedBrand: s.claimedBrand,
+    senderDomain: s.senderDomain,
+  };
 }

@@ -49,6 +49,7 @@ import { mergeExtraBrands } from '../utils/brandCatalog';
 import { scorePageSignals, applyPageRisk } from '../utils/pageRisk';
 import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
+import { isSupportedWebmail } from '../utils/webmailGuard';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import {
   encryptPayload,
@@ -1081,6 +1082,44 @@ async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload
   }
 }
 
+// ── AI email analysis ───────────────────────────────────────────────────────
+// The content script sends the OPEN email's minimised fields (already
+// redacted on the device). Paid + rolled out + kill-switchable; only from a
+// top frame of a supported webmail. Results cached for an hour.
+
+const emailScanCache = new Map<string, { res: unknown; expires: number }>();
+
+async function handleShieldEmailScan(sender: browser.Runtime.MessageSender, email: any): Promise<unknown> {
+  const none = { verdict: 'unavailable' };
+  const host = extractHostname(sender.url || sender.tab?.url || '');
+  if (sender.frameId !== 0 || !isSupportedWebmail(host)) return none;
+  const cfg = await getShieldConfig();
+  if (!cfg.shield_enabled || !cfg.email_scan.enabled || !(await shieldFeature('email_ai'))) {
+    return { verdict: 'unavailable', reason: 'not_available' };
+  }
+  const key = JSON.stringify(email);
+  const hit = emailScanCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.res;
+  const cred = await getShieldCredential();
+  if (!cred) return none;
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/shield/email-scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
+      body: JSON.stringify(email),
+    });
+    if (!res.ok) return none;
+    const data = await res.json();
+    if (data?.verdict && data.verdict !== 'unavailable') {
+      emailScanCache.set(key, { res: data, expires: Date.now() + 60 * 60 * 1000 });
+      if (emailScanCache.size > 200) emailScanCache.delete(emailScanCache.keys().next().value as string);
+    }
+    return data;
+  } catch {
+    return none;
+  }
+}
+
 /** Folds a confirmed blocklist hit into an assessment as a hard block. */
 function blocklistAssessment(base: DomainRiskAssessment, threatType: string): DomainRiskAssessment {
   return {
@@ -1979,6 +2018,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'SHIELD_SIGN_OUT') {
     return shieldSignOut().then(() => ({ success: true }));
+  }
+
+  if (type === 'SHIELD_EMAIL_SCAN') {
+    return handleShieldEmailScan(sender, msg.payload?.email);
   }
 
   if (type === 'SHIELD_BEHAVIOR') {

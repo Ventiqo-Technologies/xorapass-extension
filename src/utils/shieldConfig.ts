@@ -27,6 +27,7 @@ export interface ShieldConfig {
   image_scan: { enabled: boolean };
   file_scan: { enabled: boolean };
   file_upload: { enabled: boolean };
+  email_scan: { enabled: boolean };
   trusted_domains: string[];
   /** Brands added to the built-in catalog without an extension release. */
   extra_brands: { token: string; name: string; domains: string[] }[];
@@ -44,6 +45,7 @@ export const DEFAULT_SHIELD_CONFIG: ShieldConfig = Object.freeze({
   image_scan: { enabled: true },
   file_scan: { enabled: true },
   file_upload: { enabled: true },
+  email_scan: { enabled: true },
   trusted_domains: [],
   extra_brands: [],
 }) as ShieldConfig;
@@ -122,6 +124,7 @@ export function coerceShieldConfig(input: unknown): ShieldConfig {
     image_scan: { enabled: bool(obj(o.image_scan).enabled, d.image_scan.enabled) },
     file_scan: { enabled: bool(obj(o.file_scan).enabled, d.file_scan.enabled) },
     file_upload: { enabled: bool(obj(o.file_upload).enabled, d.file_upload.enabled) },
+    email_scan: { enabled: bool(obj(o.email_scan).enabled, d.email_scan.enabled) },
     trusted_domains: trusted,
     extra_brands: Array.isArray(o.extra_brands)
       ? (o.extra_brands as unknown[])

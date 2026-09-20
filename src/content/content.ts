@@ -52,7 +52,7 @@ import { collectPageSignals, isWorthAssessing, primeFaviconBrand, type PageSigna
 import { collectPageText, shouldAiScan } from '../utils/pageContent';
 import { WEB_APP_URL } from '../utils/config';
 import { webRiskAdvisoryFromSignals } from '../utils/webRiskAttribution';
-import { scanEmailContent, checkInsecureForms, checkOpaqueOriginLogin, collectPrivacySignals, showDownloadPrompt, showDownloadBlocked } from './secureBrowsing';
+import { scanEmailContent, checkInsecureForms, checkOpaqueOriginLogin, featureOn, collectPrivacySignals, showDownloadPrompt, showDownloadBlocked } from './secureBrowsing';
 
 let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
@@ -1001,6 +1001,9 @@ function scanWebmailMessages(): void {
   }
   if (!webmailGuardEnabled || !isSupportedWebmail(window.location.hostname)) return;
   scanEmailContent(window.location.hostname);
+  // With Email Guard rolled out, the email panel shows the sender check (and
+  // more) above the message — don't also raise the older sender banner.
+  if (featureOn('email_guard')) return;
 
   // Gmail: sender name usually in span[email] or .gD; email in [email] attribute
   // Outlook: sender name in .b80yQ or [data-testid="SenderDetails"]

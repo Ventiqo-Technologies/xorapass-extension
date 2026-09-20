@@ -12,7 +12,8 @@
 //   • The download prompt asked for by the background download guard.
 
 import browser from 'webextension-polyfill';
-import { showRiskWarning, showConfirmDialog } from './overlay';
+import { showRiskWarning, showConfirmDialog, closeWebmailPhishingBanner } from './overlay';
+import { updateEmailInsight } from './emailInsight';
 import { analyzeEmailLink, analyzeAttachmentName, analyzeReplyTo, findReplyTo, type EmailFinding } from '../utils/emailGuard';
 import { trackerFor } from '../utils/trackerList';
 import { registrableDomain } from '../utils/siteTrust';
@@ -41,31 +42,43 @@ function loadRollout(): void {
         rollout = readRollout(r.shieldEntitlement, r.shieldConfig);
       })
       .catch(() => undefined);
-  void load();
+  void load().then(rerunGatedChecks);
   try {
     browser.storage.onChanged.addListener((changes: any, area: string) => {
-      if (area === 'local' && (changes.shieldEntitlement || changes.shieldConfig)) void load();
+      if (area === 'local' && (changes.shieldEntitlement || changes.shieldConfig)) void load().then(rerunGatedChecks);
     });
   } catch {
     /* ignore */
   }
 }
 
-function featureOn(name: string): boolean {
+// The first scans usually run before the rollout state has been read from
+// storage; run them again once it is known (a static page may never mutate).
+let lastEmailHost: string | null = null;
+function rerunGatedChecks(): void {
+  if (lastEmailHost && rollout.email_guard) {
+    // The panel replaces the older sender banner — close it if it got there first.
+    closeWebmailPhishingBanner();
+    scanEmailContent(lastEmailHost);
+  }
+  if (rollout.insecure_forms && window === window.top) checkInsecureForms();
+}
+
+export function featureOn(name: string): boolean {
   loadRollout();
   return rollout[name] === true;
 }
 
 // ── Email Guard ────────────────────────────────────────────────────────────
 
-const MESSAGE_BODY_SELECTORS: Record<string, string> = {
+export const MESSAGE_BODY_SELECTORS: Record<string, string> = {
   'mail.google.com': '.a3s',
   outlook: '[aria-label="Message body"], [role="document"].allowTextSelection, div[id^="UniqueMessageBody"]',
   'mail.yahoo.com': '[data-test-id="message-view-body-content"]',
   'mail.aol.com': '[data-test-id="message-view-body-content"]',
   'mail.zoho': '.zmMailContent, .zmPVContent',
 };
-const ATTACHMENT_SELECTORS: Record<string, string> = {
+export const ATTACHMENT_SELECTORS: Record<string, string> = {
   'mail.google.com': '.aV3, .aQA span[title]',
   outlook: '[data-testid="AttachmentCard"] [title], [role="listitem"][aria-label*="."] ',
   'mail.yahoo.com': '[data-test-id="attachment-name"]',
@@ -73,7 +86,7 @@ const ATTACHMENT_SELECTORS: Record<string, string> = {
   'mail.zoho': '.zmAttName, .SC_att_name',
 };
 
-function selectorFor(map: Record<string, string>, host: string): string | null {
+export function selectorFor(map: Record<string, string>, host: string): string | null {
   for (const key of Object.keys(map)) if (host === key || host.includes(key)) return map[key];
   return null;
 }
@@ -127,6 +140,7 @@ let emailLastRun = 0;
 
 /** Throttled (the webmail DOM mutates constantly): at most every 600 ms. */
 export function scanEmailContent(host: string): void {
+  lastEmailHost = host;
   if (!featureOn('email_guard') || emailTimer) return;
   const wait = Math.max(0, emailLastRun + 600 - Date.now());
   emailTimer = setTimeout(() => {
@@ -141,6 +155,11 @@ export function scanEmailContent(host: string): void {
 }
 
 function scanEmailNow(host: string): void {
+  try {
+    updateEmailInsight(host);
+  } catch {
+    /* never break the webmail */
+  }
   const bodySel = selectorFor(MESSAGE_BODY_SELECTORS, host);
   if (!bodySel) return;
   const bodies = Array.from(document.querySelectorAll(bodySel)).slice(0, 20);
