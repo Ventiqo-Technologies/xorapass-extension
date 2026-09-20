@@ -2120,6 +2120,10 @@ export interface RiskWarningOptions {
  */
 export function showRiskWarning(opts: RiskWarningOptions): void {
   closeRiskWarning();
+  // One warning at a time in the corner: the site-risk warning already covers
+  // what the checkout banner would say (same site, autofill already blocked),
+  // so it replaces it instead of stacking on top of it.
+  closeCheckoutProtectionBanner();
   const root = ensureHost();
 
   const card = document.createElement('div');
@@ -2705,6 +2709,9 @@ export interface CheckoutProtectionData {
  * Displays a security review card when payment fields are detected on an unverified or risky site.
  */
 export function showCheckoutProtectionBanner(data: CheckoutProtectionData): void {
+  // A site-risk warning is already on screen for this page — don't stack a
+  // second card on top of it (see showRiskWarning).
+  if (isRiskWarningOpen()) return;
   if (activeCardModalEl) {
     activeCardModalEl.remove();
     activeCardModalEl = null;
