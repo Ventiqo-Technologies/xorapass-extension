@@ -1089,7 +1089,11 @@ async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload
 
 const emailScanCache = new Map<string, { res: unknown; expires: number }>();
 
-async function handleShieldEmailScan(sender: browser.Runtime.MessageSender, email: any): Promise<unknown> {
+async function handleShieldEmailScan(
+  sender: browser.Runtime.MessageSender,
+  email: any,
+  trigger: 'auto' | 'button' = 'button'
+): Promise<unknown> {
   const none = { verdict: 'unavailable' };
   const senderUrl = sender.url || sender.tab?.url || '';
   const host = extractHostname(senderUrl);
@@ -1113,7 +1117,7 @@ async function handleShieldEmailScan(sender: browser.Runtime.MessageSender, emai
     const res = await fetch(`${API_BASE_URL}/api/shield/email-scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
-      body: JSON.stringify(email),
+      body: JSON.stringify({ ...email, trigger: trigger === 'auto' ? 'auto' : 'button' }),
     });
     if (!res.ok) return none;
     const data = await res.json();
@@ -2028,7 +2032,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'SHIELD_EMAIL_SCAN') {
-    return handleShieldEmailScan(sender, msg.payload?.email);
+    return handleShieldEmailScan(sender, msg.payload?.email, msg.payload?.trigger);
   }
 
   if (type === 'SHIELD_BEHAVIOR') {
@@ -2064,6 +2068,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         apiBase: API_BASE_URL,
         config: cfg,
         features: active ? state.entitlement?.features || {} : {},
+        aiChecks: active ? state.entitlement?.aiChecks || null : null,
       };
     })();
   }

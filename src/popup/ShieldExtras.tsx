@@ -22,6 +22,15 @@ import {
   Ban,
 } from "lucide-react";
 import { trackingCookieOwner } from "../utils/trackerList";
+import { WEB_APP_URL } from "../utils/config";
+
+/** Why an AI check didn't run (on-device checks still apply). */
+function aiLimitText(reason: string | undefined, what: string): string {
+  if (reason === "quota") return "You've used this month's AI checks. Add more below.";
+  if (reason === "daily_limit") return "Daily AI check limit reached. It resets at midnight UTC.";
+  if (reason === "budget") return "AI checks are paused for today.";
+  return `${what} is unavailable right now.`;
+}
 
 interface PrivacySettings {
   blockTrackers: boolean;
@@ -44,6 +53,16 @@ interface AuthInfo {
     file_upload?: { enabled: boolean };
   };
   features?: Record<string, boolean>;
+  aiChecks?: {
+    allowance: number;
+    remaining: number;
+    topup_balance: number;
+    pooled: boolean;
+    resets_at: string;
+    costs: Record<string, number>;
+    paused: boolean;
+    topup?: { credits: number; price_cents: number; currency: string };
+  } | null;
 }
 interface FileVerdict {
   verdict: string;
@@ -314,9 +333,7 @@ export default function ShieldExtras({
             ? `Suspicious — ${r.message || "be careful."}`
             : r.verdict === "benign"
               ? "Nothing scam-like found on this screen."
-              : r.reason === "quota"
-                ? "Monthly screenshot checks used up."
-                : "Screenshot check is unavailable right now.",
+              : aiLimitText(r.reason, "Screenshot check"),
       );
     } catch (e) {
       setImgResult(errText(e));
@@ -334,9 +351,7 @@ export default function ShieldExtras({
           ? `No engine flagged this file (${v.engines} checked).`
           : v.verdict === "pending"
             ? "Scanning…"
-            : v.reason === "quota"
-              ? "Monthly file checks used up."
-              : "File check is unavailable right now.";
+            : aiLimitText(v.reason, "File check");
 
   const checkFile = async (f: File | undefined) => {
     if (!f) return;
@@ -553,8 +568,11 @@ export default function ShieldExtras({
           </div>
         </>
       )}
-      {section === "tools" && (feat("image_scan") || feat("file_scan")) && (
+      {section === "tools" && (feat("image_scan") || feat("file_scan") || (feat("email_ai") && !!auth?.aiChecks)) && (
         <div className="space-y-2.5 pt-2.5 border-t border-slate-900/10">
+          {auth?.aiChecks && (
+            <AIChecksMeter usage={auth.aiChecks} />
+          )}
           {feat("image_scan") &&
             auth?.config?.image_scan?.enabled !== false && (
               <div className="space-y-1">
@@ -628,5 +646,47 @@ export default function ShieldExtras({
         </div>
       )}
     </>
+  );
+}
+
+/** "AI checks" meter with the top-up link (checkout runs in the web app). */
+function AIChecksMeter({ usage }: { usage: NonNullable<AuthInfo["aiChecks"]> }) {
+  const left = usage.remaining + usage.topup_balance;
+  const pct =
+    usage.allowance > 0
+      ? Math.min(100, Math.round(((usage.allowance - usage.remaining) / usage.allowance) * 100))
+      : 100;
+  const resets = new Date(usage.resets_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const price = usage.topup
+    ? new Intl.NumberFormat(undefined, { style: "currency", currency: usage.topup.currency.toUpperCase() }).format(
+        usage.topup.price_cents / 100,
+      )
+    : "";
+  return (
+    <div className="space-y-1" data-testid="ai-checks-meter">
+      <div className="flex items-center justify-between text-[11px] text-slate-700">
+        <span className="font-semibold">AI checks: {left} left</span>
+        {usage.topup && (
+          <button
+            className="text-brand-cyan font-semibold hover:underline"
+            onClick={() => void browser.tabs.create({ url: `${WEB_APP_URL}/?ai_topup=buy` })}
+          >
+            Add {usage.topup.credits} ({price})
+          </button>
+        )}
+      </div>
+      <div className="h-1.5 rounded-full bg-slate-900/10 overflow-hidden">
+        <div
+          className={`h-full ${pct >= 90 ? "bg-amber-500" : "bg-teal-600"}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="text-[10px] text-slate-500">
+        {usage.remaining} of {usage.allowance} this month{usage.pooled ? " (shared by your workspace)" : ""}, resets {resets}
+        {usage.topup_balance > 0 ? ` · ${usage.topup_balance} from top-ups` : ""}. Screenshot uses{" "}
+        {usage.costs.image ?? 5}, file upload {usage.costs.file_upload ?? 10}. Automatic checks are free.
+        {usage.paused ? " Paused for today." : ""}
+      </p>
+    </div>
   );
 }

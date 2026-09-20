@@ -62,6 +62,23 @@ export interface ShieldEntitlement {
   checkedAt: number;
   /** Gradual rollout, decided per user by the server (GET /api/shield/status). */
   features?: Partial<Record<ShieldFeature, boolean>>;
+  /** Shield AI checks usage (GET /api/shield/status → ai_checks). */
+  aiChecks?: ShieldAIChecks | null;
+}
+
+export interface ShieldAIChecks {
+  plan: string;
+  allowance: number;
+  used: number;
+  remaining: number;
+  topup_balance: number;
+  pooled: boolean;
+  resets_at: string;
+  daily_limit: number;
+  used_today: number;
+  costs: Record<string, number>;
+  paused: boolean;
+  topup?: { credits: number; price_cents: number; currency: string };
 }
 
 let getSessionJwt: () => Promise<string> = async () => '';
@@ -198,6 +215,7 @@ export async function refreshShieldEntitlement(): Promise<ShieldEntitlement | nu
       plan_allows?: boolean;
       user_enabled?: boolean;
       features?: Record<string, unknown>;
+      ai_checks?: ShieldAIChecks | null;
     };
     const features: Partial<Record<ShieldFeature, boolean>> = {};
     for (const [k, v] of Object.entries(data.features || {})) if (v === true) features[k as ShieldFeature] = true;
@@ -209,6 +227,7 @@ export async function refreshShieldEntitlement(): Promise<ShieldEntitlement | nu
       email: tok?.email || (await getEntitlement())?.email || '',
       checkedAt: Date.now(),
       features,
+      aiChecks: data.ai_checks && typeof data.ai_checks === 'object' ? data.ai_checks : null,
     });
     return entitlementMem;
   } catch {

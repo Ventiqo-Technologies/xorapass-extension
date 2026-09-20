@@ -206,11 +206,13 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   bar.appendChild(el('div', `summary ${level}`, summary));
   const toggle = el('button', '', 'Details');
   bar.appendChild(toggle);
-  const retryable = !!ai && ai.verdict === 'unavailable' && ai.reason !== 'quota' && ai.reason !== 'not_available';
+  const blocked = ['quota', 'daily_limit', 'budget', 'not_available'];
+  const retryable = !!ai && ai.verdict === 'unavailable' && !blocked.includes(ai.reason || '');
   if (aiAllowed && (!ai || retryable)) {
-    const btn = el('button', 'primary', busy ? 'Analyzing…' : retryable ? 'Retry AI analysis' : 'Analyze with AI');
+    const btn = el('button', 'primary', busy ? 'Analyzing…' : retryable && ai?.reason !== 'auto_limit' ? 'Retry AI analysis' : 'Analyze with AI');
     btn.disabled = busy;
-    btn.addEventListener('click', () => void runAi(m, local));
+    btn.title = 'Uses 1 AI check';
+    btn.addEventListener('click', () => void runAi(m, local, 'button'));
     bar.appendChild(btn);
   }
   card.appendChild(bar);
@@ -231,8 +233,8 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
       box.appendChild(ul);
     }
     details.appendChild(box);
-  } else if (ai?.verdict === 'unavailable' && ai.reason === 'quota') {
-    details.appendChild(el('div', 'muted', 'Monthly AI email checks used up.'));
+  } else if (ai?.verdict === 'unavailable' && ai.reason && AI_LIMIT_TEXT[ai.reason]) {
+    details.appendChild(el('div', 'muted', AI_LIMIT_TEXT[ai.reason]));
   }
 
   const row = (k: string, v: Node | string) => {
@@ -289,11 +291,20 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   root.appendChild(card);
 }
 
-async function runAi(m: OpenEmail, local: EmailLocalSummary): Promise<void> {
+/** Why an AI check didn't run (the on-device checks above still apply). */
+const AI_LIMIT_TEXT: Record<string, string> = {
+  quota: 'You have used this month\'s AI checks. Add more from the XoraPass popup, or wait for the monthly reset. On-device checks still run.',
+  daily_limit: 'Daily AI check limit reached. It resets at midnight UTC. On-device checks still run.',
+  budget: 'AI checks are paused for today. On-device checks still run.',
+};
+
+/** trigger: 'auto' when XoraPass ran it on its own (free, fair-use limit),
+ *  'button' when the user asked (uses 1 AI check). */
+async function runAi(m: OpenEmail, local: EmailLocalSummary, trigger: 'auto' | 'button'): Promise<void> {
   if (!current || current.key !== m.key) return;
   render(m, local, null, true, true);
   const res = (await browser.runtime
-    .sendMessage({ type: 'SHIELD_EMAIL_SCAN', payload: { email: payloadFor(m, local) } })
+    .sendMessage({ type: 'SHIELD_EMAIL_SCAN', payload: { email: payloadFor(m, local), trigger } })
     .catch(() => null)) as AiResult | null;
   if (!current || current.key !== m.key) return;
   render(m, local, res || { verdict: 'unavailable' }, false, true);
@@ -326,6 +337,6 @@ export function updateEmailInsight(host: string): void {
   // Auto: only when the device already found red flags; once per email.
   if (aiAllowed && (local.danger || local.cautions >= 2) && !autoRan.has(m.key)) {
     autoRan.add(m.key);
-    void runAi(m, local);
+    void runAi(m, local, 'auto');
   }
 }
