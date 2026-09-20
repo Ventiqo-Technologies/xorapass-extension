@@ -1091,8 +1091,15 @@ const emailScanCache = new Map<string, { res: unknown; expires: number }>();
 
 async function handleShieldEmailScan(sender: browser.Runtime.MessageSender, email: any): Promise<unknown> {
   const none = { verdict: 'unavailable' };
-  const host = extractHostname(sender.url || sender.tab?.url || '');
-  if (sender.frameId !== 0 || !isSupportedWebmail(host)) return none;
+  const senderUrl = sender.url || sender.tab?.url || '';
+  const host = extractHostname(senderUrl);
+  let path = '/';
+  try {
+    path = new URL(senderUrl).pathname;
+  } catch {
+    /* keep '/' */
+  }
+  if (sender.frameId !== 0 || !isSupportedWebmail(host, path)) return none;
   const cfg = await getShieldConfig();
   if (!cfg.shield_enabled || !cfg.email_scan.enabled || !(await shieldFeature('email_ai'))) {
     return { verdict: 'unavailable', reason: 'not_available' };

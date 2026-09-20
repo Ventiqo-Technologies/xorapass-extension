@@ -262,3 +262,19 @@ describe('whole-email local summary', () => {
     expect(s.danger).toBe(false);
   });
 });
+
+import { isSupportedWebmail } from './webmailGuard';
+
+describe('supported webmail hosts', () => {
+  it('covers the major webmails incl. new Outlook and Proton', () => {
+    for (const h of ['mail.google.com', 'outlook.cloud.microsoft', 'outlook.office.com', 'mail.proton.me', 'app.fastmail.com', 'navigator-bs.gmx.com', '3c.gmx.net', 'navigator-lxa.mail.com', 'mail.yandex.com', 'mail.zoho.eu'])
+      expect(isSupportedWebmail(h)).toBe(true);
+  });
+  it('iCloud only on its Mail app', () => {
+    expect(isSupportedWebmail('www.icloud.com', '/mail/')).toBe(true);
+    expect(isSupportedWebmail('www.icloud.com', '/photos/')).toBe(false);
+  });
+  it('ignores lookalike and unrelated hosts', () => {
+    for (const h of ['mail.google.com.evil.io', 'fastmail.com.evil.io', 'gmx.net', 'mail.com', 'example.com']) expect(isSupportedWebmail(h)).toBe(false);
+  });
+});

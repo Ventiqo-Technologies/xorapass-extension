@@ -14,11 +14,13 @@ import { summarizeEmailLocal, findReplyTo, type EmailLocalSummary } from '../uti
 import { unwrapLink } from '../utils/linkInspect';
 import { extractHostname } from '../utils/siteTrust';
 import { redactText } from '../utils/pageContent';
-import { MESSAGE_BODY_SELECTORS, ATTACHMENT_SELECTORS, selectorFor, featureOn } from './secureBrowsing';
+import { featureOn } from './secureBrowsing';
+import { findOpenEmailRoot, providerHeader, attachmentNames } from './webmailProviders';
 
 interface OpenEmail {
   key: string;
-  body: Element;
+  /** The panel goes right before this element. */
+  anchor: Element;
   senderName: string;
   senderEmail: string;
   replyTo: string | null;
@@ -51,10 +53,6 @@ function hash(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-function visible(el: Element): boolean {
-  const r = (el as HTMLElement).getBoundingClientRect?.();
-  return !!r && r.width > 0 && r.height > 0;
-}
 
 function textOf(el: Element | null | undefined): string {
   return ((el as HTMLElement | null)?.innerText || el?.textContent || '').trim();
@@ -69,62 +67,57 @@ function cleanText(el: Element): string {
 
 /** Best-effort extraction of the email currently open in the webmail. */
 export function extractOpenEmail(host: string): OpenEmail | null {
-  const bodySel = selectorFor(MESSAGE_BODY_SELECTORS, host);
-  if (!bodySel) return null;
-  const bodies = Array.from(document.querySelectorAll(bodySel)).filter(visible);
-  const body = bodies[bodies.length - 1];
-  if (!body) return null;
+  const r = findOpenEmailRoot(host);
+  if (!r) return null;
+  const { container, root } = r;
+  const h = providerHeader(host, container);
+  let senderEmail = (h.senderEmail || '').trim();
+  let senderName = (h.senderName || '').trim();
+  const subjectFromProvider = (h.subject || '').trim();
 
-  let senderName = '';
-  let senderEmail = '';
-  let subject = '';
-  const gmail = host === 'mail.google.com';
-  const container =
-    body.closest('.adn, .gs, [role="listitem"], [role="region"], [role="main"], [data-test-id="message-view"]') ||
-    body.parentElement ||
-    document.body;
-
-  if (gmail) {
-    const s = container.querySelector('span.gD[email], span[email]');
-    senderEmail = s?.getAttribute('email') || '';
-    senderName = s?.getAttribute('name') || textOf(s);
-    subject = textOf(document.querySelector('h2.hP'));
-  }
   if (!senderEmail) {
     // Generic: an element carrying the address in an attribute, else the
-    // header text before the body.
+    // header text above the body.
     const attrEl = container.querySelector('[email], [title*="@"], [aria-label*="@"]');
     const attr = attrEl?.getAttribute('email') || attrEl?.getAttribute('title') || attrEl?.getAttribute('aria-label') || '';
     senderEmail = attr.match(EMAIL_RE)?.[1] || '';
-    if (!senderEmail) {
-      const head = textOf(container).split(textOf(body).slice(0, 40))[0] || '';
-      senderEmail = head.match(EMAIL_RE)?.[1] || '';
-      senderName = head.split(/[<\n]/)[0]?.trim().slice(0, 120) || '';
+    if (senderEmail) {
+      senderName = senderName || textOf(attrEl).replace(EMAIL_RE, '').replace(/[<>]/g, '').trim();
     } else {
-      senderName = senderName || textOf(attrEl).replace(EMAIL_RE, '').replace(/[<>]/g, '').trim().slice(0, 120);
+      const head = textOf(container).split(cleanText(root).slice(0, 40))[0] || '';
+      senderEmail = head.match(EMAIL_RE)?.[1] || '';
+      senderName = senderName || head.split(/[<\n]/)[0]?.trim() || '';
     }
   }
-  if (!subject) {
-    subject =
-      textOf(document.querySelector('[data-test-id="message-group-subject-text"], [role="main"] [role="heading"][aria-level="2"], .zmSubject, h1')) ||
-      '';
-  }
+  const doc = container.ownerDocument || document;
+  const subject =
+    subjectFromProvider ||
+    textOf(container.querySelector('h1, h2, [role="heading"]')) ||
+    textOf(doc.querySelector('[role="main"] [role="heading"][aria-level="2"], h1')) ||
+    '';
 
-  const links = Array.from(body.querySelectorAll('a[href]'))
+  const links = Array.from(root.querySelectorAll('a[href]'))
     .map((a) => ({ text: cleanText(a).slice(0, 200), href: (a as HTMLAnchorElement).href }))
     .filter((l) => /^https?:/i.test(l.href))
     .slice(0, 20);
-  const attSel = selectorFor(ATTACHMENT_SELECTORS, host);
-  const attachments = attSel
-    ? Array.from(document.querySelectorAll(attSel))
-        .map((el) => (el.getAttribute('title') || cleanText(el)).trim())
-        .filter(Boolean)
-        .slice(0, 10)
-    : [];
-  const bodyText = cleanText(body);
+  const attachments = attachmentNames(host)
+    .map(({ el, name }) => name || cleanText(el))
+    .filter(Boolean)
+    .slice(0, 10);
+  const bodyText = cleanText(root);
   const replyTo = findReplyTo(textOf(container).slice(0, 4000));
   const key = hash(`${senderEmail}|${subject}|${bodyText.slice(0, 300)}`);
-  return { key, body, senderName: senderName.slice(0, 120), senderEmail: senderEmail.toLowerCase(), replyTo, subject: subject.slice(0, 300), links, attachments, bodyText };
+  return {
+    key,
+    anchor: r.anchor,
+    senderName: senderName.slice(0, 120),
+    senderEmail: senderEmail.toLowerCase(),
+    replyTo,
+    subject: subject.slice(0, 300),
+    links,
+    attachments,
+    bodyText,
+  };
 }
 
 // ── Panel ───────────────────────────────────────────────────────────────────
@@ -319,7 +312,7 @@ export function updateEmailInsight(host: string): void {
   const hostEl = document.createElement('div');
   hostEl.setAttribute('data-xorapass-email-insight', '1');
   const root = hostEl.attachShadow({ mode: 'closed' });
-  m.body.parentElement?.insertBefore(hostEl, m.body);
+  m.anchor.parentElement?.insertBefore(hostEl, m.anchor);
   current = { key: m.key, host: hostEl, root };
 
   const local = summarizeEmailLocal({

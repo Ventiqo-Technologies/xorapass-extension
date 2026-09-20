@@ -14,7 +14,8 @@
 import browser from 'webextension-polyfill';
 import { showRiskWarning, showConfirmDialog, closeWebmailPhishingBanner } from './overlay';
 import { updateEmailInsight } from './emailInsight';
-import { analyzeEmailLink, analyzeAttachmentName, analyzeReplyTo, findReplyTo, type EmailFinding } from '../utils/emailGuard';
+import { analyzeEmailLink, analyzeAttachmentName, type EmailFinding } from '../utils/emailGuard';
+import { findEmailRoots, attachmentNames } from './webmailProviders';
 import { trackerFor } from '../utils/trackerList';
 import { registrableDomain } from '../utils/siteTrust';
 
@@ -71,30 +72,9 @@ export function featureOn(name: string): boolean {
 
 // ── Email Guard ────────────────────────────────────────────────────────────
 
-export const MESSAGE_BODY_SELECTORS: Record<string, string> = {
-  'mail.google.com': '.a3s',
-  outlook: '[aria-label="Message body"], [role="document"].allowTextSelection, div[id^="UniqueMessageBody"]',
-  'mail.yahoo.com': '[data-test-id="message-view-body-content"]',
-  'mail.aol.com': '[data-test-id="message-view-body-content"]',
-  'mail.zoho': '.zmMailContent, .zmPVContent',
-};
-export const ATTACHMENT_SELECTORS: Record<string, string> = {
-  'mail.google.com': '.aV3, .aQA span[title]',
-  outlook: '[data-testid="AttachmentCard"] [title], [role="listitem"][aria-label*="."] ',
-  'mail.yahoo.com': '[data-test-id="attachment-name"]',
-  'mail.aol.com': '[data-test-id="attachment-name"]',
-  'mail.zoho': '.zmAttName, .SC_att_name',
-};
-
-export function selectorFor(map: Record<string, string>, host: string): string | null {
-  for (const key of Object.keys(map)) if (host === key || host.includes(key)) return map[key];
-  return null;
-}
-
 const seenLinks = new WeakSet<Element>();
 const seenAttachments = new WeakSet<Element>();
 const linkFindings = new WeakMap<Element, EmailFinding>();
-let replyToWarnedFor = '';
 
 function badge(finding: EmailFinding): HTMLElement {
   const b = document.createElement('span');
@@ -133,7 +113,6 @@ function onEmailLinkClick(ev: MouseEvent): void {
     if (!stay) window.open(href, '_blank', 'noopener,noreferrer');
   });
 }
-let clickHooked = false;
 
 let emailTimer: ReturnType<typeof setTimeout> | null = null;
 let emailLastRun = 0;
@@ -154,17 +133,16 @@ export function scanEmailContent(host: string): void {
   }, wait);
 }
 
+const hookedDocs = new WeakSet<Document>();
+
 function scanEmailNow(host: string): void {
   try {
     updateEmailInsight(host);
   } catch {
     /* never break the webmail */
   }
-  const bodySel = selectorFor(MESSAGE_BODY_SELECTORS, host);
-  if (!bodySel) return;
-  const bodies = Array.from(document.querySelectorAll(bodySel)).slice(0, 20);
-  for (const body of bodies) {
-    const links = Array.from(body.querySelectorAll('a[href]')).slice(0, 300);
+  for (const r of findEmailRoots(host)) {
+    const links = Array.from(r.root.querySelectorAll('a[href]')).slice(0, 300);
     for (const a of links) {
       if (seenLinks.has(a)) continue;
       seenLinks.add(a);
@@ -173,44 +151,30 @@ function scanEmailNow(host: string): void {
       linkFindings.set(a, finding);
       a.after(badge(finding));
     }
-  }
-  if (bodies.length && !clickHooked) {
-    clickHooked = true;
-    document.addEventListener('click', onEmailLinkClick, true);
-  }
-
-  const attSel = selectorFor(ATTACHMENT_SELECTORS, host);
-  if (attSel) {
-    for (const el of Array.from(document.querySelectorAll(attSel)).slice(0, 50)) {
-      if (seenAttachments.has(el)) continue;
-      seenAttachments.add(el);
-      const name = (el.getAttribute('title') || el.textContent || '').trim();
-      const finding = analyzeAttachmentName(name);
-      if (finding) el.appendChild(badge(finding));
+    // Clicks inside a message iframe don't reach the top document.
+    const doc = r.root.ownerDocument;
+    if (doc && !hookedDocs.has(doc)) {
+      hookedDocs.add(doc);
+      doc.addEventListener('click', onEmailLinkClick, true);
     }
   }
+  for (const { el, name } of attachmentNames(host)) {
+    if (seenAttachments.has(el)) continue;
+    seenAttachments.add(el);
+    const finding = analyzeAttachmentName(name || (el.textContent || '').trim());
+    if (finding) el.appendChild(badge(finding));
+  }
+  // Reply-To mismatches are shown in the email panel (emailInsight.ts).
 
-  // Reply-To: only when the webmail renders it (e.g. Gmail's details panel).
-  if (bodies.length) {
-    const header = bodies[0].closest('[role="main"], [role="region"], [role="article"]') || document.body;
-    const headerText = (header as HTMLElement).innerText?.slice(0, 4000) || '';
-    const replyTo = findReplyTo(headerText);
-    const sender = (header.querySelector('[email]')?.getAttribute('email') || '').toLowerCase();
-    if (replyTo && sender && replyTo !== replyToWarnedFor) {
-      const f = analyzeReplyTo(sender, replyTo);
-      if (f) {
-        replyToWarnedFor = replyTo;
-        showRiskWarning({
-          severity: f.level === 'danger' ? 'block' : 'warn',
-          title: 'Replies Go Somewhere Else',
-          message: `${f.reasons[0]}. Scammers do this so your answer reaches them, not the real sender. Check the address before replying.`,
-          currentDomain: location.hostname,
-          riskLevel: f.level === 'danger' ? 'high' : 'medium',
-        });
-      }
-    }
+  // Message bodies in iframes (Proton, some generic webmails) load after the
+  // parent DOM settles and don't trigger its mutation observer — rescan on load.
+  for (const f of Array.from(document.querySelectorAll('iframe')).slice(0, 20)) {
+    if (hookedFrames.has(f)) continue;
+    hookedFrames.add(f);
+    f.addEventListener('load', () => scanEmailContent(host));
   }
 }
+const hookedFrames = new WeakSet<Element>();
 
 // ── Login pages with no real website behind them ───────────────────────────
 // HTML "smuggling": an email attachment or download builds the phishing page

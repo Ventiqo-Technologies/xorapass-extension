@@ -999,7 +999,7 @@ function scanWebmailMessages(): void {
     checkInsecureForms();
     checkOpaqueOriginLogin();
   }
-  if (!webmailGuardEnabled || !isSupportedWebmail(window.location.hostname)) return;
+  if (!webmailGuardEnabled || !isSupportedWebmail(window.location.hostname, window.location.pathname)) return;
   scanEmailContent(window.location.hostname);
   // With Email Guard rolled out, the email panel shows the sender check (and
   // more) above the message — don't also raise the older sender banner.
@@ -2292,6 +2292,8 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   initPasteGuard();
   initWebBridge();
   if (window === window.top) setTimeout(checkOpaqueOriginLogin, 300);
+  // Webmail checks shouldn't depend on the credential lookup finishing.
+  if (window === window.top) setTimeout(scanWebmailMessages, 600);
   // The first risk check includes the on-device favicon match. The tab icon
   // is normally cached, so this waits a few ms (400 ms at most).
   if (window === window.top && /^https?:$/.test(location.protocol)) {
