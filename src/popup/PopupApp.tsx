@@ -3258,6 +3258,8 @@ export const PopupApp: React.FC = () => {
                         <span className="text-slate-400">Always-on protection (works while locked) is included in paid plans.</span>
                       ) : shieldState.entitlement && !shieldState.entitlement.userEnabled ? (
                         <span className="text-slate-400">Always-on protection is off — turn on Phishing &amp; Lookalike Shield in Settings.</span>
+                      ) : unlocked ? (
+                        <span className="text-slate-400">Always-on protection is rolling out to accounts.</span>
                       ) : (
                         <span className="text-slate-400">Sign in to enable always-on protection.</span>
                       )}
