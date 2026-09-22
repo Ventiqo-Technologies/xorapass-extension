@@ -506,9 +506,13 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // Bail rather than showing a warning for a state that's no longer current.
   if (lastWarnedRiskKey !== key) return;
 
+  const isMalware = (domainRisk?.reasons || []).some((r) => /malware/i.test(r)) ||
+    Object.values(domainRisk?.threatIntelSignals || {}).some((s) => s === 'malware_hit');
+  const blockTitle = isMalware ? 'Dangerous Malware Site Blocked' : 'Likely Phishing Site Blocked';
+
   showRiskWarning({
     severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
-    title: decision === 'block' ? 'Likely Phishing Site Blocked' : 'Suspicious Site Detected',
+    title: decision === 'block' ? blockTitle : 'Suspicious Site Detected',
     message,
     advisory: webRiskAdvisoryFromSignals(domainRisk?.threatIntelSignals),
     currentDomain: currentHostname,

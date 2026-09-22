@@ -159,4 +159,53 @@ describe('mergeLocalAndRemoteRisk', () => {
     expect(merged.isAllowlisted).toBe(true);
     expect(merged.decision).toBe('allow');
   });
+
+  it('escalates confirmed threat intel phishing hit to block and interstitial', () => {
+    const cleanLocal: DomainRiskAssessment = {
+      pageHostname: 'mucopnexo.z13.web.core.windows.net',
+      decision: 'allow',
+      riskScore: 0,
+      riskLevel: 'safe',
+      reasons: [],
+    };
+
+    const remote: RemoteDomainRiskResponse = {
+      decision: 'warn',
+      risk_score: 40,
+      risk_level: 'low',
+      reasons: ['One or more threat-intel providers flag this domain as suspected phishing.'],
+      reason_codes: ['THREAT_INTEL_PHISHING_HIT'],
+      threat_intel_signals: { google_web_risk: 'phishing_hit' },
+    };
+
+    const merged = mergeLocalAndRemoteRisk(cleanLocal, remote);
+    expect(merged.decision).toBe('block');
+    expect(merged.riskScore).toBeGreaterThanOrEqual(85);
+    expect(merged.riskLevel).toBe('high');
+    expect(merged.showInterstitial).toBe(true);
+  });
+
+  it('escalates confirmed threat intel malware hit to block and interstitial', () => {
+    const cleanLocal: DomainRiskAssessment = {
+      pageHostname: 'malware-sample.pages.dev',
+      decision: 'allow',
+      riskScore: 10,
+      riskLevel: 'safe',
+      reasons: [],
+    };
+
+    const remote: RemoteDomainRiskResponse = {
+      decision: 'warn',
+      risk_score: 35,
+      risk_level: 'low',
+      reasons: ['One or more threat-intel providers flag this domain as likely distributing malware.'],
+      reason_codes: ['THREAT_INTEL_MALWARE_HIT'],
+      threat_intel_signals: { virustotal: 'malware_hit' },
+    };
+
+    const merged = mergeLocalAndRemoteRisk(cleanLocal, remote);
+    expect(merged.decision).toBe('block');
+    expect(merged.riskScore).toBeGreaterThanOrEqual(85);
+    expect(merged.showInterstitial).toBe(true);
+  });
 });

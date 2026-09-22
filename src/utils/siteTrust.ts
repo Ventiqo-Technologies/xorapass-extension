@@ -69,7 +69,7 @@ export const USER_CONTENT_HOST_SUFFIXES: readonly string[] = [
   'sites.google.com', 'docs.google.com', 'script.google.com', 'forms.gle',
   'storage.googleapis.com', 'firebasestorage.googleapis.com', 'googleusercontent.com',
   // Microsoft
-  'blob.core.windows.net', 'web.core.windows.net', 'file.core.windows.net',
+  'core.windows.net', 'blob.core.windows.net', 'web.core.windows.net', 'file.core.windows.net',
   'forms.office.com', 'forms.microsoft.com', 'sway.office.com', 'sway.cloud.microsoft',
   // AWS — every *.amazonaws.com host is customer-controlled (S3, API Gateway,
   // Lambda URLs). AWS's own sign-in lives on amazon.com / signin.aws / awsapps.com.

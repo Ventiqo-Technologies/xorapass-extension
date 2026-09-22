@@ -9,6 +9,7 @@ import {
   hasPunycode,
   findLookalikeTarget,
   isThirdPartyFrame,
+  isUserContentHost,
 } from './siteTrust';
 
 describe('normalizeHostname', () => {
@@ -140,3 +141,26 @@ describe('isThirdPartyFrame', () => {
     ).toBe(true);
   });
 });
+
+describe('isUserContentHost', () => {
+  it('recognizes Azure multi-segment subdomains under core.windows.net', () => {
+    expect(isUserContentHost('mucopnexo.z13.web.core.windows.net')).toBe(true);
+    expect(isUserContentHost('sample.blob.core.windows.net')).toBe(true);
+    expect(isUserContentHost('custom.file.core.windows.net')).toBe(true);
+    expect(isUserContentHost('storageaccount.core.windows.net')).toBe(true);
+  });
+
+  it('recognizes Google and AWS user-content platforms', () => {
+    expect(isUserContentHost('sites.google.com')).toBe(true);
+    expect(isUserContentHost('mybucket.s3.amazonaws.com')).toBe(true);
+    expect(isUserContentHost('forms.office.com')).toBe(true);
+  });
+
+  it('does not classify top-level or unrelated domains as user-content hosts', () => {
+    expect(isUserContentHost('google.com')).toBe(false);
+    expect(isUserContentHost('microsoft.com')).toBe(false);
+    expect(isUserContentHost('windows.net')).toBe(false);
+    expect(isUserContentHost('example.com')).toBe(false);
+  });
+});
+

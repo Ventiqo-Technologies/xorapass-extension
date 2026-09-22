@@ -348,8 +348,19 @@ export function mergeLocalAndRemoteRisk(
     };
   }
 
+  // Check whether threat intelligence (Google Web Risk, VirusTotal, Cloudflare, etc.) flagged
+  // this domain as suspected phishing or malware. A confirmed threat intel hit must NEVER
+  // be softened or presented as merely a low/medium warning.
+  const hasThreatIntelHit =
+    (remote.reason_codes || []).some(
+      (rc) => rc === 'THREAT_INTEL_PHISHING_HIT' || rc === 'THREAT_INTEL_MALWARE_HIT'
+    ) ||
+    Object.values(remote.threat_intel_signals || {}).some(
+      (sig) => sig === 'phishing_hit' || sig === 'malware_hit'
+    );
+
   // Choose stricter decision & higher score
-  const score = Math.max(local.riskScore, remote.risk_score);
+  let score = Math.max(local.riskScore, remote.risk_score);
   let decision: Decision = local.decision;
 
   const rank = (d: Decision): number => {
@@ -366,7 +377,10 @@ export function mergeLocalAndRemoteRisk(
     }
   };
 
-  if (rank(remote.decision) > rank(local.decision)) {
+  if (hasThreatIntelHit) {
+    if (score < 85) score = 85;
+    decision = 'block';
+  } else if (rank(remote.decision) > rank(local.decision)) {
     decision = remote.decision;
   }
 
@@ -376,6 +390,10 @@ export function mergeLocalAndRemoteRisk(
   else if (score >= 60) riskLevel = 'medium';
   else if (score >= 30) riskLevel = 'low';
   else riskLevel = 'safe';
+
+  if (hasThreatIntelHit && riskLevel !== 'critical') {
+    riskLevel = 'high';
+  }
 
   // Merge unique reason strings. Defensively coerced to [] — a backend
   // response with reasons serialized as null (a real bug that shipped
@@ -392,7 +410,7 @@ export function mergeLocalAndRemoteRisk(
     reasons: combinedReasons,
     matchedTarget: local.matchedTarget || remote.matched_target || null,
     safeWarningMessage: remote.safe_warning_message || local.safeWarningMessage,
-    showInterstitial: !!remote.show_interstitial || (decision === 'block' && score >= 85),
+    showInterstitial: !!remote.show_interstitial || hasThreatIntelHit || (decision === 'block' && score >= 85),
     threatIntelSignals: remote.threat_intel_signals,
   };
 }
