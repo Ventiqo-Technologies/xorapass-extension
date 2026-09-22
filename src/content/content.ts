@@ -438,10 +438,20 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
           }
         : undefined,
       onLeave: () => {
-        // history.back() can land straight back here on a redirect chain, so
-        // prefer a neutral destination when there is nothing safe behind us.
-        if (window.history.length > 1) window.history.back();
-        else window.location.href = 'about:blank';
+        try {
+          if (window.history.length > 1) {
+            window.history.back();
+            setTimeout(() => {
+              if (window.location.href !== 'about:blank') {
+                window.location.replace('about:blank');
+              }
+            }, 300);
+          } else {
+            window.location.replace('about:blank');
+          }
+        } catch {
+          window.location.replace('about:blank');
+        }
       },
       onRequestAllowlist: () =>
         browser.runtime

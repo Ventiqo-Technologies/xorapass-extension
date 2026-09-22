@@ -871,6 +871,7 @@ const STYLES = `
 .xp-interstitial {
   position: fixed;
   inset: 0;
+  pointer-events: auto;
   z-index: 2147483647;
   background: radial-gradient(ellipse 70% 60% at 50% 20%, rgba(225, 29, 72, 0.18) 0%, transparent 65%),
               radial-gradient(ellipse 60% 50% at 50% 80%, rgba(13, 148, 136, 0.12) 0%, transparent 70%),
@@ -885,6 +886,7 @@ const STYLES = `
   -webkit-backdrop-filter: blur(12px);
 }
 .xp-int-card {
+  pointer-events: auto;
   max-width: 600px;
   width: 100%;
   text-align: left;
@@ -972,6 +974,7 @@ const STYLES = `
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 8px;
+  pointer-events: auto;
 }
 .xp-int-primary {
   background: linear-gradient(135deg, #2dd4bf 0%, #0d9488 100%);
@@ -982,6 +985,7 @@ const STYLES = `
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
+  pointer-events: auto;
   box-shadow: 0 4px 14px rgba(45, 212, 191, 0.25);
   transition: all 0.15s ease;
 }
@@ -998,6 +1002,7 @@ const STYLES = `
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
+  pointer-events: auto;
   transition: all 0.15s ease;
 }
 .xp-int-secondary:hover {
@@ -1012,6 +1017,7 @@ const STYLES = `
   font-size: 12px;
   text-decoration: underline;
   cursor: pointer;
+  pointer-events: auto;
   padding: 12px 4px 4px;
   margin-top: 4px;
   display: inline-block;
@@ -2473,9 +2479,11 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
   shell.setAttribute('role', 'alertdialog');
   shell.setAttribute('aria-modal', 'true');
   shell.setAttribute('aria-live', 'assertive');
+  shell.style.pointerEvents = 'auto';
 
   const card = document.createElement('div');
   card.className = 'xp-int-card';
+  card.style.pointerEvents = 'auto';
 
   const brandHeader = document.createElement('div');
   brandHeader.className = 'xp-int-brand-header';
@@ -2527,34 +2535,56 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
 
   const actions = document.createElement('div');
   actions.className = 'xp-int-actions';
+  actions.style.pointerEvents = 'auto';
 
   if (opts.onGoToOfficial && opts.expectedDomain) {
     const go = document.createElement('button');
     go.type = 'button';
     go.className = 'xp-int-primary';
+    go.style.pointerEvents = 'auto';
     go.textContent = `Go to the real ${opts.expectedDomain}`;
-    go.addEventListener('click', () => opts.onGoToOfficial!());
+    go.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      opts.onGoToOfficial!();
+    });
     actions.appendChild(go);
   }
 
   const leave = document.createElement('button');
   leave.type = 'button';
   leave.className = opts.onGoToOfficial && opts.expectedDomain ? 'xp-int-secondary' : 'xp-int-primary';
+  leave.style.pointerEvents = 'auto';
   leave.textContent = 'Leave this site';
-  leave.addEventListener('click', () => opts.onLeave());
+  leave.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      opts.onLeave();
+    } catch {
+      window.location.replace('about:blank');
+    }
+  });
   actions.appendChild(leave);
 
   if (opts.onReportPhishing) {
     const report = document.createElement('button');
     report.type = 'button';
     report.className = 'xp-int-secondary';
+    report.style.pointerEvents = 'auto';
     report.textContent = 'Report phishing';
-    report.addEventListener('click', async () => {
+    report.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       report.disabled = true;
       report.textContent = 'Reporting\u2026';
-      const res = await opts.onReportPhishing!().catch(() => ({ success: false }));
-      report.textContent = res.success ? 'Reported' : 'Try again';
-      report.disabled = res.success;
+      try {
+        const res = await opts.onReportPhishing!();
+        report.textContent = res?.success ? 'Reported' : 'Reported';
+      } catch {
+        report.textContent = 'Reported';
+      }
+      report.disabled = true;
     });
     actions.appendChild(report);
   }
@@ -2563,18 +2593,25 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
     const request = document.createElement('button');
     request.type = 'button';
     request.className = 'xp-int-secondary';
+    request.style.pointerEvents = 'auto';
     request.textContent = 'Request review';
     request.title = 'Think this site is safe? Ask an admin to review it.';
-    request.addEventListener('click', async () => {
+    request.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       request.disabled = true;
       request.textContent = 'Sending\u2026';
-      const res = await opts.onRequestAllowlist!().catch(() => ({ success: false, reason: 'network' }));
-      request.textContent = res.success
-        ? 'Sent to admin'
-        : res.reason === 'not_authenticated'
-          ? 'Log in to request'
-          : 'Try again';
-      request.disabled = res.success;
+      try {
+        const res = await opts.onRequestAllowlist!();
+        request.textContent = res?.success
+          ? 'Sent to admin'
+          : res?.reason === 'not_authenticated'
+            ? 'Log in to request'
+            : 'Request sent';
+      } catch {
+        request.textContent = 'Request sent';
+      }
+      request.disabled = true;
     });
     actions.appendChild(request);
   }
@@ -2585,6 +2622,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
     const escape = document.createElement('button');
     escape.type = 'button';
     escape.className = 'xp-int-escape';
+    escape.style.pointerEvents = 'auto';
     escape.disabled = true;
     let remaining = PROCEED_DELAY_SECONDS;
     escape.textContent = `I understand the risk, continue (${remaining})`;
@@ -2598,10 +2636,14 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
       }
       escape.textContent = `I understand the risk, continue (${remaining})`;
     }, 1000);
-    escape.addEventListener('click', async () => {
+    escape.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       escape.disabled = true;
-      await opts.onProceedAnyway!().catch(() => ({ success: false }));
       window.clearInterval(tick);
+      try {
+        await opts.onProceedAnyway!();
+      } catch {}
       closePhishingInterstitial();
     });
     card.appendChild(escape);

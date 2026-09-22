@@ -83,8 +83,20 @@ const MAX_GUARD_MS = 1500;
           }
         : undefined,
       onLeave: () => {
-        if (history.length > 1) history.back();
-        else location.href = 'about:blank';
+        try {
+          if (history.length > 1) {
+            history.back();
+            setTimeout(() => {
+              if (location.href !== 'about:blank') {
+                location.replace('about:blank');
+              }
+            }, 300);
+          } else {
+            location.replace('about:blank');
+          }
+        } catch {
+          location.replace('about:blank');
+        }
       },
       onReportPhishing: () =>
         browser.runtime
@@ -103,14 +115,17 @@ const MAX_GUARD_MS = 1500;
         browser.runtime
           .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: location.hostname } })
           .then((res: any) => {
-            if (res?.success) {
-              state.action = 'allow';
-              release();
-              closePhishingInterstitial();
-            }
+            state.action = 'allow';
+            release();
+            closePhishingInterstitial();
             return { success: !!res?.success };
           })
-          .catch(() => ({ success: false })),
+          .catch(() => {
+            state.action = 'allow';
+            release();
+            closePhishingInterstitial();
+            return { success: false };
+          }),
     });
   };
 
