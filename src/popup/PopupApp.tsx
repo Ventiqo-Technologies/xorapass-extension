@@ -1494,6 +1494,28 @@ export const PopupApp: React.FC = () => {
     try { return h === currentHostname || currentHostname.endsWith('.' + h); } catch { return false; }
   });
 
+  const isDangerousSite = Boolean(
+    domainRiskAssessment &&
+    !isCurrentDomainAllowlisted &&
+    (domainRiskAssessment.decision === 'block' ||
+     domainRiskAssessment.riskLevel === 'high' ||
+     domainRiskAssessment.riskLevel === 'critical' ||
+     domainRiskAssessment.riskScore >= 60 ||
+     Boolean(domainRiskAssessment.matchedTarget) ||
+     (domainRiskAssessment.safeWarningMessage && /malware|phishing|blocked/i.test(domainRiskAssessment.safeWarningMessage)) ||
+     (domainRiskAssessment.reasons && domainRiskAssessment.reasons.some((r: string) => /malware|phishing|blocked/i.test(r))))
+  );
+
+  const isWarningSite = Boolean(
+    domainRiskAssessment &&
+    !isCurrentDomainAllowlisted &&
+    !isDangerousSite &&
+    (domainRiskAssessment.decision === 'warn' ||
+     domainRiskAssessment.decision === 'require_approval' ||
+     domainRiskAssessment.riskScore >= 20 ||
+     (domainRiskAssessment.reasons && domainRiskAssessment.reasons.length > 0))
+  );
+
   // Fetch the remote threat-intel verdict for the active tab whenever it
   // changes — unconditionally (not gated behind the local engine already
   // having found something), since the whole point is catching threats the
@@ -1603,56 +1625,6 @@ export const PopupApp: React.FC = () => {
             </button>
           </div>
         </header>
-      )}
-
-      {/* Pinned Threat Warning Banner - Always visible on top regardless of active tab or vault lock */}
-      {domainRiskAssessment && (domainRiskAssessment.decision === 'block' || domainRiskAssessment.decision === 'warn') && !isCurrentDomainAllowlisted && (
-        <div className={`shrink-0 z-30 px-3.5 py-2 border-b flex flex-col gap-1 ${
-          domainRiskAssessment.decision === 'block'
-            ? 'bg-rose-600 text-white border-rose-700 shadow-md'
-            : 'bg-amber-500 text-slate-950 border-amber-600 shadow-sm'
-        }`}>
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-start gap-2 min-w-0">
-              {domainRiskAssessment.decision === 'block' ? (
-                <ShieldAlert className="w-4 h-4 text-white shrink-0 mt-0.5 animate-pulse" />
-              ) : (
-                <AlertTriangle className="w-4 h-4 text-slate-950 shrink-0 mt-0.5" />
-              )}
-              <div className="min-w-0">
-                <div className="text-xs font-black uppercase tracking-wider leading-tight flex items-center gap-1.5">
-                  <span>{domainRiskAssessment.decision === 'block' ? 'Threat Blocked' : 'Security Warning'}</span>
-                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                    domainRiskAssessment.decision === 'block' ? 'bg-rose-800 text-rose-100' : 'bg-amber-600 text-amber-950'
-                  }`}>
-                    Score {domainRiskAssessment.riskScore}
-                  </span>
-                </div>
-                <div className={`text-xs mt-0.5 leading-snug font-medium line-clamp-2 ${
-                  domainRiskAssessment.decision === 'block' ? 'text-rose-100' : 'text-slate-900'
-                }`}>
-                  {domainRiskAssessment.safeWarningMessage ||
-                    (domainRiskAssessment.matchedTarget
-                      ? `Suspected impersonation of ${domainRiskAssessment.matchedTarget}`
-                      : domainRiskAssessment.reasons[0] || 'Malicious or untrusted domain detected')}
-                </div>
-              </div>
-            </div>
-            {domainRiskAssessment.decision === 'block' && (
-              <button
-                onClick={() => {
-                  if (window.confirm(`Allow autofill on "${currentHostname}"? Only do this if you are certain this is legitimate.`)) {
-                    toggleDomainAllowlist(true);
-                  }
-                }}
-                className="shrink-0 text-[10px] font-bold bg-white/20 hover:bg-white/30 text-white px-2 py-0.5 rounded transition cursor-pointer"
-                title="Bypass risk block for this domain"
-              >
-                Allow
-              </button>
-            )}
-          </div>
-        </div>
       )}
 
       {/* Main Content Area */}
@@ -2528,42 +2500,42 @@ export const PopupApp: React.FC = () => {
                       </div>
 
                       {isInsecure && (
-                        <div className="flex items-start gap-1.5 text-xs text-amber-700 bg-amber-50 p-2 rounded-lg leading-snug">
-                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="flex items-start gap-1.5 text-xs text-amber-950 dark:text-amber-100 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-500/40 p-2 rounded-lg leading-snug">
+                          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                           <span>This page is not using HTTPS encryption. Exercise caution.</span>
                         </div>
                       )}
 
-                      {/* Domain Risk Assessment Banner */}
-                      {domainRiskAssessment && domainRiskAssessment.decision === 'block' && !isCurrentDomainAllowlisted && (
-                        <div className="rounded-xl border border-rose-200 bg-rose-50 p-2.5 space-y-1.5">
-                          <div className="flex items-start gap-1.5">
-                            <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      {/* Domain Risk: DANGEROUS SITE (RED BOX) */}
+                      {isDangerousSite && domainRiskAssessment && (
+                        <div className="rounded-xl border border-rose-300 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-950/60 p-2.5 space-y-1.5 shadow-xs">
+                          <div className="flex items-start gap-2">
+                            <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5 animate-pulse" />
                             <div className="flex-1 min-w-0">
-                              <div className="text-xs font-bold text-rose-800 leading-tight">
+                              <div className="text-xs font-bold text-rose-900 dark:text-rose-200 leading-tight">
                                 {domainRiskAssessment.matchedTarget ? 'Phishing / Lookalike Domain Blocked' : 'Dangerous Site Blocked'}
                               </div>
-                              <div className="text-xs text-rose-700 mt-0.5 leading-snug">
+                              <div className="text-xs text-rose-950 dark:text-rose-100 mt-1 leading-snug font-medium">
                                 {domainRiskAssessment.safeWarningMessage ||
                                   (domainRiskAssessment.matchedTarget ? (
-                                    <>This site appears to impersonate <span className="font-semibold">{domainRiskAssessment.matchedTarget}</span>. Autofill is blocked for your protection.</>
+                                    <>This site appears to impersonate <span className="font-bold underline">{domainRiskAssessment.matchedTarget}</span>. Autofill is blocked for your protection.</>
                                   ) : (
                                     'Security providers have flagged this site. Autofill is blocked for your protection.'
                                   ))}
                               </div>
                             </div>
-                            <span className="shrink-0 px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 text-xs font-bold">
+                            <span className="shrink-0 px-2 py-0.5 rounded-full bg-rose-200 dark:bg-rose-900/60 text-rose-900 dark:text-rose-200 text-xs font-bold">
                               Score {domainRiskAssessment.riskScore}
                             </span>
                           </div>
                           {domainRiskAssessment.reasons.length > 0 && (
-                            <div className="space-y-0.5 pl-5">
+                            <div className="space-y-0.5 pl-6 pt-0.5">
                               {domainRiskAssessment.reasons.map((r, i) => (
-                                <div key={i} className="text-xs text-rose-600 leading-snug">• {r}</div>
+                                <div key={i} className="text-xs text-rose-900 dark:text-rose-200/90 leading-snug font-medium">• {r}</div>
                               ))}
                             </div>
                           )}
-                          <div className="flex gap-1.5 pt-0.5">
+                          <div className="flex gap-1.5 pt-1 pl-6">
                             <button
                               id="xp-allowlist-domain-btn"
                               onClick={() => {
@@ -2571,7 +2543,7 @@ export const PopupApp: React.FC = () => {
                                   toggleDomainAllowlist(true);
                                 }
                               }}
-                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs font-semibold border border-rose-200 transition"
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/40 dark:hover:bg-rose-900/70 text-rose-900 dark:text-rose-200 text-xs font-semibold border border-rose-300 dark:border-rose-700/60 transition cursor-pointer"
                             >
                               <ShieldCheck className="w-3.5 h-3.5" />
                               Allowlist this domain
@@ -2580,33 +2552,43 @@ export const PopupApp: React.FC = () => {
                         </div>
                       )}
 
-                      {/* Domain Risk Warning (medium risk, not blocked) */}
-                      {domainRiskAssessment && domainRiskAssessment.decision === 'warn' && !isCurrentDomainAllowlisted && (
-                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-2.5 space-y-1">
-                          <div className="flex items-start gap-1.5">
-                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      {/* Domain Risk: SECURITY WARNING (YELLOW BOX) */}
+                      {isWarningSite && domainRiskAssessment && (
+                        <div className="rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-950/60 p-2.5 space-y-1.5 shadow-xs">
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                             <div className="flex-1 min-w-0">
-                              <div className="text-xs font-bold text-amber-800 leading-tight">Security Warning</div>
-                              <div className="text-xs text-amber-700 mt-0.5 leading-snug">
+                              <div className="text-xs font-bold text-amber-900 dark:text-amber-200 leading-tight">Security Warning</div>
+                              <div className="text-xs text-amber-950 dark:text-amber-100 mt-1 leading-snug font-medium">
                                 {domainRiskAssessment.safeWarningMessage || domainRiskAssessment.reasons[0] || 'This domain has unusual characteristics. Verify before filling.'}
                               </div>
                             </div>
+                            <span className="shrink-0 px-2 py-0.5 rounded-full bg-amber-200 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200 text-xs font-bold">
+                              Score {domainRiskAssessment.riskScore}
+                            </span>
                           </div>
+                          {domainRiskAssessment.reasons.length > 1 && (
+                            <div className="space-y-0.5 pl-6 pt-0.5">
+                              {domainRiskAssessment.reasons.slice(1).map((r, i) => (
+                                <div key={i} className="text-xs text-amber-900 dark:text-amber-200/90 leading-snug font-medium">• {r}</div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
 
                       {/* Legacy simple lookalike (only shown when full risk assessment gives no result) */}
-                      {lookalike && !domainRiskAssessment?.matchedTarget && (
-                        <div className="flex items-start gap-1.5 text-xs text-rose-700 bg-rose-50 p-2 rounded-lg leading-snug">
-                          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      {lookalike && !domainRiskAssessment?.matchedTarget && !isDangerousSite && !isWarningSite && (
+                        <div className="flex items-start gap-1.5 text-xs text-rose-950 dark:text-rose-100 bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-500/40 p-2 rounded-lg leading-snug">
+                          <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                           <span>Possible lookalike for "{lookalike.target}". Verify domain before filling.</span>
                         </div>
                       )}
 
                       {/* Allowlisted domain indicator */}
                       {isCurrentDomainAllowlisted && (
-                        <div className="flex items-center gap-1.5 text-xs text-slate-500 bg-slate-100 p-2 rounded-lg leading-snug">
-                          <ShieldCheck className="w-4 h-4 text-slate-400 shrink-0" />
+                        <div className="flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 p-2 rounded-lg leading-snug">
+                          <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
                           <span className="flex-1">This domain is allowlisted — risk checks bypassed.</span>
                           <button
                             id="xp-remove-allowlist-btn"
