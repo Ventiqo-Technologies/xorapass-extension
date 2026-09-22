@@ -1508,11 +1508,14 @@ export const PopupApp: React.FC = () => {
   const isDangerousSite = Boolean(
     domainRiskAssessment &&
     !isCurrentDomainAllowlisted &&
+    !domainRiskAssessment.signals?.isSameRegistrableDomain &&
+    !domainRiskAssessment.signals?.isExactMatch &&
+    !domainRiskAssessment.signals?.isSubdomainMatch &&
     (domainRiskAssessment.decision === 'block' ||
      domainRiskAssessment.riskLevel === 'high' ||
      domainRiskAssessment.riskLevel === 'critical' ||
      domainRiskAssessment.riskScore >= 60 ||
-     Boolean(domainRiskAssessment.matchedTarget) ||
+     (Boolean(domainRiskAssessment.matchedTarget) && domainRiskAssessment.riskScore >= 40 && domainRiskAssessment.decision !== 'allow') ||
      (domainRiskAssessment.safeWarningMessage && /malware|phishing|blocked/i.test(domainRiskAssessment.safeWarningMessage)) ||
      (domainRiskAssessment.reasons && domainRiskAssessment.reasons.some((r: string) => /malware|phishing|blocked/i.test(r))))
   );
@@ -1521,6 +1524,9 @@ export const PopupApp: React.FC = () => {
     domainRiskAssessment &&
     !isCurrentDomainAllowlisted &&
     !isDangerousSite &&
+    !domainRiskAssessment.signals?.isSameRegistrableDomain &&
+    !domainRiskAssessment.signals?.isExactMatch &&
+    !domainRiskAssessment.signals?.isSubdomainMatch &&
     (domainRiskAssessment.decision === 'warn' ||
      domainRiskAssessment.decision === 'require_approval' ||
      domainRiskAssessment.riskScore >= 20 ||
@@ -1536,13 +1542,17 @@ export const PopupApp: React.FC = () => {
     setRemoteDomainRisk(null);
     if (!currentHostname || siteDisabled || isLocalHost) return;
     let cancelled = false;
+    const isLegitLocal =
+      localDomainRisk?.signals?.isSameRegistrableDomain ||
+      localDomainRisk?.signals?.isExactMatch ||
+      localDomainRisk?.signals?.isSubdomainMatch;
     browser.runtime
       .sendMessage({
         type: 'CHECK_DOMAIN_RISK',
         payload: {
           currentDomain: currentHostname,
           currentUrl: `${currentProtocol}//${currentHostname}`,
-          savedDomain: localDomainRisk?.matchedTarget || lookalike?.target || '',
+          savedDomain: isLegitLocal ? '' : (localDomainRisk?.matchedTarget || lookalike?.target || ''),
         },
       })
       .then((res: any) => {
@@ -2524,11 +2534,11 @@ export const PopupApp: React.FC = () => {
                             <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5 animate-pulse" />
                             <div className="flex-1 min-w-0">
                               <div className="text-xs font-bold text-rose-900 dark:text-rose-200 leading-tight">
-                                {domainRiskAssessment.matchedTarget ? 'Phishing / Lookalike Domain Blocked' : 'Dangerous Site Blocked'}
+                                {domainRiskAssessment.matchedTarget && !domainRiskAssessment.signals?.isSameRegistrableDomain ? 'Phishing / Lookalike Domain Blocked' : 'Dangerous Site Blocked'}
                               </div>
                               <div className="text-xs text-rose-950 dark:text-rose-100 mt-1 leading-snug font-medium">
                                 {domainRiskAssessment.safeWarningMessage ||
-                                  (domainRiskAssessment.matchedTarget ? (
+                                  (domainRiskAssessment.matchedTarget && !domainRiskAssessment.signals?.isSameRegistrableDomain ? (
                                     <>This site appears to impersonate <span className="font-bold underline">{domainRiskAssessment.matchedTarget}</span>. Autofill is blocked for your protection.</>
                                   ) : (
                                     'Security providers have flagged this site. Autofill is blocked for your protection.'

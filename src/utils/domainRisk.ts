@@ -726,6 +726,9 @@ export function assessDomainRisk(
   // USER_CONTENT_HOST_SUFFIXES): a Google Form or an Azure blob page is not
   // Google's or Microsoft's page.
   if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg) && !isUserContentHost(pageHostname)) {
+    assessment.signals.isSameRegistrableDomain = true;
+    assessment.signals.isSubdomainMatch = pageHostname !== pageReg && isSubdomainOf(pageHostname, pageReg);
+    assessment.signals.isExactMatch = pageHostname === pageReg;
     assessment.matchedTarget = pageReg;
     return assessment; // Safe legitimate platform domain
   }
