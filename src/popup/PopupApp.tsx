@@ -3769,16 +3769,18 @@ export const PopupApp: React.FC = () => {
                 <ShieldExtras />
 
                 {/* 3. INSTALLED EXTENSION SECURITY CHECKUP CARD */}
-                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
+                <div className="p-3.5 bg-white dark:bg-[#0c1615] border border-slate-900/10 dark:border-white/10 rounded-xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400 dark:text-slate-400">
                       <Puzzle className="w-4 h-4 text-brand-cyan" /> Extension Checkup
                     </div>
                     <button
                       onClick={handleAuditExtensions}
                       disabled={isAuditingExtensions}
-                      className={`px-2.5 py-1 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-60 transition-all duration-200 ${
-                        isAuditingExtensions ? 'bg-brand-cyan animate-pulse' : 'bg-slate-900 hover:bg-slate-700'
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-60 transition-all duration-200 ${
+                        isAuditingExtensions
+                          ? 'bg-brand-cyan text-slate-900 animate-pulse'
+                          : 'bg-slate-900 hover:bg-slate-700 text-white dark:bg-emerald-950/60 dark:hover:bg-emerald-900/60 dark:text-emerald-300 dark:border dark:border-emerald-500/30'
                       }`}
                     >
                       <RefreshCw className={`w-3 h-3 ${isAuditingExtensions ? 'animate-spin' : ''}`} />
@@ -3786,87 +3788,87 @@ export const PopupApp: React.FC = () => {
                     </button>
                   </div>
 
-                  <p className="text-xs text-slate-500 leading-snug">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-snug">
                     Audits other installed browser extensions for broad or elevated permissions (e.g. reading all website traffic or clipboard access).
                   </p>
 
                   {extensionAudit ? (
                     <div className="space-y-2.5 pt-1">
                       {/* Overall Health Row */}
-                      <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-900/5 rounded-xl">
+                      <div className="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-white/[0.04] border border-slate-900/5 dark:border-white/10 rounded-xl">
                         <div className="flex items-center gap-2">
                           <div
                             className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs ${
                               extensionAudit.highRiskCount > 0
-                                ? 'bg-amber-100 text-amber-800'
-                                : 'bg-emerald-100 text-emerald-800'
+                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 dark:border dark:border-amber-700/50'
+                                : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border dark:border-emerald-700/50'
                             }`}
                           >
                             {extensionAudit.overallHealthScore}%
                           </div>
                           <div>
-                            <div className="text-xs font-bold text-slate-900">
+                            <div className="text-xs font-bold text-slate-900 dark:text-white">
                               {extensionAudit.highRiskCount > 0 ? 'Review Recommended' : 'Extension Health Good'}
                             </div>
-                            <div className="text-[11px] text-slate-500">
-                              {extensionAudit.enabledExtensions} active extension(s) scanned
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {extensionAudit.totalExtensions} scanned ({extensionAudit.enabledExtensions} active)
                             </div>
                           </div>
                         </div>
 
                         <div className="flex items-center gap-1.5 text-[11px] font-bold">
                           {extensionAudit.highRiskCount > 0 && (
-                            <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-700">
+                            <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-950/70 dark:text-rose-300 dark:border dark:border-rose-700/50">
                               {extensionAudit.highRiskCount} Elevated
                             </span>
                           )}
-                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">
+                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border dark:border-emerald-700/50">
                             {extensionAudit.safeCount} Low/Safe
                           </span>
                         </div>
                       </div>
 
-                      {/* Extensions List (Top 4) */}
+                      {/* Extensions List (Top 6) */}
                       <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar pr-0.5">
                         {extensionAudit.extensions.length === 0 ? (
-                          <p className="text-xs text-slate-400 text-center py-2">No other extensions installed.</p>
+                          <p className="text-xs text-slate-400 dark:text-slate-500 text-center py-2">No other extensions installed.</p>
                         ) : (
                           extensionAudit.extensions.slice(0, 6).map((ext) => (
                             <div
                               key={ext.id}
-                              className={`p-2 rounded-lg border text-xs flex items-start justify-between gap-2 ${
+                              className={`p-2 rounded-lg border text-xs flex items-start justify-between gap-2 transition ${
                                 ext.riskLevel === 'high'
-                                  ? 'bg-rose-50/50 border-rose-200/80'
+                                  ? 'bg-rose-50/60 border-rose-200/80 dark:bg-rose-950/20 dark:border-rose-700/40'
                                   : ext.riskLevel === 'low'
-                                  ? 'bg-amber-50/40 border-amber-200/60'
-                                  : 'bg-slate-50/50 border-slate-200/60'
+                                  ? 'bg-amber-50/50 border-amber-200/60 dark:bg-amber-950/20 dark:border-amber-700/40'
+                                  : 'bg-slate-50/60 border-slate-200/60 dark:bg-white/[0.03] dark:border-white/10'
                               }`}
                             >
                               <div className="min-w-0 flex-1">
-                                <div className="font-bold text-slate-800 truncate flex items-center gap-1.5">
+                                <div className="font-bold text-slate-900 dark:text-slate-100 truncate flex items-center gap-1.5">
                                   <span>{ext.name}</span>
                                   {!ext.enabled && (
-                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-200 text-slate-600 uppercase font-semibold">
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400 uppercase font-semibold">
                                       Disabled
                                     </span>
                                   )}
                                 </div>
                                 {ext.threatReasons.length > 0 ? (
-                                  <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
+                                  <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5 leading-tight">
                                     {ext.threatReasons[0]}
                                   </p>
                                 ) : (
-                                  <p className="text-[11px] text-emerald-600 mt-0.5">Normal permissions</p>
+                                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-0.5">Normal permissions</p>
                                 )}
                               </div>
 
                               <span
                                 className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded shrink-0 ${
                                   ext.riskLevel === 'high'
-                                    ? 'bg-rose-100 text-rose-700'
+                                    ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/80 dark:text-rose-300 dark:border dark:border-rose-700/60'
                                     : ext.riskLevel === 'low'
-                                    ? 'bg-amber-100 text-amber-700'
-                                    : 'bg-slate-200 text-slate-600'
+                                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-700/60'
+                                    : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:border dark:border-slate-700/60'
                                 }`}
                               >
                                 {ext.riskLevel === 'high' ? 'Elevated' : ext.riskLevel === 'low' ? 'Moderate' : 'Safe'}
@@ -3878,10 +3880,10 @@ export const PopupApp: React.FC = () => {
                     </div>
                   ) : (
                     <div className="py-4 flex flex-col items-center gap-1.5 text-center">
-                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">
-                        <Puzzle className="w-4 h-4 text-slate-400" />
+                      <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-white/5 flex items-center justify-center">
+                        <Puzzle className="w-4 h-4 text-slate-400 dark:text-slate-500" />
                       </div>
-                      <p className="text-xs text-slate-500 font-medium">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
                         {extensionAuditDenied
                           ? 'The checkup needs permission to list your installed extensions. Click "Audit Extensions" and allow it to continue.'
                           : 'Click "Audit Extensions" to verify other installed addons.'}
