@@ -2269,7 +2269,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         .catch(() => false);
       if (!granted) return { permissionDenied: true };
       const malicious = await getMaliciousExtensionIds().catch(() => new Set<string>());
-      return auditInstalledExtensions(malicious);
+      return auditInstalledExtensions(malicious, browser.management);
     })();
   }
 

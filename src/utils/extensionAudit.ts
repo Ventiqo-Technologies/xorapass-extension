@@ -1,5 +1,5 @@
 // Extension Security Audit Service
-// Scans installed extensions via chrome.management / browser.management
+// Scans installed extensions via browser.management / chrome.management
 // and calculates risk levels based on dangerous and broad permissions.
 
 export interface ExtensionPermissionRisk {
@@ -46,24 +46,25 @@ const ALL_URL_PATTERNS = [
   'https://*/*',
 ];
 
-// Powerful permissions that aren't an intercept risk on their own but widen
-// what a compromised extension can do.
+// Additional high/medium permission weights (score, user explanation)
 const EXTRA_RISK_PERMISSIONS: Record<string, [number, string]> = {
-  scripting: [10, 'Can inject scripts into web pages'],
-  nativeMessaging: [20, 'Can talk to programs installed on your computer'],
-  history: [10, 'Can read your full browsing history'],
-  proxy: [30, 'Can route all your traffic through a proxy'],
-  webNavigation: [5, 'Can see every page you navigate to'],
-  downloads: [10, 'Can start and open downloads'],
-  privacy: [15, 'Can change browser privacy settings'],
-  management: [15, 'Can manage (enable or disable) other extensions'],
+  downloads: [15, 'Can initiate and manage file downloads'],
+  management: [25, 'Can inspect, enable, disable or uninstall other browser extensions'],
+  nativeMessaging: [30, 'Can communicate with native applications outside the browser'],
+  geolocation: [10, 'Can access your physical location'],
+  history: [15, 'Can read and modify your complete browsing history'],
+  bookmarks: [10, 'Can read and modify your browser bookmarks'],
+  topSites: [10, 'Can view your most frequently visited websites'],
+  privacy: [20, 'Can alter core browser privacy and security settings'],
 };
 
+// Known official extension store update hosts
 const STORE_UPDATE_HOSTS = [
   'clients2.google.com',
-  'edge.microsoft.com',
+  'clients2.googleusercontent.com',
   'addons.mozilla.org',
-  'extension-updates.opera.com',
+  'extensionworkshop.com',
+  'microsoftedge.microsoft.com',
 ];
 
 /** Store/sideload checks for one extension (pure, unit-tested). */
@@ -86,10 +87,51 @@ export function installOriginFindings(ext: { installType?: string; updateUrl?: s
   return out;
 }
 
-export async function auditInstalledExtensions(maliciousIds?: ReadonlySet<string>): Promise<ExtensionAuditSummary> {
-  const managementApi = (globalThis as any).chrome?.management || (globalThis as any).browser?.management;
+async function getAllInstalledItems(customApi?: any): Promise<any[]> {
+  const candidates = [
+    customApi,
+    (globalThis as any).browser?.management,
+    (globalThis as any).chrome?.management,
+  ].filter(Boolean);
 
-  if (!managementApi?.getAll) {
+  for (const api of candidates) {
+    try {
+      if (typeof api.getAll === 'function') {
+        let res: any;
+        try {
+          res = api.getAll();
+        } catch {
+          /* ignore */
+        }
+        if (res && typeof res.then === 'function') {
+          const items = await res;
+          if (Array.isArray(items) && items.length > 0) return items;
+        }
+
+        const cbItems: any[] = await new Promise((resolve) => {
+          try {
+            api.getAll((items: any[]) => resolve(Array.isArray(items) ? items : []));
+          } catch {
+            resolve([]);
+          }
+        });
+        if (Array.isArray(cbItems) && cbItems.length > 0) return cbItems;
+      }
+    } catch (err) {
+      console.warn('[XoraPass] getAll installed items failed on candidate:', err);
+    }
+  }
+
+  return [];
+}
+
+export async function auditInstalledExtensions(
+  maliciousIds?: ReadonlySet<string>,
+  managementApi?: any
+): Promise<ExtensionAuditSummary> {
+  const allItems = await getAllInstalledItems(managementApi);
+
+  if (!allItems || allItems.length === 0) {
     return {
       totalExtensions: 0,
       enabledExtensions: 0,
@@ -101,18 +143,12 @@ export async function auditInstalledExtensions(maliciousIds?: ReadonlySet<string
     };
   }
 
-  const allItems: any[] = await new Promise((resolve) => {
-    try {
-      managementApi.getAll((items: any[]) => resolve(items || []));
-    } catch {
-      resolve([]);
-    }
-  });
-
   // Filter for actual extensions (exclude themes or apps) and exclude ourselves
-  const myId = (globalThis as any).chrome?.runtime?.id || (globalThis as any).browser?.runtime?.id;
+  const myId =
+    (globalThis as any).browser?.runtime?.id ||
+    (globalThis as any).chrome?.runtime?.id;
   const extensionsList = allItems.filter(
-    (item) => item.type === 'extension' && item.id !== myId
+    (item) => (!item.type || item.type === 'extension') && item.id !== myId
   );
 
   const audited: ExtensionPermissionRisk[] = extensionsList.map((ext) => {

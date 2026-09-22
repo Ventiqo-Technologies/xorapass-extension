@@ -117,8 +117,19 @@ export function buildSiteSafetyReport(params: {
       ? null
       : params.riskAssessment;
 
+  // Check if threat intelligence flagged phishing or malware
+  const hasThreatIntelHit =
+    (riskAssessment?.reason_codes || []).some(
+      (rc) => rc === 'THREAT_INTEL_PHISHING_HIT' || rc === 'THREAT_INTEL_MALWARE_HIT'
+    ) ||
+    Object.values(riskAssessment?.threat_intel_signals || {}).some(
+      (sig) => sig === 'phishing_hit' || sig === 'malware_hit'
+    ) ||
+    riskAssessment?.decision === 'block';
+
   // 2. Risk scoring (use max of local heuristic assessment, remote assessment, and structural flags)
   let score = Math.max(localRisk.riskScore, riskAssessment?.risk_score ?? 0);
+  if (hasThreatIntelHit && score < 85) score = 85;
   if (!isHttps && score < 30) score = Math.max(score, 30);
   if (lookalike && score < 70) score = Math.max(score, 70);
 
@@ -129,6 +140,10 @@ export function buildSiteSafetyReport(params: {
   else if (score >= 50) riskLevel = 'suspicious';
   else if (score >= 25) riskLevel = 'low';
 
+  if (hasThreatIntelHit && riskLevel !== 'critical') {
+    riskLevel = 'high';
+  }
+
   // 3. Verdict & Headlines
   let verdict: 'safe' | 'caution' | 'danger' = 'safe';
   let headline = 'Site Appears Safe';
@@ -136,7 +151,7 @@ export function buildSiteSafetyReport(params: {
 
   if (riskLevel === 'critical' || riskLevel === 'high') {
     verdict = 'danger';
-    headline = 'High Risk Detected';
+    headline = hasThreatIntelHit ? 'Dangerous Site Blocked' : 'High Risk Detected';
     summary =
       riskAssessment?.safe_warning_message ||
       (lookalike
@@ -193,8 +208,9 @@ export function buildSiteSafetyReport(params: {
     ([k, v]) => `${k}: ${v}`
   );
   const isThreatIntelClean =
-    threatIntelSignals.length === 0 ||
-    threatIntelSignals.every((s) => s.includes('clean') || s.includes('unavailable'));
+    !hasThreatIntelHit &&
+    (threatIntelSignals.length === 0 ||
+      threatIntelSignals.every((s) => s.includes('clean') || s.includes('unavailable')));
 
   const threatIntel = {
     clean: isThreatIntelClean,
