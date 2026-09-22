@@ -11,10 +11,10 @@
     "idle",
     "offscreen",
     "clipboardWrite",
-    "contextMenus"
+    "contextMenus",
+    "management"
   ],
   "optional_permissions": [
-    "management",
     "downloads",
     "cookies",
     "declarativeNetRequest"

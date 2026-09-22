@@ -49,7 +49,7 @@ import {
   Puzzle,
 } from 'lucide-react';
 import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptSafety';
-import { type ExtensionAuditSummary } from '../utils/extensionAudit';
+import { auditInstalledExtensions, type ExtensionAuditSummary } from '../utils/extensionAudit';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
@@ -773,30 +773,41 @@ export const PopupApp: React.FC = () => {
     void handleAnalyzePrompt(activeTabUrl);
   };
 
-  const handleAuditExtensions = () => {
+  const handleAuditExtensions = async () => {
     setIsAuditingExtensions(true);
     setExtensionAuditDenied(false);
-    // permissions.request must be the first thing in the click handler (it
-    // requires a live user gesture), so no await before it.
-    browser.permissions
-      .request({ permissions: ['management'] })
-      .catch(() => false)
-      .then((granted: boolean) => {
-        if (!granted) {
-          setExtensionAuditDenied(true);
-          return null;
+    try {
+      // 1. First try direct audit in popup window context (active DOM window)
+      const localApi = (globalThis as any).chrome?.management || (browser as any)?.management;
+      if (localApi && typeof localApi.getAll === 'function') {
+        try {
+          const directSummary = await auditInstalledExtensions(undefined, localApi);
+          if (directSummary && directSummary.totalExtensions > 0) {
+            setExtensionAudit(directSummary);
+            return;
+          }
+        } catch (e) {
+          console.warn('[XoraPass Popup] Direct audit in popup failed, attempting fallback:', e);
         }
-        return browser.runtime.sendMessage({ type: 'AUDIT_EXTENSIONS' });
-      })
-      .then((res: any) => {
-        if (res?.permissionDenied) {
-          setExtensionAuditDenied(true);
-        } else if (res && typeof res.overallHealthScore === 'number') {
-          setExtensionAudit(res);
-        }
-      })
-      .catch((err) => console.error('Failed to audit extensions', err))
-      .finally(() => setIsAuditingExtensions(false));
+      }
+
+      // 2. Ensure permission if dynamically requested
+      if (browser.permissions?.request) {
+        await browser.permissions.request({ permissions: ['management'] }).catch(() => false);
+      }
+
+      // 3. Request audit from background service worker
+      const res = await browser.runtime.sendMessage({ type: 'AUDIT_EXTENSIONS' });
+      if (res?.permissionDenied) {
+        setExtensionAuditDenied(true);
+      } else if (res && typeof res.overallHealthScore === 'number') {
+        setExtensionAudit(res);
+      }
+    } catch (err) {
+      console.error('Failed to audit extensions', err);
+    } finally {
+      setIsAuditingExtensions(false);
+    }
   };
 
   const changeAutoLock = (minutes: number) => {

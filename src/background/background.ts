@@ -2260,16 +2260,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'AUDIT_EXTENSIONS') {
-    // `management` is an OPTIONAL permission (its install-time warning —
-    // "Manage your apps, extensions, and themes" — is far too alarming for a
-    // feature most users never open). The popup requests it on click.
     return (async () => {
-      const granted = await browser.permissions
-        .contains({ permissions: ['management'] })
-        .catch(() => false);
-      if (!granted) return { permissionDenied: true };
       const malicious = await getMaliciousExtensionIds().catch(() => new Set<string>());
-      return auditInstalledExtensions(malicious, browser.management);
+      const api = (globalThis as any).chrome?.management || (browser as any)?.management;
+      return auditInstalledExtensions(malicious, api);
     })();
   }
 

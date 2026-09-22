@@ -90,27 +90,42 @@ export function installOriginFindings(ext: { installType?: string; updateUrl?: s
 async function getAllInstalledItems(customApi?: any): Promise<any[]> {
   const candidates = [
     customApi,
-    (globalThis as any).browser?.management,
     (globalThis as any).chrome?.management,
+    (globalThis as any).browser?.management,
   ].filter(Boolean);
 
   for (const api of candidates) {
     try {
       if (typeof api.getAll === 'function') {
-        let res: any;
+        // 1. Try promise-based getAll() (standard MV3 / webextension-polyfill)
         try {
-          res = api.getAll();
-        } catch {
-          /* ignore */
-        }
-        if (res && typeof res.then === 'function') {
-          const items = await res;
-          if (Array.isArray(items) && items.length > 0) return items;
+          const res = api.getAll();
+          if (res && typeof res.then === 'function') {
+            const items = await res;
+            if (Array.isArray(items) && items.length > 0) return items;
+          }
+        } catch (promiseErr) {
+          console.warn('[XoraPass] getAll promise-style call failed on candidate:', promiseErr);
         }
 
+        // 2. Try callback-based getAll() (standard Chromium callback signature)
         const cbItems: any[] = await new Promise((resolve) => {
           try {
-            api.getAll((items: any[]) => resolve(Array.isArray(items) ? items : []));
+            const maybePromise = api.getAll((items: any[]) => {
+              const lastErr = (globalThis as any).chrome?.runtime?.lastError;
+              if (lastErr) {
+                console.warn('[XoraPass] getAll callback reported runtime.lastError:', lastErr);
+                resolve([]);
+              } else {
+                resolve(Array.isArray(items) ? items : []);
+              }
+            });
+            // If the method returned a promise instead of using the callback
+            if (maybePromise && typeof maybePromise.then === 'function') {
+              maybePromise
+                .then((items: any[]) => resolve(Array.isArray(items) ? items : []))
+                .catch(() => resolve([]));
+            }
           } catch {
             resolve([]);
           }
@@ -143,12 +158,12 @@ export async function auditInstalledExtensions(
     };
   }
 
-  // Filter for actual extensions (exclude themes or apps) and exclude ourselves
+  // Filter for installed extensions and apps (exclude purely cosmetic themes and ourselves)
   const myId =
     (globalThis as any).browser?.runtime?.id ||
     (globalThis as any).chrome?.runtime?.id;
   const extensionsList = allItems.filter(
-    (item) => (!item.type || item.type === 'extension') && item.id !== myId
+    (item) => item && item.type !== 'theme' && item.id !== myId
   );
 
   const audited: ExtensionPermissionRisk[] = extensionsList.map((ext) => {
