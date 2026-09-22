@@ -235,7 +235,7 @@ const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; siz
   // 1. Static bundled PNG logo (e.g. AWS, GitHub, Google, Docker, etc.)
   if (meta.logoUrl && !imgError) {
     return (
-      <div className={`${size} rounded-lg bg-white border border-slate-900/10 p-0.5 shrink-0 shadow-xs flex items-center justify-center overflow-hidden`}>
+      <div className={`${size} rounded-lg brand-avatar-surface border border-slate-900/10 p-0.5 shrink-0 shadow-xs flex items-center justify-center overflow-hidden`}>
         <img
           src={meta.logoUrl}
           alt=""
@@ -249,7 +249,7 @@ const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; siz
   // 2. Dynamic favicon (Google Favicon API)
   if (meta.faviconUrl && !imgError) {
     return (
-      <div className={`${size} rounded-lg bg-white border border-slate-900/10 p-0.5 shrink-0 shadow-xs flex items-center justify-center overflow-hidden`}>
+      <div className={`${size} rounded-lg brand-avatar-surface border border-slate-900/10 p-0.5 shrink-0 shadow-xs flex items-center justify-center overflow-hidden`}>
         <img
           src={meta.faviconUrl}
           alt=""
@@ -3564,111 +3564,111 @@ export const PopupApp: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* Analysis Result Card */}
-                  {promptResult && (
-                    <div className="pt-2.5 border-t border-slate-900/10 space-y-2.5 animate-fade-in">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`w-2.5 h-2.5 rounded-full ${
-                              promptResult.verdict === 'phishing'
-                                ? 'bg-rose-500 animate-pulse'
-                                : promptResult.verdict === 'suspicious'
-                                ? 'bg-amber-500'
-                                : 'bg-emerald-500'
-                            }`}
-                          />
-                          <span className="text-xs font-bold text-slate-900">{promptResult.title}</span>
-                        </div>
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
-                            promptResult.verdict === 'phishing'
-                              ? 'bg-rose-100 text-rose-700 border border-rose-200'
-                              : promptResult.verdict === 'suspicious'
-                              ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                              : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
-                          }`}
-                        >
-                          Risk: {promptResult.riskScore}/100
-                        </span>
-                      </div>
-
-                      <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-2 rounded-lg border border-slate-900/5">
-                        {promptResult.summary}
-                      </p>
-
-                      {/* Threat signals list */}
-                      {promptResult.threatSignals.length > 0 && (
-                        <div className="space-y-1">
-                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Threat Indicators</div>
-                          <div className="space-y-1">
-                            {promptResult.threatSignals.map((sig, idx) => (
-                              <div key={idx} className="text-[11px] text-rose-700 bg-rose-50 border border-rose-100 px-2 py-1 rounded-md flex items-start gap-1.5">
-                                <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-500 mt-0.5" />
-                                <span className="flex-1">{sig}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Threat intelligence (server) for links in the text */}
-                      {linkIntel && linkIntel.length > 0 && (
-                        <div className="space-y-1">
-                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Threat Intelligence</div>
-                          {linkIntel.map((i) => (
-                            <div key={i.url} className="text-[11px] bg-slate-50 border border-slate-900/5 px-2 py-1 rounded-md space-y-0.5">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="truncate font-mono text-slate-700">{i.url.replace(/^https?:\/\//, '')}</span>
-                                <span
-                                  className={`shrink-0 font-bold ${
-                                    i.decision === 'block'
-                                      ? 'text-rose-700'
-                                      : i.decision === 'warn' || i.decision === 'require_approval'
-                                      ? 'text-amber-700'
-                                      : i.decision === 'allow'
-                                      ? 'text-emerald-700'
-                                      : 'text-slate-400'
-                                  }`}
-                                >
-                                  {i.decision === 'block'
-                                    ? 'Likely dangerous'
-                                    : i.decision === 'warn' || i.decision === 'require_approval'
-                                    ? 'Suspicious'
-                                    : i.decision === 'allow'
-                                    ? 'No known threats'
-                                    : 'Not checked'}
-                                </span>
-                              </div>
-                              {i.reason && i.decision !== 'allow' && <p className="text-slate-600">{i.reason}</p>}
-                              {i.advisory && (
-                                <p className="text-[10px] text-slate-500">
-                                  <a href={i.advisory.url} target="_blank" rel="noopener noreferrer" className="underline">{i.advisory.text}</a>
-                                  {' · '}
-                                  <a href={i.advisory.learnMoreUrl} target="_blank" rel="noopener noreferrer" className="underline">Learn more</a>
-                                </p>
-                              )}
+                      {/* Analysis Result Card */}
+                      {promptResult && (
+                        <div className="pt-2.5 border-t border-slate-900/10 dark:border-white/10 space-y-2.5 animate-fade-in">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-2.5 h-2.5 rounded-full ${
+                                  promptResult.verdict === 'phishing'
+                                    ? 'bg-rose-500 animate-pulse'
+                                    : promptResult.verdict === 'suspicious'
+                                    ? 'bg-amber-500'
+                                    : 'bg-emerald-500'
+                                }`}
+                              />
+                              <span className="text-xs font-bold text-slate-900 dark:text-slate-100">{promptResult.title}</span>
                             </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Actionable recommendations */}
-                      {promptResult.recommendations.length > 0 && (
-                        <div className="space-y-1">
-                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Recommended Action</div>
-                          <div className="space-y-1">
-                            {promptResult.recommendations.map((rec, idx) => (
-                              <div key={idx} className="text-[11px] text-slate-700 bg-slate-100/80 px-2 py-1 rounded-md flex items-start gap-1.5">
-                                <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-brand-cyan mt-0.5" />
-                                <span className="flex-1">{rec}</span>
-                              </div>
-                            ))}
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
+                                promptResult.verdict === 'phishing'
+                                  ? 'bg-rose-100 text-rose-700 border border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-900/50'
+                                  : promptResult.verdict === 'suspicious'
+                                  ? 'bg-amber-100 text-amber-800 border border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-900/50'
+                                  : 'bg-emerald-100 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-900/50'
+                              }`}
+                            >
+                              Risk: {promptResult.riskScore}/100
+                            </span>
                           </div>
+
+                          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-slate-50 dark:bg-slate-800/80 p-2 rounded-lg border border-slate-900/5 dark:border-white/10">
+                            {promptResult.summary}
+                          </p>
+
+                          {/* Threat signals list */}
+                          {promptResult.threatSignals.length > 0 && (
+                            <div className="space-y-1">
+                              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Threat Indicators</div>
+                              <div className="space-y-1">
+                                {promptResult.threatSignals.map((sig, idx) => (
+                                  <div key={idx} className="text-[11px] text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/40 border border-rose-100 dark:border-rose-900/50 px-2 py-1 rounded-md flex items-start gap-1.5">
+                                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-500 mt-0.5" />
+                                    <span className="flex-1">{sig}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Threat intelligence (server) for links in the text */}
+                          {linkIntel && linkIntel.length > 0 && (
+                            <div className="space-y-1">
+                              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Threat Intelligence</div>
+                              {linkIntel.map((i) => (
+                                <div key={i.url} className="text-[11px] bg-slate-50 dark:bg-slate-800/80 border border-slate-900/5 dark:border-white/10 px-2 py-1.5 rounded-md space-y-0.5">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="truncate font-mono text-slate-700 dark:text-slate-200">{i.url.replace(/^https?:\/\//, '')}</span>
+                                    <span
+                                      className={`shrink-0 font-bold ${
+                                        i.decision === 'block'
+                                          ? 'text-rose-700 dark:text-rose-400'
+                                          : i.decision === 'warn' || i.decision === 'require_approval'
+                                          ? 'text-amber-700 dark:text-amber-400'
+                                          : i.decision === 'allow'
+                                          ? 'text-emerald-700 dark:text-emerald-400'
+                                          : 'text-slate-400'
+                                      }`}
+                                    >
+                                      {i.decision === 'block'
+                                        ? 'Likely dangerous'
+                                        : i.decision === 'warn' || i.decision === 'require_approval'
+                                        ? 'Suspicious'
+                                        : i.decision === 'allow'
+                                        ? 'No known threats'
+                                        : 'Not checked'}
+                                    </span>
+                                  </div>
+                                  {i.reason && i.decision !== 'allow' && <p className="text-slate-600 dark:text-slate-300">{i.reason}</p>}
+                                  {i.advisory && (
+                                    <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                                      <a href={i.advisory.url} target="_blank" rel="noopener noreferrer" className="underline">{i.advisory.text}</a>
+                                      {' · '}
+                                      <a href={i.advisory.learnMoreUrl} target="_blank" rel="noopener noreferrer" className="underline">Learn more</a>
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Actionable recommendations */}
+                          {promptResult.recommendations.length > 0 && (
+                            <div className="space-y-1">
+                              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Recommended Action</div>
+                              <div className="space-y-1">
+                                {promptResult.recommendations.map((rec, idx) => (
+                                  <div key={idx} className="text-[11px] text-slate-800 dark:text-slate-200 bg-slate-100/90 dark:bg-slate-800 border border-slate-200/80 dark:border-white/10 px-2.5 py-1.5 rounded-md flex items-start gap-1.5">
+                                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-brand-cyan mt-0.5" />
+                                    <span className="flex-1">{rec}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
-                    </div>
-                  )}
                   {/* Screenshot + file checks (paid, rolled out) */}
                   <ShieldExtras section="tools" />
                 </div>

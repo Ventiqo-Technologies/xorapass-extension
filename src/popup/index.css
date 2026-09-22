@@ -492,3 +492,15 @@ input:-webkit-autofill:focus {
 .dark .auth-input.caps-on:focus {
   box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
 }
+
+/* Brand icon avatar surface - ensures dark monochrome favicons/logos (like GitHub, SendGrid) stay crisp and visible */
+.brand-avatar-surface {
+  background-color: #ffffff !important;
+}
+
+.dark .brand-avatar-surface {
+  background-color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+

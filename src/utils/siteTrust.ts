@@ -35,7 +35,7 @@ export const MULTI_PART_SUFFIXES = new Set([
   'com.sg', 'com.hk', 'com.tw', 'com.ar', 'com.co', 'com.pe', 'com.ec',
   'com.uy', 'com.py', 'com.bo', 'com.do', 'com.gt', 'com.sv', 'com.ni',
   'com.pa', 'com.ve', 'co.cr',
-  'co.kr', 'or.kr', 'co.il', 'org.il', 'net.il', 'co.id', 'co.th', 'in.th',
+  'co.kr', 'or.kr', 'co.il', 'org.il', 'net.il', 'co.id', 'web.id', 'my.id', 'biz.id', 'co.th', 'in.th',
   'com.ua', 'net.ua', 'org.ua', 'com.pl', 'net.pl', 'org.pl',
   'com.ru', 'com.ph', 'com.my', 'com.vn', 'com.pk', 'com.bd', 'com.np',
   'com.lk', 'com.kh', 'com.mm',

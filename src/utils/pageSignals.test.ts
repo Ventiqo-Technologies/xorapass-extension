@@ -18,6 +18,10 @@ describe('brandTokensIn', () => {
   it('folds multi-word brand spellings', () => {
     expect(brandTokensIn('Office 365 sign in')).toEqual(['office365']);
     expect(brandTokensIn('Wells Fargo online banking')).toEqual(['wellsfargo']);
+    expect(brandTokensIn('Diners Club rewards')).toEqual(['dinersclub']);
+    expect(brandTokensIn('Club Miles canje')).toEqual(['clubmiles']);
+    expect(brandTokensIn('Banco Pichincha banca virtual')).toEqual(['pichincha']);
+    expect(brandTokensIn('Mercado Pago checkout')).toEqual(['mercadopago']);
   });
 
   it('matches whole tokens only', () => {
@@ -138,9 +142,9 @@ describe('lexicon parity with the server', () => {
   it('holds the brands page_classifier.go also knows', () => {
     // A token present here but absent there is silently dropped server-side,
     // so the two lists must not drift apart unnoticed.
-    for (const brand of ['paypal', 'microsoft', 'office365', 'wellsfargo', 'royalmail', 'coinbase']) {
+    for (const brand of ['paypal', 'microsoft', 'office365', 'wellsfargo', 'royalmail', 'coinbase', 'maxis', 'celcom', 'digi', 'unifi', 'singtel', 'dinersclub', 'clubmiles', 'pichincha', 'mercadopago']) {
       expect(BRAND_LEXICON.has(brand)).toBe(true);
     }
-    expect(BRAND_LEXICON.size).toBe(41);
+    expect(BRAND_LEXICON.size).toBe(55);
   });
 });

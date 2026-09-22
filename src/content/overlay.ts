@@ -865,58 +865,176 @@ const STYLES = `
 /* ── Full-page interstitial ──────────────────────────────────────────────
    Reserved for a server-confirmed critical verdict on a page actively asking
    for a password: the point at which reading the page at all is the risk. */
+/* ── Full-page interstitial ──────────────────────────────────────────────
+   Reserved for a server-confirmed critical verdict on a page actively asking
+   for a password: the point at which reading the page at all is the risk. */
 .xp-interstitial {
   position: fixed;
   inset: 0;
   z-index: 2147483647;
-  background: #450a0a;
-  color: #fff5f5;
+  background: radial-gradient(ellipse 70% 60% at 50% 20%, rgba(225, 29, 72, 0.18) 0%, transparent 65%),
+              radial-gradient(ellipse 60% 50% at 50% 80%, rgba(13, 148, 136, 0.12) 0%, transparent 70%),
+              #070d0c;
+  color: #f0fdf4;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  font: 400 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 400 15px/1.6 "Plus Jakarta Sans", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
-.xp-int-card { max-width: 560px; width: 100%; text-align: left; }
+.xp-int-card {
+  max-width: 600px;
+  width: 100%;
+  text-align: left;
+  background: rgba(10, 24, 21, 0.92);
+  border: 1px solid rgba(225, 29, 72, 0.35);
+  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.8), 0 0 35px rgba(225, 29, 72, 0.15);
+  border-radius: 20px;
+  padding: 36px 40px;
+  box-sizing: border-box;
+}
+.xp-int-brand-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.xp-int-logo {
+  height: 24px;
+  width: auto;
+  max-width: 140px;
+  object-fit: contain;
+}
 .xp-int-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
-  letter-spacing: 0.12em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(225, 29, 72, 0.16);
+  color: #fda4af;
+  border: 1px solid rgba(225, 29, 72, 0.35);
   border-radius: 999px;
   padding: 5px 12px;
-  margin-bottom: 20px;
 }
-.xp-int-title { font-size: 30px; line-height: 1.2; font-weight: 700; margin: 0 0 14px; }
-.xp-int-body { font-size: 16px; margin: 0 0 22px; color: rgba(255, 245, 245, 0.9); }
+.xp-int-title {
+  font-size: 24px;
+  line-height: 1.25;
+  font-weight: 800;
+  margin: 0 0 12px;
+  color: #ffffff;
+  letter-spacing: -0.02em;
+}
+.xp-int-body {
+  font-size: 15px;
+  line-height: 1.55;
+  margin: 0 0 22px;
+  color: #9db4ac;
+}
 .xp-int-facts {
-  background: rgba(0, 0, 0, 0.28);
-  border-radius: 10px;
-  padding: 14px 16px;
-  margin-bottom: 24px;
-  font-size: 14px;
+  background: rgba(4, 12, 10, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 26px;
+  font-size: 13px;
 }
-.xp-int-row { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; }
-.xp-int-row span:first-child { color: rgba(255, 245, 245, 0.62); }
-.xp-int-row span:last-child { font-weight: 600; word-break: break-all; text-align: right; }
-.xp-int-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.xp-int-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.xp-int-row:last-child {
+  border-bottom: none;
+}
+.xp-int-row span:first-child {
+  color: #6ee7b7;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex: none;
+}
+.xp-int-row span:last-child {
+  font-weight: 600;
+  color: #f1f5f9;
+  word-break: break-all;
+  text-align: right;
+}
+.xp-int-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
 .xp-int-primary {
-  background: #fff5f5; color: #450a0a; border: 0; border-radius: 8px;
-  padding: 12px 20px; font-size: 15px; font-weight: 650; cursor: pointer;
+  background: linear-gradient(135deg, #2dd4bf 0%, #0d9488 100%);
+  color: #041410;
+  border: 0;
+  border-radius: 10px;
+  padding: 12px 22px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(45, 212, 191, 0.25);
+  transition: all 0.15s ease;
+}
+.xp-int-primary:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
 }
 .xp-int-secondary {
-  background: transparent; color: rgba(255, 245, 245, 0.92);
-  border: 1px solid rgba(255, 245, 245, 0.35); border-radius: 8px;
-  padding: 12px 18px; font-size: 14px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 12px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.xp-int-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(45, 212, 191, 0.4);
+  color: #ffffff;
 }
 .xp-int-escape {
-  background: none; border: 0; color: rgba(255, 245, 245, 0.5);
-  font-size: 13px; text-decoration: underline; cursor: pointer;
-  padding: 10px 2px; margin-top: 6px;
+  background: none;
+  border: 0;
+  color: #64748b;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 12px 4px 4px;
+  margin-top: 4px;
+  display: inline-block;
+  transition: color 0.15s;
 }
-.xp-int-escape[disabled] { cursor: default; text-decoration: none; opacity: 0.55; }
-.xp-int-foot { margin-top: 22px; font-size: 12px; color: rgba(255, 245, 245, 0.5); }
+.xp-int-escape:hover:not([disabled]) {
+  color: #94a3b8;
+}
+.xp-int-escape[disabled] {
+  cursor: default;
+  text-decoration: none;
+  opacity: 0.45;
+}
+.xp-int-foot {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .risk-brand {
   display: flex;
   align-items: center;
@@ -2359,10 +2477,22 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
   const card = document.createElement('div');
   card.className = 'xp-int-card';
 
+  const brandHeader = document.createElement('div');
+  brandHeader.className = 'xp-int-brand-header';
+
+  const logo = document.createElement('img');
+  logo.className = 'xp-int-logo';
+  logo.src = browser.runtime.getURL('xorapass_logo_horizontal.png');
+  logo.alt = 'XoraPass';
+  logo.draggable = false;
+  brandHeader.appendChild(logo);
+
   const badge = document.createElement('div');
   badge.className = 'xp-int-badge';
-  badge.textContent = 'XoraPass Shield \u2014 Phishing Attempt Blocked';
-  card.appendChild(badge);
+  badge.innerHTML = `${SHIELD_SVG}<span>Phishing Blocked</span>`;
+  brandHeader.appendChild(badge);
+
+  card.appendChild(brandHeader);
 
   const title = document.createElement('h1');
   title.className = 'xp-int-title';
@@ -2479,7 +2609,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
 
   const foot = document.createElement('div');
   foot.className = 'xp-int-foot';
-  foot.textContent = 'Credential Guard Active: Your vault stayed locked and no credentials or secrets were released to this page.';
+  foot.innerHTML = `${SHIELD_SVG}<span><strong>Credential Guard Active:</strong> Your vault stayed locked and no credentials, passwords, or personal data were released.</span>`;
   card.appendChild(foot);
 
   shell.appendChild(card);

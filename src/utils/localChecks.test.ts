@@ -23,6 +23,7 @@ const PHISHING: [string, 'warn' | 'block'][] = [
   ['metamsk.io', 'warn'],
   ['dropboxx.com', 'warn'],
   ['instagrarn.com', 'block'],
+  ['maxis-click.web.id', 'block'],
 ];
 
 const LEGIT = [
@@ -32,6 +33,7 @@ const LEGIT = [
   'twitter.com', 'instagram.com', 'whatsapp.com', 'apple.com', 'icloud.com', 'chase.com', 'wellsfargo.com',
   'bankofamerica.com', 'coinbase.com', 'binance.com', 'ups.com', 'usps.com', 'fedex.com', 'dhl.de', 'zoom.us',
   'slack.com', 'stripe.com', 'adobe.com', 'docusign.net', 'spotify.com', 'discord.com', 'roblox.com', 'steamcommunity.com',
+  'maxis.com.my',
   // brand words inside ordinary names
   'stream.com', 'finance.yahoo.com', 'applebees.com', 'purchase.com', 'sign-ups.io', 'pop-ups.net', 'wise-owl.com',
   'zoom-lens.com', 'apple-pie-recipes.com', 'steamdb.info', 'chaseamerica.org', 'googleblog.com', 'amazonaws.com',

@@ -125,7 +125,9 @@ export function shouldEscalateRemote(input: {
   trusted: boolean;
   pageSignals?: PageSignals;
   hasCredentialForm?: boolean;
+  hasLeadCaptureForm?: boolean;
   crossOriginFormAction?: boolean;
+  scamCues?: string[];
 }): boolean {
   const { config, local } = input;
   if (!config.shield_enabled || !config.remote.enabled) return false;
@@ -135,8 +137,16 @@ export function shouldEscalateRemote(input: {
     return !!input.crossOriginFormAction;
   }
   if (local.riskScore >= config.remote.min_local_score) return true;
+
+  // High-risk TLD + suspicious keywords or scam cues: escalate regardless of local score
+  const isHighRiskTld = !!local.signals?.isHighRiskTld;
+  const hasSuspiciousKeywords = (local.signals?.suspiciousKeywords?.length ?? 0) > 0;
+  const hasScamCues = (input.scamCues?.length ?? 0) > 0;
+  if (isHighRiskTld && (hasSuspiciousKeywords || hasScamCues)) return true;
+
   const credentialPage =
     !!input.hasCredentialForm ||
+    !!input.hasLeadCaptureForm ||
     (input.pageSignals?.password_field_count ?? 0) > 0 ||
     !!input.pageSignals?.form_action_cross_origin;
   return config.remote.on_credential_forms && credentialPage;

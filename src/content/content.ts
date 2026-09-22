@@ -195,6 +195,7 @@ function collectFormContext(): {
   isLoginForm: boolean;
   hasPasswordField: boolean;
   hasMfaField: boolean;
+  hasLeadCaptureForm?: boolean;
   isIframe: boolean;
   actionUrl?: string;
   numInputs: number;
@@ -214,6 +215,20 @@ function collectFormContext(): {
     return /\b(otp|totp|mfa|2fa|onetime|one-time|authcode|verificationcode)\b/.test(hint);
   });
 
+  // Lead-capture / scam-entry detection: pages asking for personal details
+  // (name + email or phone) even when no password field is present yet.
+  const hasPhoneField = inputs.some((el) => {
+    if (el.type === 'tel') return true;
+    const hint = `${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`.toLowerCase();
+    return /\b(phone|tel|mobile|cell|telephone)\b/.test(hint);
+  });
+  const hasEmailField = inputs.some((el) => {
+    if (el.type === 'email') return true;
+    const hint = `${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`.toLowerCase();
+    return /\b(email|e-mail|mail)\b/.test(hint);
+  });
+  const hasLeadCaptureForm = (hasPhoneField && hasEmailField) || (inputs.length >= 3 && (hasPhoneField || hasEmailField));
+
   // Resolved against the document so a relative action is compared as the
   // absolute URL the browser would actually POST to.
   let actionUrl: string | undefined;
@@ -230,6 +245,7 @@ function collectFormContext(): {
     isLoginForm: passwords.length > 0,
     hasPasswordField: passwords.length > 0,
     hasMfaField,
+    hasLeadCaptureForm,
     isIframe: window.top !== window.self,
     actionUrl,
     numInputs: inputs.length,
@@ -250,6 +266,12 @@ function isInsecureContext(): boolean {
 // Request the credential list (labels/usernames only) for the current domain.
 function loadCredentials(): void {
   const hostname = window.location.hostname;
+  let scamCues: string[] | undefined;
+  try {
+    scamCues = collectPageText(document).cues;
+  } catch {
+    /* ignore DOM errors */
+  }
   browser.runtime
     .sendMessage({
       type: 'GET_MATCHING_CREDENTIALS',
@@ -262,6 +284,7 @@ function loadCredentials(): void {
         // the server could act on, so shipping its shape is pure noise (and
         // needlessly busts the per-page verdict cache).
         pageSignals: worthAssessingSignals(),
+        scamCues,
       },
     })
     .then((response: any) => {
@@ -569,6 +592,12 @@ browser.runtime.onMessage.addListener((message: any) => {
     renderAiBanner(message.payload as AiFillOffer);
   } else if (message.type === 'SHORTCUT_AUTOFILL') {
     void handleShortcutAutofill();
+  } else if (message.type === 'TAB_RISK_UPDATE') {
+    if (message.payload?.risk) {
+      domainRisk = message.payload.risk;
+      lastWarnedRiskKey = null; // force fresh evaluation
+      maybeShowProactiveRiskWarning();
+    }
   }
   return undefined;
 });

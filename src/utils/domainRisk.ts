@@ -105,6 +105,22 @@ export const SUSPICIOUS_KEYWORDS = new Set([
   'validation',
   'recovery',
   'session',
+  'click',
+  'rewards',
+  'reward',
+  'claim',
+  'points',
+  'miles',
+  'millas',
+  'puntos',
+  'canje',
+  'canjear',
+  'promocion',
+  'premio',
+  'beneficio',
+  'sorteo',
+  'bono',
+  'clubmiles',
 ]);
 
 /** High-risk and frequently abused phishing/disposable TLDs. */
@@ -147,6 +163,10 @@ export const HIGH_RISK_TLDS = new Set([
   'trade',
   'accountant',
   'science',
+  'vip',
+  'cc',
+  'cfd',
+  'sbs',
 ]);
 
 /**

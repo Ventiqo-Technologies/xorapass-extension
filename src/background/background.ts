@@ -993,7 +993,8 @@ function listingRemoteGate(
   hostname: string,
   knownHosts: string[],
   formContext: FormThreatContext | undefined,
-  pageSignals: PageSignals | undefined
+  pageSignals: PageSignals | undefined,
+  scamCues?: string[]
 ) {
   return (local: DomainRiskAssessment, cfg: ShieldConfig): boolean => {
     const actionHost = formContext?.actionUrl ? extractHostname(formContext.actionUrl) : '';
@@ -1003,7 +1004,9 @@ function listingRemoteGate(
       trusted: isTrustedHost(hostname, knownHosts, cfg.trusted_domains),
       pageSignals,
       hasCredentialForm: !!(formContext?.hasPasswordField || formContext?.isLoginForm),
+      hasLeadCaptureForm: !!formContext?.hasLeadCaptureForm,
       crossOriginFormAction: !!actionHost && registrableDomain(actionHost) !== registrableDomain(hostname),
+      scamCues,
     });
   };
 }
@@ -1505,6 +1508,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const formContext: FormThreatContext | undefined = msg.payload.formContext;
     // Structural page features from the content script (see pageSignals.ts).
     const pageSignals: PageSignals | undefined = msg.payload.pageSignals;
+    const scamCues: string[] | undefined = Array.isArray(msg.payload.scamCues)
+      ? msg.payload.scamCues.filter((c: unknown): c is string => typeof c === 'string')
+      : undefined;
     const senderTabId = sender.tab?.id;
     if (!hostname) {
       return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null });
@@ -1536,7 +1542,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
           pageSignals,
           sensitivity: 'standard',
           locked: true,
-          remoteGate: listingRemoteGate(hostname, [], formContext, pageSignals),
+          remoteGate: listingRemoteGate(hostname, [], formContext, pageSignals, scamCues),
         });
         const hit = lockedRisk.decision === 'block' ? null : await checkBlocklist(currentUrl);
         const risk = hit ? blocklistAssessment(lockedRisk, hit.threatType) : lockedRisk;
@@ -1577,7 +1583,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         formContext,
         pageSignals,
         sensitivity: sensitivityForItems(matching),
-        remoteGate: listingRemoteGate(hostname, knownHosts, formContext, pageSignals),
+        remoteGate: listingRemoteGate(hostname, knownHosts, formContext, pageSignals, scamCues),
       });
 
       // Maintain legacy lookalike compatibility for existing UI callers
@@ -2170,6 +2176,19 @@ browser.runtime.onMessage.addListener((message, sender) => {
         domainRiskEnabled: domainRiskOn,
         pageSignals,
       });
+
+      // If the scan produced a risk assessment that warrants warning/blocking,
+      // notify the tab directly so its proactive risk alert triggers immediately.
+      if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
+        browser.tabs.query({ active: true, currentWindow: true }).then(([activeTab]) => {
+          if (activeTab?.id && activeTab.url === targetUrl) {
+            browser.tabs.sendMessage(activeTab.id, {
+              type: 'TAB_RISK_UPDATE',
+              payload: { risk },
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+      }
 
       return { report };
     })();

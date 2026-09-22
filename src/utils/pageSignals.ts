@@ -67,6 +67,9 @@ export const BRAND_LEXICON: ReadonlySet<string> = new Set([
   'chase', 'wellsfargo', 'hsbc', 'barclays',
   'citibank', 'revolut', 'wise', 'westernunion',
   'dhl', 'fedex', 'ups', 'usps', 'royalmail',
+  'maxis', 'celcom', 'digi', 'unifi', 'singtel',
+  'dinersclub', 'clubmiles', 'pichincha', 'bancoguayaquil',
+  'produbanco', 'mercadopago', 'mercadolibre', 'bbva', 'santander',
 ]);
 
 /** Multi-word brand spellings folded to their lexicon token. */
@@ -75,6 +78,12 @@ const BRAND_ALIASES: ReadonlyArray<[RegExp, string]> = [
   [/\bwells\s*fargo\b/g, 'wellsfargo'],
   [/\bwestern\s*union\b/g, 'westernunion'],
   [/\broyal\s*mail\b/g, 'royalmail'],
+  [/\bdiners\s*club\b/g, 'dinersclub'],
+  [/\bclub\s*miles\b/g, 'clubmiles'],
+  [/\bbanco\s*pichincha\b/g, 'pichincha'],
+  [/\bbanco\s*guayaquil\b/g, 'bancoguayaquil'],
+  [/\bmercado\s*pago\b/g, 'mercadopago'],
+  [/\bmercado\s*libre\b/g, 'mercadolibre'],
 ];
 
 const MAX_TOKENS = 8;

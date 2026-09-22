@@ -46,12 +46,12 @@ const CUE_PATTERNS: ReadonlyArray<[string, RegExp]> = [
   ['tech_support', /\b(virus(es)? (detected|found)|your (computer|pc|device|system) (is|has been) (infected|locked|blocked|compromised)|call (microsoft|apple|windows) (support|help)|toll[- ]free|do not (close|restart|shut down) (this|your))\b/i],
   ['clickfix', /\b(win(dows)?\s*(\+|key\s*\+)\s*r|press\s+(ctrl|⌘|cmd)\s*\+\s*v|paste (it|the (code|command)) (in|into)|open (powershell|terminal|run dialog)|verify you are (a )?human.{0,80}(press|paste|run))\b/i],
   ['crypto_scam', /\b(send \d+(\.\d+)? ?(btc|eth|usdt|sol)|double your (crypto|bitcoin|btc|eth|coins)|crypto giveaway|seed phrase|recovery phrase|connect (your )?wallet to (claim|receive|verify)|airdrop claim)\b/i],
-  ['prize_scam', /\b(you('ve| have) (won|been selected)|claim your (prize|reward|gift)|congratulations[!,. ].{0,60}(winner|won|selected)|lucky (visitor|winner))\b/i],
+  ['prize_scam', /\b(you('ve| have) (won|been selected)|claim your (prize|reward|gift)|congratulations[!,. ].{0,60}(winner|won|selected)|lucky (visitor|winner)|reward(s)? points? (are ready|available|to redeem)|check rewards points|claim rewards?|canje(a|ar)? tus (puntos|millas)|reclama tu (premio|recompensa)|(puntos|millas) acumulad(os|as))\b/i],
   ['fake_download', /\b((your )?(browser|chrome|flash player|media player) (is )?(out of date|needs (an )?update|update required)|download (the )?(required )?(codec|plugin|update) to (continue|view|play))\b/i],
   ['investment_scam', /\b(guaranteed (returns?|profits?)|(\d{2,3})% (daily|weekly) (returns?|profits?)|risk[- ]free (investment|trading)|earn \$?\d[\d,]* (per|a) (day|hour) (trading|from home))\b/i],
   ['fake_shop', /\b((9\d|8\d)% off (everything|all items|today only)|closing down sale.{0,40}(9\d|8\d)%|payment (only )?(via|by) (gift ?cards?|bitcoin|crypto|western union|wire transfer))\b/i],
   ['notification_bait', /\b(click|press|tap) ["“']?allow["”']? (to|if) (verify|confirm|prove|continue|watch|download|access|you('re| are) not a robot|you are (a )?human)/i],
-  ['urgency', /\b(your account (will be|has been) (suspended|closed|locked)|act (now|immediately)|within 24 hours|final (warning|notice))\b/i],
+  ['urgency', /\b(your account (will be|has been) (suspended|closed|locked)|act (now|immediately)|within 24 hours|final (warning|notice)|su cuenta (ha sido|ser[aá]) (suspendida|bloqueada)|act[uú]e (de inmediato|ahora))\b/i],
 ];
 
 /** Scam cue categories found in the given text (on-device). */

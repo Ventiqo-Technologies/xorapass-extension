@@ -20,6 +20,7 @@ import {
   FileSearch,
   Image as ImageIcon,
   Ban,
+  Sparkles,
 } from "lucide-react";
 import { trackingCookieOwner } from "../utils/trackerList";
 import { WEB_APP_URL } from "../utils/config";
@@ -54,6 +55,7 @@ interface AuthInfo {
   };
   features?: Record<string, boolean>;
   aiChecks?: {
+    plan?: string;
     allowance: number;
     remaining: number;
     topup_balance: number;
@@ -88,11 +90,11 @@ const BEHAVIOR_LABELS: Record<string, string> = {
 };
 
 const card =
-  "p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-2.5";
+  "p-3.5 bg-white dark:bg-slate-900 border border-slate-900/10 dark:border-white/10 rounded-xl shadow-xs space-y-2.5";
 const heading =
-  "flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400";
+  "flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400 dark:text-slate-400";
 const btn =
-  "px-2.5 py-1 text-white rounded-lg text-xs font-bold cursor-pointer disabled:opacity-60 bg-slate-900 hover:bg-slate-700";
+  "px-2.5 py-1 text-white rounded-lg text-xs font-bold cursor-pointer disabled:opacity-60 bg-slate-900 hover:bg-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 border border-transparent dark:border-white/10";
 
 async function requestPermission(p: string): Promise<boolean> {
   try {
@@ -651,6 +653,24 @@ export default function ShieldExtras({
 
 /** "AI checks" meter with the top-up link (checkout runs in the web app). */
 function AIChecksMeter({ usage }: { usage: NonNullable<AuthInfo["aiChecks"]> }) {
+  if (usage.allowance < 0 || usage.plan === "lifetime") {
+    return (
+      <div className="space-y-1" data-testid="ai-checks-meter">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="font-bold text-teal-600 dark:text-brand-cyan flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5" /> Lifetime Member · Unlimited AI Checks
+          </span>
+          <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-200 dark:border-emerald-800/40">
+            Active
+          </span>
+        </div>
+        <p className="text-[10px] text-slate-500 dark:text-slate-400">
+          Your lifetime membership includes unlimited AI screen analysis and file security checks.
+        </p>
+      </div>
+    );
+  }
+
   const left = usage.remaining + usage.topup_balance;
   const pct =
     usage.allowance > 0
@@ -664,7 +684,7 @@ function AIChecksMeter({ usage }: { usage: NonNullable<AuthInfo["aiChecks"]> }) 
     : "";
   return (
     <div className="space-y-1" data-testid="ai-checks-meter">
-      <div className="flex items-center justify-between text-[11px] text-slate-700">
+      <div className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200">
         <span className="font-semibold">AI checks: {left} left</span>
         {usage.topup && (
           <button
@@ -675,13 +695,13 @@ function AIChecksMeter({ usage }: { usage: NonNullable<AuthInfo["aiChecks"]> }) 
           </button>
         )}
       </div>
-      <div className="h-1.5 rounded-full bg-slate-900/10 overflow-hidden">
+      <div className="h-1.5 rounded-full bg-slate-900/10 dark:bg-white/10 overflow-hidden">
         <div
           className={`h-full ${pct >= 90 ? "bg-amber-500" : "bg-teal-600"}`}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <p className="text-[10px] text-slate-500">
+      <p className="text-[10px] text-slate-500 dark:text-slate-400">
         {usage.remaining} of {usage.allowance} this month{usage.pooled ? " (shared by your workspace)" : ""}, resets {resets}
         {usage.topup_balance > 0 ? ` · ${usage.topup_balance} from top-ups` : ""}. Screenshot uses{" "}
         {usage.costs.image ?? 5}, file upload {usage.costs.file_upload ?? 10}. Automatic checks are free.

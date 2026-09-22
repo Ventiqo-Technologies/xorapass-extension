@@ -197,6 +197,7 @@ describe('Shield decision pipeline', () => {
     const cfg = DEFAULT_SHIELD_CONFIG;
     expect(shouldEscalateRemote({ config: cfg, local: clean, trusted: false })).toBe(false);
     expect(shouldEscalateRemote({ config: cfg, local: clean, trusted: false, pageSignals: { password_field_count: 1 } })).toBe(true);
+    expect(shouldEscalateRemote({ config: cfg, local: clean, trusted: false, hasLeadCaptureForm: true })).toBe(true);
     expect(shouldEscalateRemote({ config: cfg, local: clean, trusted: true, hasCredentialForm: true })).toBe(false);
     expect(shouldEscalateRemote({ config: cfg, local: clean, trusted: true, crossOriginFormAction: true })).toBe(true);
     const typo = assessDomainRisk('paypa1.com', ['paypal.com']);
@@ -204,6 +205,12 @@ describe('Shield decision pipeline', () => {
     expect(
       shouldEscalateRemote({ config: { ...cfg, remote: { ...cfg.remote, enabled: false } }, local: typo, trusted: false })
     ).toBe(false);
+
+    // High-risk TLD (.vip) with suspicious keyword or scam cues escalates even with score 0
+    const highRiskKw = assessDomainRisk('clubmiles-ec.vip', ['paypal.com']);
+    expect(shouldEscalateRemote({ config: cfg, local: highRiskKw, trusted: false })).toBe(true);
+    const highRiskClean = assessDomainRisk('cleanpage.vip', ['paypal.com']);
+    expect(shouldEscalateRemote({ config: cfg, local: highRiskClean, trusted: false, scamCues: ['prize_scam'] })).toBe(true);
   });
 });
 

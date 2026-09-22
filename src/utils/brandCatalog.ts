@@ -65,6 +65,22 @@ export const BRAND_CATALOG: readonly CatalogBrand[] = [
   { token: 'walmart', name: 'Walmart', domains: ['walmart.com'] },
   { token: 'americanexpress', name: 'American Express', domains: ['americanexpress.com'] },
   { token: 'booking', name: 'Booking.com', domains: ['booking.com'] },
+  // Regional telecoms & service providers frequently targeted by SMS/phishing lures
+  { token: 'maxis', name: 'Maxis', domains: ['maxis.com.my', 'maxis.my'] },
+  { token: 'celcom', name: 'CelcomDigi', domains: ['celcomdigi.com', 'celcom.com.my'] },
+  { token: 'digi', name: 'Digi', domains: ['digi.com.my'] },
+  { token: 'unifi', name: 'Unifi', domains: ['unifi.com.my', 'tm.com.my'] },
+  { token: 'singtel', name: 'Singtel', domains: ['singtel.com'] },
+  // LATAM financial institutions & loyalty programs frequently targeted
+  { token: 'dinersclub', name: 'Diners Club', domains: ['dinersclub.com', 'dinersclub.com.ec', 'dinersclubus.com'] },
+  { token: 'clubmiles', name: 'Club Miles', domains: ['clubmiles.com.ec', 'clubmiles.ec'] },
+  { token: 'pichincha', name: 'Banco Pichincha', domains: ['pichincha.com'] },
+  { token: 'bancoguayaquil', name: 'Banco Guayaquil', domains: ['bancoguayaquil.com'] },
+  { token: 'produbanco', name: 'Produbanco', domains: ['produbanco.com.ec', 'produbanco.com'] },
+  { token: 'mercadopago', name: 'Mercado Pago', domains: ['mercadopago.com', 'mercadopago.com.ar', 'mercadopago.com.br', 'mercadopago.com.mx'] },
+  { token: 'mercadolibre', name: 'Mercado Libre', domains: ['mercadolibre.com', 'mercadolibre.com.ar', 'mercadolibre.com.br', 'mercadolibre.com.mx', 'mercadolibre.com.ec'] },
+  { token: 'bbva', name: 'BBVA', domains: ['bbva.com', 'bbva.es', 'bbva.mx', 'bbva.com.ar'] },
+  { token: 'santander', name: 'Santander', domains: ['santander.com', 'santander.es', 'santander.com.mx', 'santander.com.br', 'santander.co.uk'] },
 ];
 
 /** Catalog + remotely supplied brands (validated). */

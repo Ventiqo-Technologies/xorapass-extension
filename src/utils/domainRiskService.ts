@@ -15,6 +15,7 @@ export interface FormThreatContext {
   isLoginForm?: boolean;
   hasPasswordField?: boolean;
   hasMfaField?: boolean;
+  hasLeadCaptureForm?: boolean;
   isIframe?: boolean;
   actionUrl?: string;
   numInputs?: number;
@@ -34,6 +35,7 @@ export interface RemoteDomainRiskCheckRequest {
     is_login_form?: boolean;
     has_password_field?: boolean;
     has_mfa_field?: boolean;
+    has_lead_capture_form?: boolean;
     is_iframe?: boolean;
     action_url?: string;
     num_inputs?: number;
@@ -255,6 +257,7 @@ export async function checkDomainRiskRemote(
       is_login_form: formContext.isLoginForm,
       has_password_field: formContext.hasPasswordField,
       has_mfa_field: formContext.hasMfaField,
+      has_lead_capture_form: formContext.hasLeadCaptureForm,
       is_iframe: formContext.isIframe,
       action_url: formContext.actionUrl ? sanitizeUrlForRiskCheck(formContext.actionUrl) : undefined,
       num_inputs: formContext.numInputs,
@@ -389,7 +392,7 @@ export function mergeLocalAndRemoteRisk(
     reasons: combinedReasons,
     matchedTarget: local.matchedTarget || remote.matched_target || null,
     safeWarningMessage: remote.safe_warning_message || local.safeWarningMessage,
-    showInterstitial: !!remote.show_interstitial,
+    showInterstitial: !!remote.show_interstitial || (decision === 'block' && score >= 85),
     threatIntelSignals: remote.threat_intel_signals,
   };
 }
