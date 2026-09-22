@@ -14,7 +14,7 @@
 //
 // Everything here is side-effect free; background/shield.ts supplies inputs.
 
-import { extractHostname, isDomainMatch, isUserContentHost, registrableDomain } from './siteTrust';
+import { extractHostname, isDomainMatch, isUserContentHost, isFreeHostingHost, registrableDomain } from './siteTrust';
 import { KNOWN_LEGITIMATE_DOMAINS, type DomainRiskAssessment } from './domainRisk';
 import type { ShieldConfig } from './shieldConfig';
 import type { PageSignals } from './pageSignals';
@@ -138,11 +138,16 @@ export function shouldEscalateRemote(input: {
   }
   if (local.riskScore >= config.remote.min_local_score) return true;
 
-  // High-risk TLD + suspicious keywords or scam cues: escalate regardless of local score
+  // Free hosting or user-content platforms (vercel.app, pages.dev, netlify.app, etc.)
+  // are untrusted arbitrary tenant environments: always verify with threat intel.
+  const host = local.pageHostname;
+  if (isFreeHostingHost(host) || isUserContentHost(host)) return true;
+
+  // High-risk TLD, suspicious keywords, or scam cues: escalate regardless of local score
   const isHighRiskTld = !!local.signals?.isHighRiskTld;
   const hasSuspiciousKeywords = (local.signals?.suspiciousKeywords?.length ?? 0) > 0;
   const hasScamCues = (input.scamCues?.length ?? 0) > 0;
-  if (isHighRiskTld && (hasSuspiciousKeywords || hasScamCues)) return true;
+  if (isHighRiskTld || hasSuspiciousKeywords || hasScamCues) return true;
 
   const credentialPage =
     !!input.hasCredentialForm ||

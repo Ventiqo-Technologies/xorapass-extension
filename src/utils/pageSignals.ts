@@ -59,7 +59,7 @@ export interface PageSignals {
 export const BRAND_LEXICON: ReadonlySet<string> = new Set([
   'paypal', 'microsoft', 'office365', 'outlook',
   'google', 'gmail', 'apple', 'icloud',
-  'amazon', 'aws', 'netflix', 'facebook',
+  'amazon', 'aws', 'netflix', 'facebook', 'meta',
   'instagram', 'whatsapp', 'linkedin', 'twitter',
   'github', 'gitlab', 'dropbox', 'slack',
   'zoom', 'docusign', 'adobe', 'stripe',

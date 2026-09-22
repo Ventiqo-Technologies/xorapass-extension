@@ -26,6 +26,7 @@ export const BRAND_CATALOG: readonly CatalogBrand[] = [
   { token: 'aws', name: 'AWS', domains: ['aws.amazon.com', 'amazon.com', 'awsapps.com', 'signin.aws'] },
   { token: 'netflix', name: 'Netflix', domains: ['netflix.com'] },
   { token: 'facebook', name: 'Facebook', domains: ['facebook.com', 'meta.com', 'messenger.com', 'fb.com'] },
+  { token: 'meta', name: 'Meta', domains: ['meta.com', 'facebook.com', 'instagram.com', 'whatsapp.com', 'fb.com', 'messenger.com'] },
   { token: 'instagram', name: 'Instagram', domains: ['instagram.com'] },
   { token: 'whatsapp', name: 'WhatsApp', domains: ['whatsapp.com'] },
   { token: 'linkedin', name: 'LinkedIn', domains: ['linkedin.com'] },

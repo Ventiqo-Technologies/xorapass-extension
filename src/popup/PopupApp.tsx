@@ -53,7 +53,7 @@ import { type ExtensionAuditSummary } from '../utils/extensionAudit';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
-import { assessWithCatalog } from '../utils/domainRisk';
+import { assessWithCatalog, disabledDomainRiskAssessment } from '../utils/domainRisk';
 import { type SiteSafetyReport } from '../utils/siteScanner';
 import {
   mergeLocalAndRemoteRisk,
@@ -1484,7 +1484,11 @@ export const PopupApp: React.FC = () => {
   // found, same rule mergeLocalAndRemoteRisk already enforces for the
   // in-page overlay.
   const domainRiskAssessment =
-    localDomainRisk && remoteDomainRisk ? mergeLocalAndRemoteRisk(localDomainRisk, remoteDomainRisk) : localDomainRisk;
+    localDomainRisk && remoteDomainRisk
+      ? mergeLocalAndRemoteRisk(localDomainRisk, remoteDomainRisk)
+      : remoteDomainRisk
+      ? mergeLocalAndRemoteRisk(disabledDomainRiskAssessment(currentHostname), remoteDomainRisk)
+      : localDomainRisk;
 
   const isCurrentDomainAllowlisted = domainAllowlist.some((h) => {
     try { return h === currentHostname || currentHostname.endsWith('.' + h); } catch { return false; }
@@ -1509,7 +1513,23 @@ export const PopupApp: React.FC = () => {
         },
       })
       .then((res: any) => {
-        if (!cancelled && res?.risk) setRemoteDomainRisk(res.risk);
+        if (!cancelled && res?.risk) {
+          setRemoteDomainRisk(res.risk);
+          // Broadcast verdict to the active tab so in-page overlay displays immediately
+          try {
+            browser.tabs.query({ active: true, currentWindow: true }).then((tabs: any[]) => {
+              const activeTabId = tabs?.[0]?.id;
+              if (activeTabId) {
+                const base = localDomainRisk || disabledDomainRiskAssessment(currentHostname);
+                const merged = mergeLocalAndRemoteRisk(base, res.risk);
+                browser.tabs.sendMessage(activeTabId, {
+                  type: 'TAB_RISK_UPDATE',
+                  risk: merged,
+                }).catch(() => {});
+              }
+            }).catch(() => {});
+          } catch {}
+        }
       })
       .catch(() => {});
     return () => {
@@ -1583,6 +1603,56 @@ export const PopupApp: React.FC = () => {
             </button>
           </div>
         </header>
+      )}
+
+      {/* Pinned Threat Warning Banner - Always visible on top regardless of active tab or vault lock */}
+      {domainRiskAssessment && (domainRiskAssessment.decision === 'block' || domainRiskAssessment.decision === 'warn') && !isCurrentDomainAllowlisted && (
+        <div className={`shrink-0 z-30 px-3.5 py-2 border-b flex flex-col gap-1 ${
+          domainRiskAssessment.decision === 'block'
+            ? 'bg-rose-600 text-white border-rose-700 shadow-md'
+            : 'bg-amber-500 text-slate-950 border-amber-600 shadow-sm'
+        }`}>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-start gap-2 min-w-0">
+              {domainRiskAssessment.decision === 'block' ? (
+                <ShieldAlert className="w-4 h-4 text-white shrink-0 mt-0.5 animate-pulse" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 text-slate-950 shrink-0 mt-0.5" />
+              )}
+              <div className="min-w-0">
+                <div className="text-xs font-black uppercase tracking-wider leading-tight flex items-center gap-1.5">
+                  <span>{domainRiskAssessment.decision === 'block' ? 'Threat Blocked' : 'Security Warning'}</span>
+                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                    domainRiskAssessment.decision === 'block' ? 'bg-rose-800 text-rose-100' : 'bg-amber-600 text-amber-950'
+                  }`}>
+                    Score {domainRiskAssessment.riskScore}
+                  </span>
+                </div>
+                <div className={`text-xs mt-0.5 leading-snug font-medium line-clamp-2 ${
+                  domainRiskAssessment.decision === 'block' ? 'text-rose-100' : 'text-slate-900'
+                }`}>
+                  {domainRiskAssessment.safeWarningMessage ||
+                    (domainRiskAssessment.matchedTarget
+                      ? `Suspected impersonation of ${domainRiskAssessment.matchedTarget}`
+                      : domainRiskAssessment.reasons[0] || 'Malicious or untrusted domain detected')}
+                </div>
+              </div>
+            </div>
+            {domainRiskAssessment.decision === 'block' && (
+              <button
+                onClick={() => {
+                  if (window.confirm(`Allow autofill on "${currentHostname}"? Only do this if you are certain this is legitimate.`)) {
+                    toggleDomainAllowlist(true);
+                  }
+                }}
+                className="shrink-0 text-[10px] font-bold bg-white/20 hover:bg-white/30 text-white px-2 py-0.5 rounded transition cursor-pointer"
+                title="Bypass risk block for this domain"
+              >
+                Allow
+              </button>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Main Content Area */}

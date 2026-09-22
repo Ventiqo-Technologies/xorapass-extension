@@ -2418,6 +2418,14 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
       paymentFieldsInSubframe = true;
       scanForPaymentFields();
     }
+    if (message?.type === 'TAB_RISK_UPDATE' && window === window.top) {
+      if (message.risk) {
+        domainRisk = message.risk;
+        lastWarnedRiskKey = null; // force re-evaluation
+        maybeShowProactiveRiskWarning();
+      }
+      return Promise.resolve({ received: true });
+    }
     return undefined;
   });
 

@@ -142,9 +142,9 @@ describe('lexicon parity with the server', () => {
   it('holds the brands page_classifier.go also knows', () => {
     // A token present here but absent there is silently dropped server-side,
     // so the two lists must not drift apart unnoticed.
-    for (const brand of ['paypal', 'microsoft', 'office365', 'wellsfargo', 'royalmail', 'coinbase', 'maxis', 'celcom', 'digi', 'unifi', 'singtel', 'dinersclub', 'clubmiles', 'pichincha', 'mercadopago']) {
+    for (const brand of ['paypal', 'microsoft', 'office365', 'wellsfargo', 'royalmail', 'coinbase', 'maxis', 'celcom', 'digi', 'unifi', 'singtel', 'dinersclub', 'clubmiles', 'pichincha', 'mercadopago', 'meta']) {
       expect(BRAND_LEXICON.has(brand)).toBe(true);
     }
-    expect(BRAND_LEXICON.size).toBe(55);
+    expect(BRAND_LEXICON.size).toBe(56);
   });
 });

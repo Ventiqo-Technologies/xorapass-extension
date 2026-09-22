@@ -20,6 +20,7 @@ import {
   hasPunycode,
   stripPublicSuffix,
   isUserContentHost,
+  isFreeHostingHost,
 } from './siteTrust';
 
 export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
@@ -40,6 +41,8 @@ export interface DomainRiskSignals {
   suspiciousTldChange?: { savedTld: string; currentTld: string; brand: string };
   isInsecureTransport: boolean;
   isHighRiskTld: boolean;
+  isFreeHosting?: boolean;
+  isUserContentHost?: boolean;
   subdomainCount: number;
 }
 
@@ -678,6 +681,8 @@ export function assessDomainRisk(
       suspiciousKeywords: [],
       isInsecureTransport: /^http:\/\//i.test(pageUrl.trim()),
       isHighRiskTld: false,
+      isFreeHosting: isFreeHostingHost(pageHostname),
+      isUserContentHost: isUserContentHost(pageHostname),
       subdomainCount: pageHostname ? pageHostname.split('.').length : 0,
     },
   };
@@ -953,11 +958,23 @@ export function assessDomainRisk(
     }
   }
 
+  // Generic check for Free Hosting platforms or User Content hosts with security/verification keywords
+  if (ruleOn('free_hosting') && (assessment.signals.isFreeHosting || assessment.signals.isUserContentHost)) {
+    if (assessment.signals.suspiciousKeywords.length > 0 && highestScore < 70) {
+      highestScore = 70;
+      detectedReasons.push(
+        `Untrusted free hosting service (${pageReg}) used with authentication/security keywords [${assessment.signals.suspiciousKeywords.join(
+          ', '
+        )}]`
+      );
+    }
+  }
+
   // Generic check for high-risk TLD with security keywords (even if brand not directly recognized)
-  if (ruleOn('keyword_tld') && assessment.signals.isHighRiskTld && assessment.signals.suspiciousKeywords.length >= 2 && highestScore < 60) {
+  if (ruleOn('keyword_tld') && assessment.signals.isHighRiskTld && assessment.signals.suspiciousKeywords.length >= 1 && highestScore < 65) {
     highestScore = 65;
     detectedReasons.push(
-      `Suspicious pattern: Multiple auth/login keywords [${assessment.signals.suspiciousKeywords.join(
+      `Suspicious pattern: Auth/login keywords [${assessment.signals.suspiciousKeywords.join(
         ', '
       )}] on high-risk disposable TLD ".${pageBaseTld}"`
     );

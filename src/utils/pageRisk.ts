@@ -71,12 +71,17 @@ export function scorePageSignals(
   for (const t of strong) claimed = claimed || mismatch(t);
   if (claimed && pw) {
     add(55, `This page presents itself as ${claimed.name} but is not on ${claimed.domains[0]}`);
+  } else if (claimed && (freeHost || userContent)) {
+    add(50, `This free-hosted page presents itself as ${claimed.name} but is not on ${claimed.domains[0]}`);
   } else {
     let weakClaim: CatalogBrand | null = null;
     for (const t of weak) weakClaim = weakClaim || mismatch(t);
     if (weakClaim && pw) {
       claimed = weakClaim;
       add(25, `This login page mentions ${weakClaim.name} but is not on ${weakClaim.domains[0]}`);
+    } else if (weakClaim && (freeHost || userContent)) {
+      claimed = weakClaim;
+      add(20, `This free-hosted page mentions ${weakClaim.name} but is not on ${weakClaim.domains[0]}`);
     }
   }
   if (claimed) {
@@ -84,8 +89,8 @@ export function scorePageSignals(
     out.impersonatedDomain = claimed.domains[0];
   }
 
-  if (pw && freeHost) add(20, 'Login page on a free hosting service, where anyone can publish a page');
-  else if (pw && userContent && claimed) add(15, 'Login form inside a shared document or file-hosting page');
+  if (freeHost && (pw || claimed)) add(20, 'Hosted on a free web-hosting service where anyone can publish a page');
+  else if (userContent && (pw || claimed)) add(15, 'Hosted inside a shared document or file-hosting platform');
   if (pw && sig.has_ip_host) add(25, 'Login page on a raw IP address instead of a website name');
   if (sig.has_at_symbol) add(30, 'The address hides the real site behind an "@"');
   if (pw && sig.form_action_insecure) add(15, 'The login form sends your password unencrypted');
