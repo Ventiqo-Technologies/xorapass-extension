@@ -947,27 +947,35 @@ const STYLES = `
 }
 .xp-int-row {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
+  align-items: flex-start;
   gap: 16px;
-  padding: 5px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 .xp-int-row:last-child {
   border-bottom: none;
 }
 .xp-int-row span:first-child {
   color: #6ee7b7;
-  font-weight: 600;
-  font-size: 12px;
+  font-weight: 700;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  flex: none;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  min-width: 110px;
+  white-space: nowrap;
+  padding-top: 1px;
 }
 .xp-int-row span:last-child {
-  font-weight: 600;
+  font-weight: 500;
   color: #f1f5f9;
-  word-break: break-all;
-  text-align: right;
+  overflow-wrap: break-word;
+  word-break: normal;
+  text-align: left;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
 }
 .xp-int-actions {
   display: flex;

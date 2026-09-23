@@ -1756,17 +1756,17 @@ export const PopupApp: React.FC = () => {
         </div>
 
         {/* Domain Comparison (Spoofing Details) */}
-        <div className="p-2 rounded-lg bg-white/70 dark:bg-black/25 border border-black/5 dark:border-white/5 space-y-1 text-xs">
+        <div className="threat-domain-box p-2.5 rounded-lg border space-y-1.5 text-xs">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] opacity-70 font-semibold uppercase tracking-wider">Current Site</span>
-            <span className="font-mono font-bold truncate text-rose-600 dark:text-rose-400 select-all">
+            <span className="threat-domain-label text-[11px] uppercase tracking-wider shrink-0 whitespace-nowrap">Current Site</span>
+            <span className="font-mono font-bold truncate text-rose-600 dark:text-rose-400 select-all min-w-0 flex-1 text-right">
               {activeThreat.currentDomain}
             </span>
           </div>
           {activeThreat.expectedDomain && (
-            <div className="flex items-center justify-between gap-2 pt-1 border-t border-black/5 dark:border-white/5">
-              <span className="text-[11px] opacity-70 font-semibold uppercase tracking-wider">Intended Target</span>
-              <span className="font-mono font-bold truncate text-emerald-600 dark:text-emerald-400 select-all">
+            <div className="flex items-center justify-between gap-2 pt-1 border-t border-black/10 dark:border-white/10">
+              <span className="threat-domain-label text-[11px] uppercase tracking-wider shrink-0 whitespace-nowrap">Intended Target</span>
+              <span className="font-mono font-bold truncate text-emerald-600 dark:text-emerald-400 select-all min-w-0 flex-1 text-right">
                 {activeThreat.expectedDomain}
               </span>
             </div>
@@ -3533,9 +3533,9 @@ export const PopupApp: React.FC = () => {
 
             {/* SHIELD TAB (XORAPASS SHIELD & SITE SCANNER) */}
             {tab === 'ai' && (
-              <div className="space-y-3.5 animate-fade-in flex-1 overflow-y-auto custom-scrollbar">
+              <div className="space-y-3 animate-fade-in flex-1 flex flex-col">
                 {/* XoraPass Shield Banner Card */}
-                <div className="p-3.5 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden border border-slate-800">
+                <div className="p-3 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden border border-slate-800">
                   <div className="flex items-center justify-between relative z-10">
                     <div className="flex items-center gap-2">
                       <div className="w-7 h-7 rounded-lg bg-brand-cyan/20 border border-brand-cyan/30 flex items-center justify-center text-brand-cyan">
@@ -3579,7 +3579,7 @@ export const PopupApp: React.FC = () => {
                 </div>
 
                 {/* 1. ON-DEMAND SITE SCANNER CARD */}
-                <div className="p-3.5 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
+                <div className="p-3 bg-white border border-slate-900/10 rounded-xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
                       <Zap className={`w-4 h-4 ${isScanningSite ? 'text-brand-cyan animate-pulse' : 'text-brand-cyan'}`} /> Site Scanner
