@@ -74,7 +74,7 @@ jobs:
         run: npm run build
       - name: Prepare Chrome zip package (strip key field)
         run: |
-          sed -i '/key/d' dist/manifest.json
+          node -e 'const fs = require("fs"); const m = JSON.parse(fs.readFileSync("dist/manifest.json")); delete m.key; fs.writeFileSync("dist/manifest.json", JSON.stringify(m, null, 2) + "\n");'
           cd dist && zip -r ../xorapass-extension-chrome.zip *
       - name: Upload & Publish to Chrome Web Store
         uses: mnao305/chrome-extension-upload@v6.0.0
@@ -106,7 +106,7 @@ jobs:
         run: npm run build
       - name: Create Clean POSIX Zip Packages
         run: |
-          sed -i '/key/d' dist/manifest.json
+          node -e 'const fs = require("fs"); const m = JSON.parse(fs.readFileSync("dist/manifest.json")); delete m.key; fs.writeFileSync("dist/manifest.json", JSON.stringify(m, null, 2) + "\n");'
           VERSION=$(node -p "require('./package.json').version")
           cd dist
           zip -r -X ../xorapass-extension-opera-v${VERSION}.zip *
