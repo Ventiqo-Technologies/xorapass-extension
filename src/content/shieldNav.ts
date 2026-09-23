@@ -98,14 +98,6 @@ const MAX_GUARD_MS = 1500;
           location.replace('about:blank');
         }
       },
-      onReportPhishing: () =>
-        browser.runtime
-          .sendMessage({
-            type: 'REPORT_PHISHING',
-            payload: { hostname: location.hostname, decision: 'block', riskLevel: 'critical' },
-          })
-          .then((res: any) => ({ success: !!res?.success }))
-          .catch(() => ({ success: false })),
       onRequestAllowlist: () =>
         browser.runtime
           .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: location.hostname } })

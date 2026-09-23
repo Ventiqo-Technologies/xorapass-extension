@@ -384,14 +384,16 @@ async function maybeRunAiScan(href: string): Promise<void> {
         : 'XoraPass Shield found signs that this page is a scam. Don\'t enter personal or payment details.',
     currentDomain: window.location.hostname,
     riskLevel: blocking ? 'high' : 'medium',
-    onReportPhishing: () =>
-      browser.runtime
-        .sendMessage({
-          type: 'REPORT_PHISHING',
-          payload: { hostname: window.location.hostname, decision: blocking ? 'block' : 'warn', riskLevel: blocking ? 'high' : 'medium' },
-        })
-        .then((r: any) => ({ success: !!r?.success }))
-        .catch(() => ({ success: false })),
+    onReportPhishing: blocking
+      ? undefined
+      : () =>
+          browser.runtime
+            .sendMessage({
+              type: 'REPORT_PHISHING',
+              payload: { hostname: window.location.hostname, decision: 'warn', riskLevel: 'medium' },
+            })
+            .then((r: any) => ({ success: !!r?.success, alreadyBlocked: !!r?.alreadyBlocked }))
+            .catch(() => ({ success: false })),
   });
 }
 
@@ -460,14 +462,16 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
           .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: window.location.hostname } })
           .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
           .catch(() => ({ success: false, reason: 'network' })),
-      onReportPhishing: () =>
-        browser.runtime
-          .sendMessage({
-            type: 'REPORT_PHISHING',
-            payload: { hostname: window.location.hostname, decision, riskLevel: domainRisk?.riskLevel },
-          })
-          .then((res: any) => ({ success: !!res?.success }))
-          .catch(() => ({ success: false })),
+      onReportPhishing: decision === 'block'
+        ? undefined
+        : () =>
+            browser.runtime
+              .sendMessage({
+                type: 'REPORT_PHISHING',
+                payload: { hostname: window.location.hostname, decision, riskLevel: domainRisk?.riskLevel },
+              })
+              .then((res: any) => ({ success: !!res?.success, alreadyBlocked: !!res?.alreadyBlocked }))
+              .catch(() => ({ success: false })),
       onProceedAnyway: () =>
         browser.runtime
           .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: window.location.hostname } })
@@ -530,14 +534,16 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
           window.location.href = `https://${expectedDomain}`;
         }
       : undefined,
-    onReportPhishing: () =>
-      browser.runtime
-        .sendMessage({
-          type: 'REPORT_PHISHING',
-          payload: { hostname: currentHostname, decision, riskLevel: domainRisk?.riskLevel },
-        })
-        .then((res: any) => ({ success: !!res?.success }))
-        .catch(() => ({ success: false })),
+    onReportPhishing: decision === 'block'
+      ? undefined
+      : () =>
+          browser.runtime
+            .sendMessage({
+              type: 'REPORT_PHISHING',
+              payload: { hostname: currentHostname, decision, riskLevel: domainRisk?.riskLevel },
+            })
+            .then((res: any) => ({ success: !!res?.success, alreadyBlocked: !!res?.alreadyBlocked }))
+            .catch(() => ({ success: false })),
     onRequestAllowlist: () =>
       browser.runtime
         .sendMessage({

@@ -2268,8 +2268,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'REPORT_PHISHING') {
     const { hostname, decision, riskLevel } = msg.payload || {};
-    return reportPhishing(hostname, decision, riskLevel, globalThis.fetch, getJwt).then((success) => ({
-      success,
+    return reportPhishing(hostname, decision, riskLevel, globalThis.fetch, getJwt).then((res) => ({
+      success: res.success,
+      alreadyBlocked: res.alreadyBlocked,
+      duplicate: res.duplicate,
     }));
   }
 

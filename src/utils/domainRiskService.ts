@@ -415,6 +415,12 @@ export function mergeLocalAndRemoteRisk(
   };
 }
 
+export interface ReportPhishingResponse {
+  success: boolean;
+  alreadyBlocked?: boolean;
+  duplicate?: boolean;
+}
+
 /**
  * Calls POST /api/domain-risk/report — records a user-initiated "Report
  * phishing" click. Public endpoint (works even signed out), but attaches the
@@ -427,7 +433,7 @@ export async function reportPhishing(
   riskLevel?: string,
   fetchFn: typeof fetch = globalThis.fetch,
   getJwtFn?: () => Promise<string>
-): Promise<boolean> {
+): Promise<ReportPhishingResponse> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const jwt = await getJwtOrEmpty(getJwtFn);
   if (jwt) headers['Authorization'] = authHeaderValue(jwt);
@@ -438,11 +444,15 @@ export async function reportPhishing(
       headers,
       body: JSON.stringify({ hostname, decision, risk_level: riskLevel }),
     });
-    if (!res.ok) return false;
-    const data = (await res.json()) as { success?: boolean };
-    return !!data.success;
+    if (!res.ok) return { success: false };
+    const data = (await res.json()) as { success?: boolean; already_blocked?: boolean; duplicate?: boolean };
+    return {
+      success: !!data.success,
+      alreadyBlocked: !!data.already_blocked,
+      duplicate: !!data.duplicate,
+    };
   } catch {
-    return false;
+    return { success: false };
   }
 }
 

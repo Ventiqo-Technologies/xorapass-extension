@@ -2232,7 +2232,7 @@ export interface RiskWarningOptions {
   /** Present only when expectedDomain is known — navigates the tab there. */
   onGoToOfficial?: () => void;
   /** Reports the current page as phishing. Resolves once the report lands. */
-  onReportPhishing?: () => Promise<{ success: boolean }>;
+  onReportPhishing?: () => Promise<{ success: boolean; alreadyBlocked?: boolean }>;
   /** Submits an admin-review allowlist request for the current domain. */
   onRequestAllowlist?: () => Promise<{ success: boolean; reason?: string }>;
   /**
@@ -2364,7 +2364,7 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
     pendingLabel: string,
     doneLabel: string,
     failedLabel: string | ((reason: string | undefined) => string),
-    run: () => Promise<{ success: boolean; reason?: string }>
+    run: () => Promise<{ success: boolean; reason?: string; alreadyBlocked?: boolean }>
   ) => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
@@ -2372,7 +2372,7 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
       try {
         const res = await run();
         if (res?.success) {
-          btn.textContent = doneLabel;
+          btn.textContent = res?.alreadyBlocked ? 'Already blocked' : doneLabel;
           // Stays disabled: success is a terminal state, nothing left to retry.
         } else {
           btn.textContent = typeof failedLabel === 'function' ? failedLabel(res?.reason) : failedLabel;
@@ -2467,7 +2467,7 @@ export interface InterstitialOptions {
   message: string;
   reasons?: string[];
   onGoToOfficial?: () => void;
-  onReportPhishing?: () => Promise<{ success: boolean }>;
+  onReportPhishing?: () => Promise<{ success: boolean; alreadyBlocked?: boolean }>;
   /** Asks an admin to review the site (false positive). */
   onRequestAllowlist?: () => Promise<{ success: boolean; reason?: string }>;
   onLeave: () => void;
@@ -2601,7 +2601,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
       report.textContent = 'Reporting\u2026';
       try {
         const res = await opts.onReportPhishing!();
-        report.textContent = res?.success ? 'Reported' : 'Reported';
+        report.textContent = res?.alreadyBlocked ? 'Already blocked' : 'Reported';
       } catch {
         report.textContent = 'Reported';
       }

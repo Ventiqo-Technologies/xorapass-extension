@@ -424,7 +424,7 @@ export const PopupApp: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   // Report / request-review actions for the current site (Site Scanner card).
-  const [siteReportState, setSiteReportState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
+  const [siteReportState, setSiteReportState] = useState<'idle' | 'busy' | 'done' | 'already_blocked' | 'error'>('idle');
   const [siteRequestState, setSiteRequestState] = useState<'idle' | 'busy' | 'done' | 'error' | 'login'>('idle');
   const [reauthPassword, setReauthPassword] = useState('');
   const [reauthBusy, setReauthBusy] = useState(false);
@@ -1051,7 +1051,7 @@ export const PopupApp: React.FC = () => {
         },
       })
       .catch(() => null);
-    setSiteReportState(res?.success ? 'done' : 'error');
+    setSiteReportState(res?.alreadyBlocked ? 'already_blocked' : res?.success ? 'done' : 'error');
     if (res?.success) reloadSecurityEvents();
   };
 
@@ -3764,28 +3764,40 @@ export const PopupApp: React.FC = () => {
 
                   {/* Report / request review for the current site */}
                   {currentHostname && /^https?:$/.test(currentProtocol) && !isLocalHost && (() => {
-                    const flagged =
+                    const isBlocked =
                       domainRiskAssessment?.decision === 'block' ||
+                      remoteDomainRisk?.decision === 'block' ||
+                      siteReport?.verdict === 'danger' ||
+                      siteReportState === 'already_blocked';
+                    const flagged =
+                      isBlocked ||
                       domainRiskAssessment?.decision === 'warn' ||
                       domainRiskAssessment?.decision === 'require_approval';
                     const existingRequest = domainRiskAllowlistRequests.find((r) => r.hostname === currentHostname);
                     const alreadyReported = domainRiskReports.some((r) => r.hostname === currentHostname);
                     return (
                       <div className="pt-2.5 border-t border-slate-900/10 flex flex-wrap items-center gap-1.5">
-                        <button
-                          onClick={() => void reportCurrentSite()}
-                          disabled={siteReportState === 'busy' || siteReportState === 'done' || alreadyReported}
-                          className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 disabled:opacity-60 cursor-pointer"
-                          title="Tell XoraPass this site looks like phishing or a scam"
-                        >
-                          {alreadyReported || siteReportState === 'done'
-                            ? 'Reported'
-                            : siteReportState === 'busy'
-                            ? 'Reporting…'
-                            : siteReportState === 'error'
-                            ? 'Try again'
-                            : 'Report this site'}
-                        </button>
+                        {!isBlocked ? (
+                          <button
+                            onClick={() => void reportCurrentSite()}
+                            disabled={siteReportState === 'busy' || siteReportState === 'done' || alreadyReported}
+                            className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 disabled:opacity-60 cursor-pointer"
+                            title="Tell XoraPass this site looks like phishing or a scam"
+                          >
+                            {alreadyReported || siteReportState === 'done'
+                              ? 'Reported'
+                              : siteReportState === 'busy'
+                              ? 'Reporting…'
+                              : siteReportState === 'error'
+                              ? 'Try again'
+                              : 'Report this site'}
+                          </button>
+                        ) : (
+                          <span className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-rose-200 text-rose-700 bg-rose-50 flex items-center gap-1">
+                            <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />
+                            Blocked by Shield
+                          </span>
+                        )}
                         {flagged && (
                           <button
                             onClick={() => void requestReviewForCurrentSite()}
