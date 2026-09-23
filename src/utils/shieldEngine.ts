@@ -149,6 +149,9 @@ export function shouldEscalateRemote(input: {
   const hasScamCues = (input.scamCues?.length ?? 0) > 0;
   if (isHighRiskTld || hasSuspiciousKeywords || hasScamCues) return true;
 
+  // Brand lookalike, brand abuse, or non-allow local decision: always verify with threat intel
+  if (local.matchedTarget || local.signals?.brandAbuse || local.decision === 'warn' || local.decision === 'block') return true;
+
   const credentialPage =
     !!input.hasCredentialForm ||
     !!input.hasLeadCaptureForm ||

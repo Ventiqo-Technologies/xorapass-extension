@@ -44,6 +44,8 @@ import {
   showWebmailPhishingBanner,
   closeWebmailPhishingBanner,
   initOverlayTheme,
+  setPopupSuppressed,
+  getActiveRiskWarning,
   type OverlayCredential,
 } from './overlay';
 import { looksLikeCardNumber, looksLikeCvv, looksLikeCardExpiry } from './cardGuard';
@@ -607,11 +609,18 @@ browser.runtime.onMessage.addListener((message: any) => {
   } else if (message.type === 'SHORTCUT_AUTOFILL') {
     void handleShortcutAutofill();
   } else if (message.type === 'TAB_RISK_UPDATE') {
-    if (message.payload?.risk) {
-      domainRisk = message.payload.risk;
+    const risk = message.payload?.risk || message.risk;
+    if (risk) {
+      domainRisk = risk;
       lastWarnedRiskKey = null; // force fresh evaluation
       maybeShowProactiveRiskWarning();
     }
+  } else if (message.type === 'POPUP_STATE_CHANGED') {
+    setPopupSuppressed(Boolean(message.payload?.open ?? message.payload?.isOpen));
+  } else if (message.type === 'GET_ACTIVE_TAB_WARNING') {
+    return Promise.resolve(getActiveRiskWarning());
+  } else if (message.type === 'DISMISS_TAB_RISK_WARNING') {
+    closeRiskWarning();
   }
   return undefined;
 });

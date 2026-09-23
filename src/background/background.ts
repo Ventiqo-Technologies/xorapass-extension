@@ -871,6 +871,7 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
   if (changeInfo.status === 'complete') {
     void pushAiFillCheck(tabId, tab.url);
+    void checkAndPushTabRisk(tabId, tab.url);
   }
 });
 
@@ -1239,6 +1240,62 @@ async function evaluateDomainRisk(opts: {
   // code and let a user-level allowlist toggle silently override an org
   // blocklist — precisely what the policy_enforced flag exists to prevent.
   return remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
+}
+
+/**
+ * Proactive navigation check: checks newly completed tab navigations against
+ * Shield threat intelligence and pushes TAB_RISK_UPDATE immediately if risky.
+ */
+async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
+  if (!url || !/^https?:\/\//i.test(url)) return;
+  const hostname = extractHostname(url);
+  if (!hostname || isLocalOrPrivateHost(hostname)) return;
+
+  try {
+    const [disabled, allowlist, isShieldOn] = await Promise.all([
+      isSiteDisabled(hostname),
+      getDomainAllowlist(),
+      isShieldActive(),
+    ]);
+
+    if (disabled || !isShieldOn) return;
+    if (hasRiskApproval(tabId, hostname)) return;
+
+    const res = await browser.storage.session.get(['unlocked', 'vaultItems']);
+    const items = (res as Record<string, unknown>).unlocked
+      ? ((res as Record<string, unknown>).vaultItems as VaultItem[] | undefined)
+      : undefined;
+    const knownHosts = (items || [])
+      .filter((i) => !!i.url)
+      .map((i) => extractHostname(i.url!))
+      .filter(Boolean);
+
+    const matching = (items || []).filter(
+      (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)
+    );
+
+    const risk = await evaluateDomainRisk({
+      hostname,
+      currentUrl: url,
+      knownHosts,
+      allowlist,
+      savedDomain: matching[0]?.url ? extractHostname(matching[0].url) : '',
+      sensitivity: sensitivityForItems(matching),
+      remoteGate: listingRemoteGate(hostname, knownHosts, undefined, undefined),
+    });
+
+    if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
+      browser.tabs
+        .sendMessage(tabId, {
+          type: 'TAB_RISK_UPDATE',
+          payload: { risk },
+          risk,
+        })
+        .catch(() => {});
+    }
+  } catch (err) {
+    console.debug('[XoraPass] checkAndPushTabRisk error:', err);
+  }
 }
 
 /**
@@ -2842,5 +2899,47 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
     });
   } catch (err) {
     console.warn('[XoraPass] Failed to inspect link:', err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Popup lifecycle tracking & in-page risk alert suppression
+// ---------------------------------------------------------------------------
+browser.runtime.onConnect.addListener((port) => {
+  if (port.name === 'xorapass-popup') {
+    let openedTabId: number | undefined;
+
+    browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (tab?.id !== undefined) {
+        openedTabId = tab.id;
+        browser.tabs
+          .sendMessage(tab.id, {
+            type: 'POPUP_STATE_CHANGED',
+            payload: { open: true, isOpen: true },
+          })
+          .catch(() => {});
+      }
+    }).catch(() => {});
+
+    port.onDisconnect.addListener(() => {
+      if (openedTabId !== undefined) {
+        browser.tabs
+          .sendMessage(openedTabId, {
+            type: 'POPUP_STATE_CHANGED',
+            payload: { open: false, isOpen: false },
+          })
+          .catch(() => {});
+      }
+      browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+        if (tab?.id !== undefined && tab.id !== openedTabId) {
+          browser.tabs
+            .sendMessage(tab.id, {
+              type: 'POPUP_STATE_CHANGED',
+              payload: { open: false, isOpen: false },
+            })
+            .catch(() => {});
+        }
+      }).catch(() => {});
+    });
   }
 });

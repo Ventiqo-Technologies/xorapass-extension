@@ -119,6 +119,16 @@ export const KNOWN_MESSAGE_TYPES = [
   'SHIELD_GET_PRIVACY_SETTINGS',
   'SHIELD_SET_PRIVACY_SETTINGS',
   'SHIELD_AUTH_HEADER',
+  // Popup-open/close relay: the background tells the active tab's content script
+  // that the popup is open (true) or closed (false) so the in-page risk overlay
+  // can suppress itself while the popup is showing the same warning inline.
+  'POPUP_STATE_CHANGED',
+  // Popup requests the active warning (if any) that the in-page overlay is
+  // displaying, so it can mirror it inline without a second risk scan.
+  'GET_ACTIVE_TAB_WARNING',
+  // Popup tells the content script the user dismissed the warning in the popup,
+  // so the in-page overlay card can also be closed.
+  'DISMISS_TAB_RISK_WARNING',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];

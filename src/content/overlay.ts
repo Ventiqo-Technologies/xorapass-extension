@@ -2175,6 +2175,12 @@ export function isSavePromptOpen(): boolean {
 // ---------------------------------------------------------------------------
 
 let riskAlertEl: HTMLElement | null = null;
+// The options last passed to showRiskWarning — kept so the popup can pull
+// the threat metadata without re-deriving it.
+let activeRiskWarningOpts: RiskWarningOptions | null = null;
+// True while the extension popup is open; prevents the alert from being shown
+// (it renders inside the popup instead to avoid overlap).
+let popupSuppressed = false;
 
 /** Third-party attribution line (e.g. "Advisory provided by Google"). */
 export interface WarningAdvisory {
@@ -2243,7 +2249,14 @@ export interface RiskWarningOptions {
  * even on pages with no login form at all.
  */
 export function showRiskWarning(opts: RiskWarningOptions): void {
-  closeRiskWarning();
+  activeRiskWarningOpts = opts;
+  // If the popup is open, skip rendering the in-page alert — the popup shows
+  // the warning inline instead, so we don't need (or want) the corner card.
+  if (popupSuppressed) return;
+  if (riskAlertEl) {
+    riskAlertEl.remove();
+    riskAlertEl = null;
+  }
   // One warning at a time in the corner: the site-risk warning already covers
   // what the checkout banner would say (same site, autofill already blocked),
   // so it replaces it instead of stacking on top of it.
@@ -2691,6 +2704,58 @@ export function closeRiskWarning(): void {
   if (riskAlertEl) {
     riskAlertEl.remove();
     riskAlertEl = null;
+  }
+  activeRiskWarningOpts = null;
+}
+
+/**
+ * Returns the serialisable subset of the current risk warning so the content
+ * script can relay it to the extension popup. Returns null if no warning is
+ * active on this page.
+ */
+export function getActiveRiskWarning(): {
+  severity: string; title: string; message: string;
+  currentDomain: string; expectedDomain?: string | null;
+  riskLevel?: string; allowlistRequestStatus?: string | null;
+} | null {
+  if (!activeRiskWarningOpts) return null;
+  const o = activeRiskWarningOpts;
+  return {
+    severity: o.severity,
+    title: o.title,
+    message: o.message,
+    currentDomain: o.currentDomain,
+    expectedDomain: o.expectedDomain,
+    riskLevel: o.riskLevel,
+    allowlistRequestStatus: o.allowlistRequestStatus,
+  };
+}
+
+/**
+ * Called by the content script when the extension popup opens/closes.
+ *
+ * When `suppressed` is true the in-page risk-alert card is hidden so it does
+ * not overlap the popup UI. The popup renders the same warning inline.
+ * When `suppressed` is false the card is restored if the warning is still
+ * active and has not been explicitly dismissed by the user.
+ */
+export function setPopupSuppressed(suppressed: boolean): void {
+  popupSuppressed = suppressed;
+  if (suppressed) {
+    // Hide the card without destroying it — we want to restore it if the
+    // popup closes without the user dismissing the warning.
+    if (riskAlertEl) (riskAlertEl as HTMLElement).style.display = 'none';
+  } else {
+    // Popup closed: restore the card if it still exists (not dismissed), or
+    // re-show it from opts if the user never explicitly dismissed it.
+    if (riskAlertEl) {
+      (riskAlertEl as HTMLElement).style.display = '';
+    } else if (activeRiskWarningOpts) {
+      // Warning was never dismissed — re-render it.
+      const saved = activeRiskWarningOpts;
+      activeRiskWarningOpts = null; // showRiskWarning will reset it
+      showRiskWarning(saved);
+    }
   }
 }
 

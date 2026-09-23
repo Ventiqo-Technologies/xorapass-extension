@@ -47,6 +47,7 @@ import {
   Star,
   HelpCircle,
   Puzzle,
+  Flag,
 } from 'lucide-react';
 import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptSafety';
 import { auditInstalledExtensions, type ExtensionAuditSummary } from '../utils/extensionAudit';
@@ -452,6 +453,16 @@ export const PopupApp: React.FC = () => {
   const [activeTabUrl, setActiveTabUrl] = useState<string>('');
   const [activeTabTitle, setActiveTabTitle] = useState<string>('');
   const [activeTabFavIcon, setActiveTabFavIcon] = useState<string>('');
+  const [activeThreatWarning, setActiveThreatWarning] = useState<{
+    severity: string;
+    title: string;
+    message: string;
+    currentDomain: string;
+    expectedDomain?: string | null;
+    riskLevel?: string;
+    allowlistRequestStatus?: string | null;
+  } | null>(null);
+  const [threatBannerDismissed, setThreatBannerDismissed] = useState(false);
 
   // XoraPass Shield - "Is This Safe?" Analyzer state
   const [promptQuery, setPromptQuery] = useState('');
@@ -630,6 +641,16 @@ export const PopupApp: React.FC = () => {
         setActiveTabUrl(activeTab.url);
         setActiveTabTitle(activeTab.title || '');
         setActiveTabFavIcon(activeTab.favIconUrl || '');
+        if (activeTab.id !== undefined) {
+          browser.tabs
+            .sendMessage(activeTab.id, { type: 'GET_ACTIVE_TAB_WARNING' })
+            .then((warning: any) => {
+              if (warning && typeof warning === 'object' && warning.title) {
+                setActiveThreatWarning(warning);
+              }
+            })
+            .catch(() => {});
+        }
         try {
           const url = new URL(activeTab.url);
           setCurrentHostname(url.hostname);
@@ -650,6 +671,48 @@ export const PopupApp: React.FC = () => {
         }
       }
     });
+  }, []);
+
+  // Popup lifecycle port: notifies the background (and thereby active tab) that popup is open/closed
+  useEffect(() => {
+    let port: any;
+    try {
+      port = browser.runtime.connect({ name: 'xorapass-popup' });
+    } catch (e) {
+      console.warn('Failed to connect popup lifecycle port:', e);
+    }
+    return () => {
+      if (port) {
+        try {
+          port.disconnect();
+        } catch {}
+      }
+    };
+  }, []);
+
+  // Listen for active tab risk updates to mirror threats into popup in real time
+  useEffect(() => {
+    const handleRiskUpdate = (msg: any) => {
+      if (msg?.type === 'TAB_RISK_UPDATE') {
+        browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+          if (tab?.id !== undefined) {
+            browser.tabs
+              .sendMessage(tab.id, { type: 'GET_ACTIVE_TAB_WARNING' })
+              .then((w: any) => {
+                if (w && typeof w === 'object' && w.title) {
+                  setActiveThreatWarning(w);
+                  setThreatBannerDismissed(false);
+                }
+              })
+              .catch(() => {});
+          }
+        }).catch(() => {});
+      }
+    };
+    browser.runtime.onMessage.addListener(handleRiskUpdate);
+    return () => {
+      browser.runtime.onMessage.removeListener(handleRiskUpdate);
+    };
   }, []);
 
   const updateGenOptions = (patch: Partial<GeneratorOptions>) => {
@@ -1587,6 +1650,178 @@ export const PopupApp: React.FC = () => {
   const ringCirc = 2 * Math.PI * 34;
   const maxCat = Math.max(1, ...health.byCategory.map((c) => c.count));
 
+  // Cross-sync threat dismiss and allowlist review with content script on active tab
+  const handleDismissThreatWarning = () => {
+    setThreatBannerDismissed(true);
+    setActiveThreatWarning(null);
+    browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (tab?.id !== undefined) {
+        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING' }).catch(() => {});
+      }
+    }).catch(() => {});
+  };
+
+  const handleThreatRequestAllowlist = async () => {
+    await requestReviewForCurrentSite();
+    // Dismiss in-page alert upon submitting allowlist review
+    browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (tab?.id !== undefined) {
+        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING' }).catch(() => {});
+      }
+    }).catch(() => {});
+  };
+
+  const handleThreatReportPhishing = async () => {
+    await reportCurrentSite();
+  };
+
+  // Derive consolidated active threat warning from tab warning or popup's live assessment
+  const activeThreat = (!threatBannerDismissed && (activeThreatWarning || isDangerousSite || isWarningSite)) ? {
+    severity: activeThreatWarning?.severity || (isDangerousSite ? 'block' : 'warn'),
+    title: activeThreatWarning?.title || (isDangerousSite ? (domainRiskAssessment?.matchedTarget && !domainRiskAssessment.signals?.isSameRegistrableDomain ? 'Phishing / Lookalike Domain Blocked' : 'Dangerous Site Blocked') : 'Security Warning'),
+    message: activeThreatWarning?.message || domainRiskAssessment?.safeWarningMessage || (
+      isDangerousSite
+        ? (domainRiskAssessment?.matchedTarget
+            ? `This site appears to impersonate ${domainRiskAssessment.matchedTarget}. Autofill is blocked for your protection.`
+            : 'Security providers have flagged this site. Autofill is blocked for your protection.')
+        : (domainRiskAssessment?.reasons?.[0] || 'This domain has unusual characteristics. Verify before filling.')
+    ),
+    currentDomain: activeThreatWarning?.currentDomain || currentHostname,
+    expectedDomain: activeThreatWarning?.expectedDomain || domainRiskAssessment?.matchedTarget || lookalike?.target || null,
+    riskLevel: activeThreatWarning?.riskLevel || domainRiskAssessment?.riskLevel || (isDangerousSite ? 'critical' : 'medium'),
+    allowlistRequestStatus: activeThreatWarning?.allowlistRequestStatus || null,
+  } : null;
+
+  const renderActiveThreatBanner = () => {
+    if (!activeThreat || threatBannerDismissed) return null;
+    const isBlock = activeThreat.severity === 'block';
+
+    const existingRequest = domainRiskAllowlistRequests.find(
+      (r) => r.hostname === activeThreat.currentDomain || r.hostname === currentHostname
+    );
+    const reviewStatus = existingRequest?.status || activeThreat.allowlistRequestStatus;
+
+    return (
+      <div
+        className={`rounded-xl border p-3 space-y-2.5 shadow-sm transition-all animate-fade-in ${
+          isBlock
+            ? 'bg-rose-50/90 dark:bg-rose-950/80 border-rose-300 dark:border-rose-700/60 text-rose-950 dark:text-rose-100'
+            : 'bg-amber-50/90 dark:bg-amber-950/80 border-amber-300 dark:border-amber-700/60 text-amber-950 dark:text-amber-100'
+        }`}
+      >
+        {/* Threat Header & Badges */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {isBlock ? (
+              <ShieldAlert className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 animate-pulse" />
+            ) : (
+              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+            )}
+            <div className="min-w-0">
+              <div className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5 flex-wrap">
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                    isBlock
+                      ? 'bg-rose-600 text-white'
+                      : 'bg-amber-500 text-white'
+                  }`}
+                >
+                  {isBlock ? 'Phishing Blocked' : 'Suspicious Domain'}
+                </span>
+                {activeThreat.riskLevel && (
+                  <span className="text-[10px] opacity-75 font-mono uppercase">
+                    Risk: {activeThreat.riskLevel}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={handleDismissThreatWarning}
+            className="p-1 -mr-1 -mt-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-black/5 dark:hover:bg-white/10 transition cursor-pointer"
+            title="Dismiss warning"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Title & Message */}
+        <div className="space-y-1">
+          <h4 className="text-sm font-bold leading-tight">
+            {activeThreat.title}
+          </h4>
+          <p className="text-xs leading-relaxed opacity-90 font-medium">
+            {activeThreat.message}
+          </p>
+        </div>
+
+        {/* Domain Comparison (Spoofing Details) */}
+        <div className="p-2 rounded-lg bg-white/70 dark:bg-black/25 border border-black/5 dark:border-white/5 space-y-1 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] opacity-70 font-semibold uppercase tracking-wider">Current Site</span>
+            <span className="font-mono font-bold truncate text-rose-600 dark:text-rose-400 select-all">
+              {activeThreat.currentDomain}
+            </span>
+          </div>
+          {activeThreat.expectedDomain && (
+            <div className="flex items-center justify-between gap-2 pt-1 border-t border-black/5 dark:border-white/5">
+              <span className="text-[11px] opacity-70 font-semibold uppercase tracking-wider">Intended Target</span>
+              <span className="font-mono font-bold truncate text-emerald-600 dark:text-emerald-400 select-all">
+                {activeThreat.expectedDomain}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-1.5 pt-0.5 flex-wrap">
+          <button
+            onClick={() => void handleThreatRequestAllowlist()}
+            disabled={siteRequestState === 'busy' || siteRequestState === 'done' || !!reviewStatus}
+            className="flex-1 py-1.5 px-2.5 rounded-lg text-xs font-bold border transition cursor-pointer disabled:opacity-60 flex items-center justify-center gap-1.5 bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-xs"
+            title="Think this site is legitimate? Request allowlist review"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-brand-cyan" />
+            <span className="truncate">
+              {reviewStatus
+                ? `Review ${reviewStatus}`
+                : siteRequestState === 'done'
+                ? 'Sent to admin'
+                : siteRequestState === 'busy'
+                ? 'Sending…'
+                : siteRequestState === 'login'
+                ? 'Sign in to request'
+                : 'Request Allowlist Review'}
+            </span>
+          </button>
+
+          <button
+            onClick={() => void handleThreatReportPhishing()}
+            disabled={siteReportState === 'busy' || siteReportState === 'done'}
+            className="py-1.5 px-2.5 rounded-lg text-xs font-bold border transition cursor-pointer disabled:opacity-60 flex items-center justify-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-xs"
+            title="Report this site as malicious"
+          >
+            <Flag className="w-3.5 h-3.5" />
+            <span>
+              {siteReportState === 'done'
+                ? 'Reported'
+                : siteReportState === 'busy'
+                ? 'Reporting…'
+                : 'Report Phishing'}
+            </span>
+          </button>
+
+          <button
+            onClick={handleDismissThreatWarning}
+            className="py-1.5 px-2.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className={`w-[380px] ${unlocked ? 'h-[550px]' : 'min-h-[480px]'} ${isDarkEffective ? 'dark' : ''} text-slate-900 flex flex-col relative overflow-hidden select-none font-sans bg-slate-50`}>
       <div className="absolute inset-0 security-grid opacity-25 pointer-events-none" />
@@ -1656,7 +1891,8 @@ export const PopupApp: React.FC = () => {
         // master password must only ever be checked against XoraPass's own
         // Argon2id verification, not duplicated into a second, weaker store.
         // Enter-to-submit is replicated manually below instead.
-        <div className="flex-1 flex flex-col justify-between p-6 z-10 animate-fade-in bg-slate-50/50">
+        <div className="flex-1 flex flex-col justify-between p-6 z-10 animate-fade-in bg-slate-50/50 overflow-y-auto custom-scrollbar space-y-3">
+          {renderActiveThreatBanner()}
           <div className="text-center pt-2 space-y-2">
             <div className="relative w-16 h-16 mx-auto flex items-center justify-center">
               <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-brand-cyan/25 to-brand-teal/20 blur-md" />
@@ -1935,6 +2171,8 @@ export const PopupApp: React.FC = () => {
       ) : (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden z-10">
           <div className="flex-1 overflow-y-auto custom-scrollbar p-3.5 flex flex-col space-y-3">
+            {renderActiveThreatBanner()}
+
             {offline && (
               <div className="p-2.5 bg-amber-50 border border-amber-200/80 text-amber-800 rounded-xl text-[10px] flex items-start gap-2 leading-snug shrink-0 shadow-xs">
                 <CloudOff className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
@@ -2527,8 +2765,8 @@ export const PopupApp: React.FC = () => {
                         </div>
                       )}
 
-                      {/* Domain Risk: DANGEROUS SITE (RED BOX) */}
-                      {isDangerousSite && domainRiskAssessment && (
+                      {/* Domain Risk: DANGEROUS SITE (RED BOX) - only if top threat banner is not already displaying */}
+                      {!activeThreat && isDangerousSite && domainRiskAssessment && (
                         <div className="rounded-xl border border-rose-300 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-950/60 p-2.5 space-y-1.5 shadow-xs">
                           <div className="flex items-start gap-2">
                             <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5 animate-pulse" />
@@ -2574,7 +2812,7 @@ export const PopupApp: React.FC = () => {
                       )}
 
                       {/* Domain Risk: SECURITY WARNING (YELLOW BOX) */}
-                      {isWarningSite && domainRiskAssessment && (
+                      {!activeThreat && isWarningSite && domainRiskAssessment && (
                         <div className="rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-950/60 p-2.5 space-y-1.5 shadow-xs">
                           <div className="flex items-start gap-2">
                             <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
@@ -2599,7 +2837,7 @@ export const PopupApp: React.FC = () => {
                       )}
 
                       {/* Legacy simple lookalike (only shown when full risk assessment gives no result) */}
-                      {lookalike && !domainRiskAssessment?.matchedTarget && !isDangerousSite && !isWarningSite && (
+                      {!activeThreat && lookalike && !domainRiskAssessment?.matchedTarget && !isDangerousSite && !isWarningSite && (
                         <div className="flex items-start gap-1.5 text-xs text-rose-950 dark:text-rose-100 bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-500/40 p-2 rounded-lg leading-snug">
                           <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                           <span>Possible lookalike for "{lookalike.target}". Verify domain before filling.</span>
