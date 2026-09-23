@@ -1795,21 +1795,27 @@ export const PopupApp: React.FC = () => {
             </span>
           </button>
 
-          <button
-            onClick={() => void handleThreatReportPhishing()}
-            disabled={siteReportState === 'busy' || siteReportState === 'done'}
-            className="py-1.5 px-2.5 rounded-lg text-xs font-bold border transition cursor-pointer disabled:opacity-60 flex items-center justify-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-xs"
-            title="Report this site as malicious"
-          >
-            <Flag className="w-3.5 h-3.5" />
-            <span>
-              {siteReportState === 'done'
-                ? 'Reported'
-                : siteReportState === 'busy'
-                ? 'Reporting…'
-                : 'Report Phishing'}
+          {siteReportState === 'already_blocked' ? (
+            <span className="inline-flex items-center gap-1 py-1.5 px-2.5 rounded-lg text-xs font-bold bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-700/60">
+              <Shield className="w-3.5 h-3.5" />
+              Blocked by Shield
             </span>
-          </button>
+          ) : siteReportState === 'done' ? (
+            <span className="inline-flex items-center gap-1 py-1.5 px-2.5 rounded-lg text-xs font-bold bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700/60">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Reported
+            </span>
+          ) : (
+            <button
+              onClick={() => void handleThreatReportPhishing()}
+              disabled={siteReportState === 'busy'}
+              className="py-1.5 px-2.5 rounded-lg text-xs font-bold border transition cursor-pointer disabled:opacity-60 flex items-center justify-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-xs"
+              title="Report this site as malicious"
+            >
+              <Flag className="w-3.5 h-3.5" />
+              <span>{siteReportState === 'busy' ? 'Reporting…' : 'Report Phishing'}</span>
+            </button>
+          )}
 
           <button
             onClick={handleDismissThreatWarning}
