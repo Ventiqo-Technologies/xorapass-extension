@@ -18,6 +18,50 @@ export default defineConfig(({ mode }) => {
 
   // `--mode cardframe`: the all-frames Checkout Guard probe (src/content/
   // cardFrame.ts), same self-contained IIFE constraints as the content script.
+  // `--mode shieldnav`: the document_start navigation guard
+  // (src/content/shieldNav.ts), same self-contained IIFE constraints.
+  // `--mode pagehooks`: the MAIN-world page-behaviour hooks
+  // (src/content/pageHooks.ts) — no extension APIs, pure utilities only.
+  if (mode === 'pagehooks') {
+    return {
+      plugins,
+      build: {
+        target: 'esnext',
+        outDir: 'dist',
+        emptyOutDir: false,
+        rollupOptions: {
+          input: { pageHooks: resolve(__dirname, 'src/content/pageHooks.ts') },
+          output: {
+            format: 'iife',
+            inlineDynamicImports: true,
+            entryFileNames: '[name].js',
+          },
+        },
+      },
+      esbuild: { target: 'esnext' },
+    };
+  }
+
+  if (mode === 'shieldnav') {
+    return {
+      plugins,
+      build: {
+        target: 'esnext',
+        outDir: 'dist',
+        emptyOutDir: false,
+        rollupOptions: {
+          input: { shieldNav: resolve(__dirname, 'src/content/shieldNav.ts') },
+          output: {
+            format: 'iife',
+            inlineDynamicImports: true,
+            entryFileNames: '[name].js',
+          },
+        },
+      },
+      esbuild: { target: 'esnext' },
+    };
+  }
+
   if (mode === 'cardframe') {
     return {
       plugins,

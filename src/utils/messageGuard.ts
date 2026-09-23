@@ -99,6 +99,36 @@ export const KNOWN_MESSAGE_TYPES = [
   // inside a (usually cross-origin) payment iframe. Carries no data at all;
   // the background only relays "card fields exist" to the tab's top frame.
   'CARD_FIELDS_IN_FRAME',
+  // Always-on Shield. SHIELD_NAV_CHECK comes from the document_start content
+  // script and carries nothing — the background uses the sender frame's URL.
+  'SHIELD_NAV_CHECK',
+  // AI scam analysis: from the content script, carries only the redacted
+  // page extract (utils/pageContent.ts); the URL comes from the sender.
+  'SHIELD_AI_SCAN',
+  'SHIELD_GET_STATE',
+  'SHIELD_REFRESH',
+  'SHIELD_SIGN_OUT',
+  // Page-behaviour summary from the document_start script (shieldNav.ts):
+  // a behaviour kind only, never page content.
+  'SHIELD_BEHAVIOR',
+  // AI analysis of the email open in webmail (content script; minimised,
+  // redacted fields only — see content/emailInsight.ts).
+  'SHIELD_EMAIL_SCAN',
+  // Secure browsing / Is it Safe (popup only).
+  'SHIELD_TAB_PRIVACY',
+  'SHIELD_GET_PRIVACY_SETTINGS',
+  'SHIELD_SET_PRIVACY_SETTINGS',
+  'SHIELD_AUTH_HEADER',
+  // Popup-open/close relay: the background tells the active tab's content script
+  // that the popup is open (true) or closed (false) so the in-page risk overlay
+  // can suppress itself while the popup is showing the same warning inline.
+  'POPUP_STATE_CHANGED',
+  // Popup requests the active warning (if any) that the in-page overlay is
+  // displaying, so it can mirror it inline without a second risk scan.
+  'GET_ACTIVE_TAB_WARNING',
+  // Popup tells the content script the user dismissed the warning in the popup,
+  // so the in-page overlay card can also be closed.
+  'DISMISS_TAB_RISK_WARNING',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -152,6 +182,16 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   'AUDIT_EXTENSIONS',
   // Site Scanner: builds a report from the vault's saved hostnames — popup only.
   'SCAN_SITE',
+  // Shield account state / sign-out: popup only.
+  'SHIELD_GET_STATE',
+  'SHIELD_REFRESH',
+  'SHIELD_SIGN_OUT',
+  // Privacy settings, per-tab reports and the Shield credential (used by the
+  // popup's Is it Safe uploads) — never reachable from a web page.
+  'SHIELD_TAB_PRIVACY',
+  'SHIELD_GET_PRIVACY_SETTINGS',
+  'SHIELD_SET_PRIVACY_SETTINGS',
+  'SHIELD_AUTH_HEADER',
   // A page has no business arming (or re-arming, and so postponing) the
   // clipboard clear; only the popup copies passwords.
   'CLIPBOARD_COPIED',
@@ -282,6 +322,14 @@ export function validateMessage(
       // again. Optional -- a client that doesn't send one just falls back to
       // today's behavior (re-prompt on expiry) exactly as before.
       if (payload.refreshToken !== undefined && typeof payload.refreshToken !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      // offlineAuthHash: only on an OFFLINE unlock, so the background can sign
+      // in once the server is reachable again (UNLOCK_VAULT is popup-only).
+      if (
+        payload.offlineAuthHash !== undefined &&
+        (typeof payload.offlineAuthHash !== 'string' || !/^[0-9a-f]{32,256}$/i.test(payload.offlineAuthHash))
+      ) {
         return { ok: false, reason: 'bad-payload' };
       }
       break;
@@ -421,6 +469,57 @@ export function validateMessage(
       if (!payload || typeof payload.hostname !== 'string' || payload.hostname.length === 0) {
         return { ok: false, reason: 'bad-payload' };
       }
+      break;
+    case 'SHIELD_AI_SCAN': {
+      const page = payload?.page as { title?: unknown; text?: unknown } | undefined;
+      if (
+        !page ||
+        typeof page !== 'object' ||
+        typeof page.title !== 'string' ||
+        typeof page.text !== 'string' ||
+        page.text.length > 4000 ||
+        page.title.length > 400
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    }
+    case 'SHIELD_BEHAVIOR':
+      if (!payload || typeof payload.kind !== 'string' || payload.kind.length > 40) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'SHIELD_EMAIL_SCAN': {
+      const e = payload?.email as Record<string, unknown> | undefined;
+      const str = (v: unknown, max: number) => v === undefined || (typeof v === 'string' && v.length <= max);
+      const links = e?.links;
+      if (
+        !e ||
+        !str(e.sender_name, 200) ||
+        !str(e.sender_email, 254) ||
+        !str(e.reply_to, 254) ||
+        !str(e.subject, 400) ||
+        !str(e.body_excerpt, 2000) ||
+        !Array.isArray(links) ||
+        links.length > 20 ||
+        !links.every((l: any) => l && str(l.text, 200) && typeof l.href === 'string' && l.href.length <= 2048) ||
+        !Array.isArray(e.attachments) ||
+        (e.attachments as unknown[]).length > 10 ||
+        !(e.attachments as unknown[]).every((a) => typeof a === 'string' && a.length <= 200) ||
+        !Array.isArray(e.local_flags) ||
+        (e.local_flags as unknown[]).length > 12
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    }
+    case 'SHIELD_TAB_PRIVACY':
+      if (!payload || typeof payload.tabId !== 'number' || typeof payload.url !== 'string') {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
+    case 'SHIELD_SET_PRIVACY_SETTINGS':
+      if (!payload) return { ok: false, reason: 'bad-payload' };
       break;
     case 'SCAN_SITE':
       if (payload && payload.url !== undefined && typeof payload.url !== 'string') {

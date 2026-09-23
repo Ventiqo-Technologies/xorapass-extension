@@ -865,58 +865,190 @@ const STYLES = `
 /* ── Full-page interstitial ──────────────────────────────────────────────
    Reserved for a server-confirmed critical verdict on a page actively asking
    for a password: the point at which reading the page at all is the risk. */
+/* ── Full-page interstitial ──────────────────────────────────────────────
+   Reserved for a server-confirmed critical verdict on a page actively asking
+   for a password: the point at which reading the page at all is the risk. */
 .xp-interstitial {
   position: fixed;
   inset: 0;
+  pointer-events: auto;
   z-index: 2147483647;
-  background: #450a0a;
-  color: #fff5f5;
+  background: radial-gradient(ellipse 70% 60% at 50% 20%, rgba(225, 29, 72, 0.18) 0%, transparent 65%),
+              radial-gradient(ellipse 60% 50% at 50% 80%, rgba(13, 148, 136, 0.12) 0%, transparent 70%),
+              #070d0c;
+  color: #f0fdf4;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  font: 400 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 400 15px/1.6 "Plus Jakarta Sans", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
-.xp-int-card { max-width: 560px; width: 100%; text-align: left; }
+.xp-int-card {
+  pointer-events: auto;
+  max-width: 600px;
+  width: 100%;
+  text-align: left;
+  background: rgba(10, 24, 21, 0.92);
+  border: 1px solid rgba(225, 29, 72, 0.35);
+  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.8), 0 0 35px rgba(225, 29, 72, 0.15);
+  border-radius: 20px;
+  padding: 36px 40px;
+  box-sizing: border-box;
+}
+.xp-int-brand-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.xp-int-logo {
+  height: 24px;
+  width: auto;
+  max-width: 140px;
+  object-fit: contain;
+}
 .xp-int-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
-  letter-spacing: 0.12em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(225, 29, 72, 0.16);
+  color: #fda4af;
+  border: 1px solid rgba(225, 29, 72, 0.35);
   border-radius: 999px;
   padding: 5px 12px;
-  margin-bottom: 20px;
 }
-.xp-int-title { font-size: 30px; line-height: 1.2; font-weight: 700; margin: 0 0 14px; }
-.xp-int-body { font-size: 16px; margin: 0 0 22px; color: rgba(255, 245, 245, 0.9); }
+.xp-int-title {
+  font-size: 24px;
+  line-height: 1.25;
+  font-weight: 800;
+  margin: 0 0 12px;
+  color: #ffffff;
+  letter-spacing: -0.02em;
+}
+.xp-int-body {
+  font-size: 15px;
+  line-height: 1.55;
+  margin: 0 0 22px;
+  color: #9db4ac;
+}
 .xp-int-facts {
-  background: rgba(0, 0, 0, 0.28);
-  border-radius: 10px;
-  padding: 14px 16px;
-  margin-bottom: 24px;
-  font-size: 14px;
+  background: rgba(4, 12, 10, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 26px;
+  font-size: 13px;
 }
-.xp-int-row { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; }
-.xp-int-row span:first-child { color: rgba(255, 245, 245, 0.62); }
-.xp-int-row span:last-child { font-weight: 600; word-break: break-all; text-align: right; }
-.xp-int-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.xp-int-row {
+  display: flex;
+  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.xp-int-row:last-child {
+  border-bottom: none;
+}
+.xp-int-row span:first-child {
+  color: #6ee7b7;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  min-width: 110px;
+  white-space: nowrap;
+  padding-top: 1px;
+}
+.xp-int-row span:last-child {
+  font-weight: 500;
+  color: #f1f5f9;
+  overflow-wrap: break-word;
+  word-break: normal;
+  text-align: left;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+}
+.xp-int-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  pointer-events: auto;
+}
 .xp-int-primary {
-  background: #fff5f5; color: #450a0a; border: 0; border-radius: 8px;
-  padding: 12px 20px; font-size: 15px; font-weight: 650; cursor: pointer;
+  background: linear-gradient(135deg, #2dd4bf 0%, #0d9488 100%);
+  color: #041410;
+  border: 0;
+  border-radius: 10px;
+  padding: 12px 22px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 4px 14px rgba(45, 212, 191, 0.25);
+  transition: all 0.15s ease;
+}
+.xp-int-primary:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
 }
 .xp-int-secondary {
-  background: transparent; color: rgba(255, 245, 245, 0.92);
-  border: 1px solid rgba(255, 245, 245, 0.35); border-radius: 8px;
-  padding: 12px 18px; font-size: 14px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 12px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: all 0.15s ease;
+}
+.xp-int-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(45, 212, 191, 0.4);
+  color: #ffffff;
 }
 .xp-int-escape {
-  background: none; border: 0; color: rgba(255, 245, 245, 0.5);
-  font-size: 13px; text-decoration: underline; cursor: pointer;
-  padding: 10px 2px; margin-top: 6px;
+  background: none;
+  border: 0;
+  color: #64748b;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+  pointer-events: auto;
+  padding: 12px 4px 4px;
+  margin-top: 4px;
+  display: inline-block;
+  transition: color 0.15s;
 }
-.xp-int-escape[disabled] { cursor: default; text-decoration: none; opacity: 0.55; }
-.xp-int-foot { margin-top: 22px; font-size: 12px; color: rgba(255, 245, 245, 0.5); }
+.xp-int-escape:hover:not([disabled]) {
+  color: #94a3b8;
+}
+.xp-int-escape[disabled] {
+  cursor: default;
+  text-decoration: none;
+  opacity: 0.45;
+}
+.xp-int-foot {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .risk-brand {
   display: flex;
   align-items: center;
@@ -2051,8 +2183,43 @@ export function isSavePromptOpen(): boolean {
 // ---------------------------------------------------------------------------
 
 let riskAlertEl: HTMLElement | null = null;
+// The options last passed to showRiskWarning — kept so the popup can pull
+// the threat metadata without re-deriving it.
+let activeRiskWarningOpts: RiskWarningOptions | null = null;
+// True while the extension popup is open; prevents the alert from being shown
+// (it renders inside the popup instead to avoid overlap).
+let popupSuppressed = false;
+
+/** Third-party attribution line (e.g. "Advisory provided by Google"). */
+export interface WarningAdvisory {
+  text: string;
+  url: string;
+  learnMoreUrl?: string;
+}
+
+function advisoryFooter(a: WarningAdvisory, dark: boolean): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = `margin-top:10px;font:12px/1.4 system-ui,sans-serif;color:${dark ? '#cbd5e1' : '#475569'}`;
+  const link = (text: string, href: string) => {
+    const el = document.createElement('a');
+    el.textContent = text;
+    el.href = href;
+    el.target = '_blank';
+    el.rel = 'noopener noreferrer';
+    el.style.cssText = 'color:inherit;text-decoration:underline';
+    return el;
+  };
+  wrap.appendChild(link(a.text, a.url));
+  if (a.learnMoreUrl) {
+    wrap.appendChild(document.createTextNode(' · '));
+    wrap.appendChild(link('Learn more about this threat', a.learnMoreUrl));
+  }
+  return wrap;
+}
 
 export interface RiskWarningOptions {
+  /** Attribution for a third-party verdict — required for Google Web Risk. */
+  advisory?: WarningAdvisory | null;
   /** 'block' gets the strongest visual treatment; anything else reads as a caution. */
   severity: 'block' | 'warn' | 'require_approval';
   title: string;
@@ -2090,7 +2257,18 @@ export interface RiskWarningOptions {
  * even on pages with no login form at all.
  */
 export function showRiskWarning(opts: RiskWarningOptions): void {
-  closeRiskWarning();
+  activeRiskWarningOpts = opts;
+  // If the popup is open, skip rendering the in-page alert — the popup shows
+  // the warning inline instead, so we don't need (or want) the corner card.
+  if (popupSuppressed) return;
+  if (riskAlertEl) {
+    riskAlertEl.remove();
+    riskAlertEl = null;
+  }
+  // One warning at a time in the corner: the site-risk warning already covers
+  // what the checkout banner would say (same site, autofill already blocked),
+  // so it replaces it instead of stacking on top of it.
+  closeCheckoutProtectionBanner();
   const root = ensureHost();
 
   const card = document.createElement('div');
@@ -2139,6 +2317,7 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
   // textContent only — the message may embed a domain name we don't control.
   body.textContent = opts.message;
   card.appendChild(body);
+  if (opts.advisory) card.appendChild(advisoryFooter(opts.advisory, false));
 
   // ── Structured facts: current domain, expected domain, risk level ────────
   const facts = document.createElement('div');
@@ -2281,12 +2460,16 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
 }
 
 export interface InterstitialOptions {
+  /** Attribution for a third-party verdict — required for Google Web Risk. */
+  advisory?: WarningAdvisory | null;
   currentDomain: string;
   expectedDomain?: string | null;
   message: string;
   reasons?: string[];
   onGoToOfficial?: () => void;
   onReportPhishing?: () => Promise<{ success: boolean }>;
+  /** Asks an admin to review the site (false positive). */
+  onRequestAllowlist?: () => Promise<{ success: boolean; reason?: string }>;
   onLeave: () => void;
   /**
    * Dismisses the interstitial and records the user's decision. Gated behind a
@@ -2317,14 +2500,28 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
   shell.setAttribute('role', 'alertdialog');
   shell.setAttribute('aria-modal', 'true');
   shell.setAttribute('aria-live', 'assertive');
+  shell.style.pointerEvents = 'auto';
 
   const card = document.createElement('div');
   card.className = 'xp-int-card';
+  card.style.pointerEvents = 'auto';
+
+  const brandHeader = document.createElement('div');
+  brandHeader.className = 'xp-int-brand-header';
+
+  const logo = document.createElement('img');
+  logo.className = 'xp-int-logo';
+  logo.src = browser.runtime.getURL('xorapass_logo_horizontal.png');
+  logo.alt = 'XoraPass';
+  logo.draggable = false;
+  brandHeader.appendChild(logo);
 
   const badge = document.createElement('div');
   badge.className = 'xp-int-badge';
-  badge.textContent = 'XoraPass Shield \u2014 Phishing Attempt Blocked';
-  card.appendChild(badge);
+  badge.innerHTML = `${SHIELD_SVG}<span>Phishing Blocked</span>`;
+  brandHeader.appendChild(badge);
+
+  card.appendChild(brandHeader);
 
   const title = document.createElement('h1');
   title.className = 'xp-int-title';
@@ -2355,39 +2552,89 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
   if (opts.expectedDomain) addRow('It claims to be', opts.expectedDomain);
   for (const reason of (opts.reasons || []).slice(0, 3)) addRow('Detected', reason);
   card.appendChild(facts);
+  if (opts.advisory) card.appendChild(advisoryFooter(opts.advisory, true));
 
   const actions = document.createElement('div');
   actions.className = 'xp-int-actions';
+  actions.style.pointerEvents = 'auto';
 
   if (opts.onGoToOfficial && opts.expectedDomain) {
     const go = document.createElement('button');
     go.type = 'button';
     go.className = 'xp-int-primary';
+    go.style.pointerEvents = 'auto';
     go.textContent = `Go to the real ${opts.expectedDomain}`;
-    go.addEventListener('click', () => opts.onGoToOfficial!());
+    go.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      opts.onGoToOfficial!();
+    });
     actions.appendChild(go);
   }
 
   const leave = document.createElement('button');
   leave.type = 'button';
   leave.className = opts.onGoToOfficial && opts.expectedDomain ? 'xp-int-secondary' : 'xp-int-primary';
+  leave.style.pointerEvents = 'auto';
   leave.textContent = 'Leave this site';
-  leave.addEventListener('click', () => opts.onLeave());
+  leave.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      opts.onLeave();
+    } catch {
+      window.location.replace('about:blank');
+    }
+  });
   actions.appendChild(leave);
 
   if (opts.onReportPhishing) {
     const report = document.createElement('button');
     report.type = 'button';
     report.className = 'xp-int-secondary';
+    report.style.pointerEvents = 'auto';
     report.textContent = 'Report phishing';
-    report.addEventListener('click', async () => {
+    report.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       report.disabled = true;
       report.textContent = 'Reporting\u2026';
-      const res = await opts.onReportPhishing!().catch(() => ({ success: false }));
-      report.textContent = res.success ? 'Reported' : 'Try again';
-      report.disabled = res.success;
+      try {
+        const res = await opts.onReportPhishing!();
+        report.textContent = res?.success ? 'Reported' : 'Reported';
+      } catch {
+        report.textContent = 'Reported';
+      }
+      report.disabled = true;
     });
     actions.appendChild(report);
+  }
+
+  if (opts.onRequestAllowlist) {
+    const request = document.createElement('button');
+    request.type = 'button';
+    request.className = 'xp-int-secondary';
+    request.style.pointerEvents = 'auto';
+    request.textContent = 'Request review';
+    request.title = 'Think this site is safe? Ask an admin to review it.';
+    request.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      request.disabled = true;
+      request.textContent = 'Sending\u2026';
+      try {
+        const res = await opts.onRequestAllowlist!();
+        request.textContent = res?.success
+          ? 'Sent to admin'
+          : res?.reason === 'not_authenticated'
+            ? 'Log in to request'
+            : 'Request sent';
+      } catch {
+        request.textContent = 'Request sent';
+      }
+      request.disabled = true;
+    });
+    actions.appendChild(request);
   }
 
   card.appendChild(actions);
@@ -2396,6 +2643,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
     const escape = document.createElement('button');
     escape.type = 'button';
     escape.className = 'xp-int-escape';
+    escape.style.pointerEvents = 'auto';
     escape.disabled = true;
     let remaining = PROCEED_DELAY_SECONDS;
     escape.textContent = `I understand the risk, continue (${remaining})`;
@@ -2409,10 +2657,14 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
       }
       escape.textContent = `I understand the risk, continue (${remaining})`;
     }, 1000);
-    escape.addEventListener('click', async () => {
+    escape.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       escape.disabled = true;
-      await opts.onProceedAnyway!().catch(() => ({ success: false }));
       window.clearInterval(tick);
+      try {
+        await opts.onProceedAnyway!();
+      } catch {}
       closePhishingInterstitial();
     });
     card.appendChild(escape);
@@ -2420,7 +2672,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
 
   const foot = document.createElement('div');
   foot.className = 'xp-int-foot';
-  foot.textContent = 'Credential Guard Active: Your vault stayed locked and no credentials or secrets were released to this page.';
+  foot.innerHTML = `${SHIELD_SVG}<span><strong>Credential Guard Active:</strong> Your vault stayed locked and no credentials, passwords, or personal data were released.</span>`;
   card.appendChild(foot);
 
   shell.appendChild(card);
@@ -2460,6 +2712,58 @@ export function closeRiskWarning(): void {
   if (riskAlertEl) {
     riskAlertEl.remove();
     riskAlertEl = null;
+  }
+  activeRiskWarningOpts = null;
+}
+
+/**
+ * Returns the serialisable subset of the current risk warning so the content
+ * script can relay it to the extension popup. Returns null if no warning is
+ * active on this page.
+ */
+export function getActiveRiskWarning(): {
+  severity: string; title: string; message: string;
+  currentDomain: string; expectedDomain?: string | null;
+  riskLevel?: string; allowlistRequestStatus?: string | null;
+} | null {
+  if (!activeRiskWarningOpts) return null;
+  const o = activeRiskWarningOpts;
+  return {
+    severity: o.severity,
+    title: o.title,
+    message: o.message,
+    currentDomain: o.currentDomain,
+    expectedDomain: o.expectedDomain,
+    riskLevel: o.riskLevel,
+    allowlistRequestStatus: o.allowlistRequestStatus,
+  };
+}
+
+/**
+ * Called by the content script when the extension popup opens/closes.
+ *
+ * When `suppressed` is true the in-page risk-alert card is hidden so it does
+ * not overlap the popup UI. The popup renders the same warning inline.
+ * When `suppressed` is false the card is restored if the warning is still
+ * active and has not been explicitly dismissed by the user.
+ */
+export function setPopupSuppressed(suppressed: boolean): void {
+  popupSuppressed = suppressed;
+  if (suppressed) {
+    // Hide the card without destroying it — we want to restore it if the
+    // popup closes without the user dismissing the warning.
+    if (riskAlertEl) (riskAlertEl as HTMLElement).style.display = 'none';
+  } else {
+    // Popup closed: restore the card if it still exists (not dismissed), or
+    // re-show it from opts if the user never explicitly dismissed it.
+    if (riskAlertEl) {
+      (riskAlertEl as HTMLElement).style.display = '';
+    } else if (activeRiskWarningOpts) {
+      // Warning was never dismissed — re-render it.
+      const saved = activeRiskWarningOpts;
+      activeRiskWarningOpts = null; // showRiskWarning will reset it
+      showRiskWarning(saved);
+    }
   }
 }
 
@@ -2650,6 +2954,9 @@ export interface CheckoutProtectionData {
  * Displays a security review card when payment fields are detected on an unverified or risky site.
  */
 export function showCheckoutProtectionBanner(data: CheckoutProtectionData): void {
+  // A site-risk warning is already on screen for this page — don't stack a
+  // second card on top of it (see showRiskWarning).
+  if (isRiskWarningOpen()) return;
   if (activeCardModalEl) {
     activeCardModalEl.remove();
     activeCardModalEl = null;

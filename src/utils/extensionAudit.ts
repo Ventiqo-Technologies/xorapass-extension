@@ -1,5 +1,5 @@
 // Extension Security Audit Service
-// Scans installed extensions via chrome.management / browser.management
+// Scans installed extensions via browser.management / chrome.management
 // and calculates risk levels based on dangerous and broad permissions.
 
 export interface ExtensionPermissionRisk {
@@ -46,10 +46,107 @@ const ALL_URL_PATTERNS = [
   'https://*/*',
 ];
 
-export async function auditInstalledExtensions(): Promise<ExtensionAuditSummary> {
-  const managementApi = (globalThis as any).chrome?.management || (globalThis as any).browser?.management;
+// Additional high/medium permission weights (score, user explanation)
+const EXTRA_RISK_PERMISSIONS: Record<string, [number, string]> = {
+  downloads: [15, 'Can initiate and manage file downloads'],
+  management: [25, 'Can inspect, enable, disable or uninstall other browser extensions'],
+  nativeMessaging: [30, 'Can communicate with native applications outside the browser'],
+  geolocation: [10, 'Can access your physical location'],
+  history: [15, 'Can read and modify your complete browsing history'],
+  bookmarks: [10, 'Can read and modify your browser bookmarks'],
+  topSites: [10, 'Can view your most frequently visited websites'],
+  privacy: [20, 'Can alter core browser privacy and security settings'],
+};
 
-  if (!managementApi?.getAll) {
+// Known official extension store update hosts
+const STORE_UPDATE_HOSTS = [
+  'clients2.google.com',
+  'clients2.googleusercontent.com',
+  'addons.mozilla.org',
+  'extensionworkshop.com',
+  'microsoftedge.microsoft.com',
+];
+
+/** Store/sideload checks for one extension (pure, unit-tested). */
+export function installOriginFindings(ext: { installType?: string; updateUrl?: string; id?: string }, maliciousIds?: ReadonlySet<string>): [number, string][] {
+  const out: [number, string][] = [];
+  if (ext.id && maliciousIds?.has(ext.id)) out.push([100, 'Known malicious extension — remove it now']);
+  if (ext.installType === 'development') out.push([35, 'Loaded in developer mode (unpacked), not from a store']);
+  else if (ext.installType === 'sideload') out.push([40, 'Installed by another program, not from a store']);
+  if (ext.updateUrl) {
+    let host = '';
+    try {
+      host = new URL(ext.updateUrl).hostname;
+    } catch {
+      host = '';
+    }
+    if (host && !STORE_UPDATE_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) {
+      out.push([30, `Updates from outside the official store (${host})`]);
+    }
+  }
+  return out;
+}
+
+async function getAllInstalledItems(customApi?: any): Promise<any[]> {
+  const candidates = [
+    customApi,
+    (globalThis as any).chrome?.management,
+    (globalThis as any).browser?.management,
+  ].filter(Boolean);
+
+  for (const api of candidates) {
+    try {
+      if (typeof api.getAll === 'function') {
+        // 1. Try promise-based getAll() (standard MV3 / webextension-polyfill)
+        try {
+          const res = api.getAll();
+          if (res && typeof res.then === 'function') {
+            const items = await res;
+            if (Array.isArray(items) && items.length > 0) return items;
+          }
+        } catch (promiseErr) {
+          console.warn('[XoraPass] getAll promise-style call failed on candidate:', promiseErr);
+        }
+
+        // 2. Try callback-based getAll() (standard Chromium callback signature)
+        const cbItems: any[] = await new Promise((resolve) => {
+          try {
+            const maybePromise = api.getAll((items: any[]) => {
+              const lastErr = (globalThis as any).chrome?.runtime?.lastError;
+              if (lastErr) {
+                console.warn('[XoraPass] getAll callback reported runtime.lastError:', lastErr);
+                resolve([]);
+              } else {
+                resolve(Array.isArray(items) ? items : []);
+              }
+            });
+            // If the method returned a promise instead of using the callback
+            if (maybePromise && typeof maybePromise.then === 'function') {
+              maybePromise
+                .then((items: any[]) => resolve(Array.isArray(items) ? items : []))
+                .catch(() => resolve([]));
+            }
+          } catch {
+            resolve([]);
+          }
+        });
+        if (Array.isArray(cbItems) && cbItems.length > 0) return cbItems;
+      }
+    } catch (err) {
+      console.warn('[XoraPass] getAll installed items failed on candidate:', err);
+    }
+  }
+
+  return [];
+}
+
+export async function auditInstalledExtensions(
+  maliciousIds?: ReadonlySet<string>,
+  managementApi?: any
+): Promise<ExtensionAuditSummary> {
+  const allItems = await getAllInstalledItems(managementApi);
+
+  if (!allItems || allItems.length === 0) {
     return {
       totalExtensions: 0,
       enabledExtensions: 0,
@@ -61,18 +158,12 @@ export async function auditInstalledExtensions(): Promise<ExtensionAuditSummary>
     };
   }
 
-  const allItems: any[] = await new Promise((resolve) => {
-    try {
-      managementApi.getAll((items: any[]) => resolve(items || []));
-    } catch {
-      resolve([]);
-    }
-  });
-
-  // Filter for actual extensions (exclude themes or apps) and exclude ourselves
-  const myId = (globalThis as any).chrome?.runtime?.id || (globalThis as any).browser?.runtime?.id;
+  // Filter for installed extensions and apps (exclude purely cosmetic themes and ourselves)
+  const myId =
+    (globalThis as any).browser?.runtime?.id ||
+    (globalThis as any).chrome?.runtime?.id;
   const extensionsList = allItems.filter(
-    (item) => item.type === 'extension' && item.id !== myId
+    (item) => item && item.type !== 'theme' && item.id !== myId
   );
 
   const audited: ExtensionPermissionRisk[] = extensionsList.map((ext) => {
@@ -115,6 +206,21 @@ export async function auditInstalledExtensions(): Promise<ExtensionAuditSummary>
     if (hasAllUrls && threatReasons.length === 0) {
       riskScore += 20;
       threatReasons.push('Has broad read/write access to all visited websites');
+    }
+
+    // 5. Other powerful permissions
+    for (const p of permissions) {
+      const extra = EXTRA_RISK_PERMISSIONS[p];
+      if (extra) {
+        riskScore += extra[0];
+        threatReasons.push(extra[1]);
+      }
+    }
+
+    // 6. Where it came from (store, sideload, developer mode, known-bad list)
+    for (const [score, reason] of installOriginFindings(ext, maliciousIds)) {
+      riskScore += score;
+      threatReasons.unshift(reason);
     }
 
     // Classify Level

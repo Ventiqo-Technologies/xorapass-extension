@@ -25,6 +25,8 @@ export interface PageSignals {
   external_brand_origins?: string[];
   favicon_cross_origin?: boolean;
   has_favicon?: boolean;
+  /** Brand whose real favicon this page's own icon matches (computed on device). */
+  favicon_brand?: string;
 
   password_field_count?: number;
   hidden_input_count?: number;
@@ -57,7 +59,7 @@ export interface PageSignals {
 export const BRAND_LEXICON: ReadonlySet<string> = new Set([
   'paypal', 'microsoft', 'office365', 'outlook',
   'google', 'gmail', 'apple', 'icloud',
-  'amazon', 'aws', 'netflix', 'facebook',
+  'amazon', 'aws', 'netflix', 'facebook', 'meta',
   'instagram', 'whatsapp', 'linkedin', 'twitter',
   'github', 'gitlab', 'dropbox', 'slack',
   'zoom', 'docusign', 'adobe', 'stripe',
@@ -65,6 +67,9 @@ export const BRAND_LEXICON: ReadonlySet<string> = new Set([
   'chase', 'wellsfargo', 'hsbc', 'barclays',
   'citibank', 'revolut', 'wise', 'westernunion',
   'dhl', 'fedex', 'ups', 'usps', 'royalmail',
+  'maxis', 'celcom', 'digi', 'unifi', 'singtel',
+  'dinersclub', 'clubmiles', 'pichincha', 'bancoguayaquil',
+  'produbanco', 'mercadopago', 'mercadolibre', 'bbva', 'santander',
 ]);
 
 /** Multi-word brand spellings folded to their lexicon token. */
@@ -73,6 +78,12 @@ const BRAND_ALIASES: ReadonlyArray<[RegExp, string]> = [
   [/\bwells\s*fargo\b/g, 'wellsfargo'],
   [/\bwestern\s*union\b/g, 'westernunion'],
   [/\broyal\s*mail\b/g, 'royalmail'],
+  [/\bdiners\s*club\b/g, 'dinersclub'],
+  [/\bclub\s*miles\b/g, 'clubmiles'],
+  [/\bbanco\s*pichincha\b/g, 'pichincha'],
+  [/\bbanco\s*guayaquil\b/g, 'bancoguayaquil'],
+  [/\bmercado\s*pago\b/g, 'mercadopago'],
+  [/\bmercado\s*libre\b/g, 'mercadolibre'],
 ];
 
 const MAX_TOKENS = 8;
@@ -239,6 +250,33 @@ const WINDOW_CONTROL_RE = /titlebar|window-control|traffic-light|close-btn|windo
  * file. Never throws: a page that resists inspection yields fewer signals, not
  * an exception on the autofill path.
  */
+let faviconBrandMatch: string | null = null;
+let faviconPrimed: Promise<void> | null = null;
+
+/**
+ * Hashes this page's own favicon (same-origin or data: only — a cross-origin
+ * icon is already a signal of its own) and matches it against the bundled
+ * brand icons. Runs once per page; the result joins later page signals.
+ */
+export function primeFaviconBrand(): Promise<void> {
+  if (faviconPrimed) return faviconPrimed;
+  faviconPrimed = (async () => {
+    try {
+      const { loadAndHashIcon, matchFaviconBrand } = await import('./faviconHash');
+      const { FAVICON_BRANDS } = await import('./faviconBrands');
+      const link = document.querySelector('link[rel~="icon"]') as HTMLLinkElement | null;
+      const href = link?.href || `${location.origin}/favicon.ico`;
+      const u = new URL(href, location.href);
+      if (u.protocol !== 'data:' && u.origin !== location.origin) return;
+      const hash = await loadAndHashIcon(u.href);
+      faviconBrandMatch = matchFaviconBrand(hash, location.hostname.toLowerCase(), FAVICON_BRANDS);
+    } catch {
+      /* best effort */
+    }
+  })();
+  return faviconPrimed;
+}
+
 export function collectPageSignals(): PageSignals {
   try {
     const loc = window.location;
@@ -274,6 +312,7 @@ export function collectPageSignals(): PageSignals {
     signals.external_script_origins = externalOrigins.size;
 
     // ── Favicon ──
+    if (faviconBrandMatch) signals.favicon_brand = faviconBrandMatch;
     const icon = document.querySelector('link[rel~="icon"]');
     signals.has_favicon = !!icon;
     if (icon) {

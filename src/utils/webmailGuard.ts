@@ -180,13 +180,17 @@ export function analyzeEmailSender(rawSender: string): EmailSenderAnalysis {
 /**
  * Checks if the current page is a supported webmail interface.
  */
-export function isSupportedWebmail(hostname: string): boolean {
+export function isSupportedWebmail(hostname: string, pathname?: string): boolean {
   const h = (hostname || '').toLowerCase();
+  // iCloud: only its Mail app (pathname unknown → allow; callers in the
+  // page pass it).
+  if (h === 'www.icloud.com') return pathname === undefined || pathname.startsWith('/mail');
   return (
     h === 'mail.google.com' ||
     h === 'outlook.live.com' ||
     h === 'outlook.office.com' ||
     h === 'outlook.office365.com' ||
+    h === 'outlook.cloud.microsoft' ||
     h === 'mail.yahoo.com' ||
     h.endsWith('.mail.yahoo.com') ||
     h === 'mail.aol.com' ||
@@ -194,7 +198,10 @@ export function isSupportedWebmail(hostname: string): boolean {
     h === 'mail.protonmail.com' ||
     h === 'mail.zoho.com' ||
     h === 'mail.zoho.eu' ||
-    h === 'mail.zoho.in'
+    h === 'mail.zoho.in' ||
+    /(^|\.)fastmail\.com$/.test(h) ||
+    /^(navigator|3c)(-[a-z]+)?\.(gmx\.(net|com|de|at|ch|fr|es|co\.uk)|mail\.com)$/.test(h) ||
+    /^mail\.yandex\.(com|ru|com\.tr|kz|by)$/.test(h)
   );
 }
 

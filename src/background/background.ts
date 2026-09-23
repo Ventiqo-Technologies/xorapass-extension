@@ -1,6 +1,6 @@
 import browser from 'webextension-polyfill';
-import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain, assessDomainRisk } from '../utils/siteTrust';
-import { disabledDomainRiskAssessment, type DomainRiskAssessment } from '../utils/domainRisk';
+import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
+import { disabledDomainRiskAssessment, assessWithCatalog, type DomainRiskAssessment } from '../utils/domainRisk';
 import {
   checkDomainRiskRemote,
   mergeLocalAndRemoteRisk,
@@ -18,10 +18,39 @@ import {
 import { isFillableCategory } from '../utils/fillPolicy';
 import type { PageSignals } from '../utils/pageSignals';
 import { buildSiteSafetyReport } from '../utils/siteScanner';
+import {
+  initShield,
+  handleShieldAlarm,
+  getShieldConfig,
+  getShieldCredential,
+  isShieldActive,
+  shieldFeature,
+  ensureShieldDeviceToken,
+  shieldSignOut,
+  checkBlocklist,
+  getShieldState,
+  refreshShieldConfig,
+  refreshShieldEntitlement,
+  refreshBlocklist,
+} from './shield';
+import {
+  initShieldPrivacy,
+  recordBehavior,
+  getTabBehavior,
+  getPrivacySettings,
+  setPrivacySettings,
+  getMaliciousExtensionIds,
+} from './shieldPrivacy';
+import { decideNavigation, isTrustedHost, isAllowlistedHost, shouldEscalateRemote, threatReason } from '../utils/shieldEngine';
+import { sanitizeUrlForRiskCheck, authHeaderValue } from '../utils/domainRiskService';
+import type { ShieldConfig } from '../utils/shieldConfig';
 import { unwrapLink, isShortenerUrl, buildLinkVerdict } from '../utils/linkInspect';
-import { KNOWN_BRAND_DOMAINS } from '../utils/promptSafety';
+import { mergeExtraBrands } from '../utils/brandCatalog';
+import { scorePageSignals, applyPageRisk } from '../utils/pageRisk';
 import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
+import { isSupportedWebmail } from '../utils/webmailGuard';
+import { isLocalOrPrivateHost } from '../utils/localHosts';
 import {
   encryptPayload,
   decryptPayload,
@@ -295,7 +324,12 @@ async function scheduleClipboardClear(): Promise<number> {
   return seconds;
 }
 
+// Always-on Shield: config/kill switch, entitlement and blocklist sync.
+initShield({ getJwt });
+initShieldPrivacy();
+
 browser.alarms.onAlarm.addListener((alarm) => {
+  if (handleShieldAlarm(alarm.name)) return;
   // When the idle timer fires, purge the decrypted vault from session storage.
   if (alarm.name === AUTO_LOCK_ALARM) {
     // console.debug('[XoraPass] auto-lock fired -> clearing session');
@@ -518,17 +552,65 @@ async function apiRefresh(): Promise<string> {
   return refreshInFlight;
 }
 
+/**
+ * After an OFFLINE unlock (vault opened from the local cache because the
+ * server was unreachable) there is no access or refresh token. Once the
+ * server answers again, sign in with the login proof kept for exactly this
+ * (storage.session, memory-only, cleared on lock) and turn the session into
+ * a normal online one. Accounts with 2-step verification can't do this
+ * silently — the popup then offers "Sign in again".
+ */
+async function offlineReauth(): Promise<string> {
+  const res = await browser.storage.session.get(['offlineReauth', 'unlocked']);
+  const r = (res as Record<string, any>).offlineReauth as { email?: string; clientAuthHash?: string } | undefined;
+  if (!res.unlocked || !r?.email || !r?.clientAuthHash) return '';
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: r.email, client_auth_hash: r.clientAuthHash }),
+    });
+  } catch {
+    return ''; // still offline — keep it for the next attempt
+  }
+  const data = resp.ok ? await resp.json().catch(() => null) : null;
+  if (!data || data.mfa_required || typeof data.access_token !== 'string') {
+    // Wrong/changed password or 2-step verification: stop retrying.
+    await browser.storage.session.remove('offlineReauth');
+    return '';
+  }
+  const update: Record<string, unknown> = { jwt: data.access_token, token: data.access_token, offline: false };
+  if (typeof data.refresh_token === 'string') update.refreshToken = data.refresh_token;
+  await browser.storage.session.set(update);
+  await browser.storage.session.remove('offlineReauth');
+  void ensureShieldDeviceToken(data.access_token, r.email);
+  return data.access_token;
+}
+
 async function doTokenRefresh(): Promise<string> {
   const res = await browser.storage.session.get(['refreshToken', 'unlocked']);
   const refreshToken = (res as Record<string, unknown>).refreshToken;
-  if (!res.unlocked || typeof refreshToken !== 'string' || !refreshToken) return '';
+  if (!res.unlocked) return '';
+  if (typeof refreshToken !== 'string' || !refreshToken) return offlineReauth();
 
-  try {
-    const resp = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+  // A network error may mean the server rotated the token but the answer was
+  // lost; the server accepts one retry of the old token (reuse grace), so try
+  // again once right away instead of waiting for the next alarm.
+  const post = () =>
+    fetch(`${API_BASE_URL}/api/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
+  try {
+    let resp: Response;
+    try {
+      resp = await post();
+    } catch {
+      await new Promise((r) => setTimeout(r, 2000));
+      resp = await post();
+    }
     if (!resp.ok) {
       console.debug('[XoraPass] token refresh failed:', resp.status);
       return '';
@@ -789,6 +871,7 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
   if (changeInfo.status === 'complete') {
     void pushAiFillCheck(tabId, tab.url);
+    void checkAndPushTabRisk(tabId, tab.url);
   }
 });
 
@@ -894,6 +977,215 @@ function sensitivityForItems(items: VaultItem[]): 'standard' | 'high' | 'critica
  * RELEASE cannot drift apart — they must reach the same verdict from the same
  * inputs, which is the bug this consolidates away.
  */
+/** Local-heuristic tuning from the Shield remote config. */
+function shieldAssessOptions(cfg: ShieldConfig) {
+  return {
+    disabledRules: cfg.heuristics.disabled_rules,
+    warnScore: cfg.heuristics.warn_score,
+    blockScore: cfg.heuristics.block_score,
+  };
+}
+
+/**
+ * The listing-path L3 gate: ask the server only for pages the local layers
+ * found suspicious, or untrusted pages asking for a credential.
+ */
+function listingRemoteGate(
+  hostname: string,
+  knownHosts: string[],
+  formContext: FormThreatContext | undefined,
+  pageSignals: PageSignals | undefined,
+  scamCues?: string[]
+) {
+  return (local: DomainRiskAssessment, cfg: ShieldConfig): boolean => {
+    const actionHost = formContext?.actionUrl ? extractHostname(formContext.actionUrl) : '';
+    return shouldEscalateRemote({
+      config: cfg,
+      local,
+      trusted: isTrustedHost(hostname, knownHosts, cfg.trusted_domains),
+      pageSignals,
+      hasCredentialForm: !!(formContext?.hasPasswordField || formContext?.isLoginForm),
+      hasLeadCaptureForm: !!formContext?.hasLeadCaptureForm,
+      crossOriginFormAction: !!actionHost && registrableDomain(actionHost) !== registrableDomain(hostname),
+      scamCues,
+    });
+  };
+}
+
+// Per-page AI verdicts, so a reload or SPA re-render doesn't re-ask the
+// server (which has its own shared cache and quota on top).
+const aiScanCache = new Map<string, { res: AiScanResult; expires: number }>();
+const AI_SCAN_CACHE_MS = 30 * 60 * 1000;
+
+interface AiScanResult {
+  verdict: 'scam' | 'suspicious' | 'benign' | 'unavailable';
+  risk_score: number;
+  scam_type?: string;
+  title?: string;
+  message?: string;
+}
+
+/**
+ * AI scam analysis for the sender's top frame. Paid (always-on entitlement),
+ * kill-switchable, and never for allowlisted, saved or trusted sites. The
+ * URL is the sender frame's real URL (query-stripped), never the payload's.
+ */
+async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload: any): Promise<AiScanResult> {
+  const none: AiScanResult = { verdict: 'unavailable', risk_score: 0 };
+  if (sender.frameId !== 0) return none;
+  const url = sender.url || sender.tab?.url || '';
+  if (!/^https?:\/\//i.test(url) || isLocalOrPrivateHost(extractHostname(url))) return none;
+  const cfg = await getShieldConfig();
+  if (!cfg.shield_enabled || !cfg.ai_scan.enabled) return none;
+  if (!(await shieldFeature('ai_scan'))) return none;
+
+  const host = extractHostname(url);
+  const [allowlist, session] = await Promise.all([
+    getDomainAllowlist(),
+    browser.storage.session.get(['unlocked', 'vaultItems']),
+  ]);
+  const items = (session as Record<string, unknown>).unlocked
+    ? ((session as Record<string, unknown>).vaultItems as VaultItem[] | undefined)
+    : undefined;
+  const knownHosts = (items || []).filter((i) => !!i.url).map((i) => extractHostname(i.url!)).filter(Boolean);
+  if (isAllowlistedHost(host, allowlist) || isTrustedHost(host, knownHosts, cfg.trusted_domains)) return none;
+
+  const cleanUrl = sanitizeUrlForRiskCheck(url);
+  const page = payload?.page;
+  const cacheKey = `${cleanUrl}|${typeof page?.title === 'string' ? page.title : ''}`;
+  const hit = aiScanCache.get(cacheKey);
+  if (hit && hit.expires > Date.now()) return hit.res;
+
+  const cred = await getShieldCredential();
+  if (!cred) return none;
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/shield/ai-scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
+      body: JSON.stringify({ url: cleanUrl, page, page_signals: payload?.pageSignals }),
+    });
+    if (!res.ok) return none;
+    const data = (await res.json()) as Partial<AiScanResult>;
+    const out: AiScanResult = {
+      verdict: data.verdict === 'scam' || data.verdict === 'suspicious' || data.verdict === 'benign' ? data.verdict : 'unavailable',
+      risk_score: typeof data.risk_score === 'number' ? Math.max(0, Math.min(100, data.risk_score)) : 0,
+      scam_type: typeof data.scam_type === 'string' ? data.scam_type : undefined,
+      title: typeof data.title === 'string' ? data.title.slice(0, 120) : undefined,
+      message: typeof data.message === 'string' ? data.message.slice(0, 600) : undefined,
+    };
+    if (out.verdict !== 'unavailable') {
+      aiScanCache.set(cacheKey, { res: out, expires: Date.now() + AI_SCAN_CACHE_MS });
+      if (aiScanCache.size > 500) {
+        const now = Date.now();
+        for (const [k, v] of aiScanCache) if (v.expires < now) aiScanCache.delete(k);
+      }
+    }
+    return out;
+  } catch {
+    return none;
+  }
+}
+
+// ── AI email analysis ───────────────────────────────────────────────────────
+// The content script sends the OPEN email's minimised fields (already
+// redacted on the device). Paid + rolled out + kill-switchable; only from a
+// top frame of a supported webmail. Results cached for an hour.
+
+const emailScanCache = new Map<string, { res: unknown; expires: number }>();
+
+async function handleShieldEmailScan(
+  sender: browser.Runtime.MessageSender,
+  email: any,
+  trigger: 'auto' | 'button' = 'button'
+): Promise<unknown> {
+  const none = { verdict: 'unavailable' };
+  const senderUrl = sender.url || sender.tab?.url || '';
+  const host = extractHostname(senderUrl);
+  let path = '/';
+  try {
+    path = new URL(senderUrl).pathname;
+  } catch {
+    /* keep '/' */
+  }
+  if (sender.frameId !== 0 || !isSupportedWebmail(host, path)) return none;
+  const cfg = await getShieldConfig();
+  if (!cfg.shield_enabled || !cfg.email_scan.enabled || !(await shieldFeature('email_ai'))) {
+    return { verdict: 'unavailable', reason: 'not_available' };
+  }
+  const key = JSON.stringify(email);
+  const hit = emailScanCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.res;
+  const cred = await getShieldCredential();
+  if (!cred) return none;
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/shield/email-scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
+      body: JSON.stringify({ ...email, trigger: trigger === 'auto' ? 'auto' : 'button' }),
+    });
+    if (!res.ok) return none;
+    const data = await res.json();
+    if (data?.verdict && data.verdict !== 'unavailable') {
+      emailScanCache.set(key, { res: data, expires: Date.now() + 60 * 60 * 1000 });
+      if (emailScanCache.size > 200) emailScanCache.delete(emailScanCache.keys().next().value as string);
+    }
+    return data;
+  } catch {
+    return none;
+  }
+}
+
+/** Folds a confirmed blocklist hit into an assessment as a hard block. */
+function blocklistAssessment(base: DomainRiskAssessment, threatType: string): DomainRiskAssessment {
+  return {
+    ...base,
+    riskScore: 100,
+    riskLevel: 'critical',
+    decision: 'block',
+    reasons: Array.from(new Set([threatReason(threatType), ...base.reasons])),
+    safeWarningMessage: threatReason(threatType),
+  };
+}
+
+/**
+ * Navigation guard (L0 → L1 → L2) for a top-level page that is still
+ * loading. Fast and local; the server is only contacted to confirm a
+ * blocklist prefix hit.
+ */
+async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
+  const cfg = await getShieldConfig();
+  const url = sender.url || sender.tab?.url || '';
+  const typingGuardMs = cfg.nav_guard.typing_guard_ms;
+  const allow = { action: 'allow' as const, layer: 'disabled', reasons: [] as string[], typingGuardMs };
+  if (sender.frameId !== 0 || !/^https?:\/\//i.test(url)) return allow;
+  if (isLocalOrPrivateHost(extractHostname(url))) return allow;
+  const active = await isShieldActive();
+  if (!active) return allow;
+
+  const host = extractHostname(url);
+  // Gradual rollout: MAIN-world behaviour hooks (ClickFix, wallets, lock-in).
+  const hooks = await shieldFeature('page_hooks');
+  if (hasRiskApproval(sender.tab?.id, host)) return { ...allow, layer: 'allowlist', hooks };
+
+  const [allowlist, session] = await Promise.all([
+    getDomainAllowlist(),
+    browser.storage.session.get(['unlocked', 'vaultItems']),
+  ]);
+  const items = (session as Record<string, unknown>).unlocked
+    ? ((session as Record<string, unknown>).vaultItems as VaultItem[] | undefined)
+    : undefined;
+  const knownHosts = (items || [])
+    .filter((i) => !!i.url)
+    .map((i) => extractHostname(i.url!))
+    .filter(Boolean);
+
+  const blocklistHit = await checkBlocklist(url);
+  // Saved sites + built-in brand catalog, so this works while locked too.
+  const local = assessWithCatalog(host, knownHosts, allowlist, url, shieldAssessOptions(cfg), mergeExtraBrands(cfg.extra_brands));
+  const decision = decideNavigation({ url, config: cfg, active, userAllowlist: allowlist, knownHosts, blocklistHit, local });
+  return { ...decision, typingGuardMs, hooks };
+}
+
 async function evaluateDomainRisk(opts: {
   hostname: string;
   currentUrl: string;
@@ -904,11 +1196,31 @@ async function evaluateDomainRisk(opts: {
   aiContext?: { isAISession?: boolean; agentId?: string; toolName?: string };
   sensitivity: 'standard' | 'high' | 'critical';
   pageSignals?: PageSignals;
+  /**
+   * Vault locked: the plan gate is the always-on Shield entitlement (the
+   * session JWT is gone), and calls authenticate with the Shield device token.
+   */
+  locked?: boolean;
+  /**
+   * L3 gate (see shouldEscalateRemote). Omitted → always ask the server,
+   * which is what the credential-RELEASE paths want.
+   */
+  remoteGate?: (local: DomainRiskAssessment, cfg: ShieldConfig) => boolean;
 }): Promise<DomainRiskAssessment> {
-  const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
-  if (!domainRiskOn) return disabledDomainRiskAssessment(opts.hostname);
+  const cfg = await getShieldConfig();
+  const domainRiskOn = opts.locked
+    ? await isShieldActive()
+    : await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
+  if (!domainRiskOn || isLocalOrPrivateHost(opts.hostname)) return disabledDomainRiskAssessment(opts.hostname);
 
-  let risk = assessDomainRisk(opts.hostname, opts.knownHosts, opts.allowlist, opts.currentUrl);
+  const brands = mergeExtraBrands(cfg.extra_brands);
+  let risk = assessWithCatalog(opts.hostname, opts.knownHosts, opts.allowlist, opts.currentUrl, shieldAssessOptions(cfg), brands);
+  // Page structure (brand shown vs. real domain, password field, hosting,
+  // fake windows), scored locally — works offline and without the server.
+  risk = applyPageRisk(risk, scorePageSignals(opts.pageSignals, opts.hostname, brands), shieldAssessOptions(cfg));
+
+  // Remote kill switch applies to every path; the gate only to the listing.
+  if (!cfg.remote.enabled || (opts.remoteGate && !opts.remoteGate(risk, cfg))) return risk;
 
   const remoteRisk = await checkDomainRiskRemote(
     opts.currentUrl,
@@ -917,7 +1229,7 @@ async function evaluateDomainRisk(opts: {
     opts.aiContext,
     opts.sensitivity,
     globalThis.fetch,
-    getJwt,
+    getShieldCredential,
     opts.pageSignals
   );
 
@@ -928,6 +1240,62 @@ async function evaluateDomainRisk(opts: {
   // code and let a user-level allowlist toggle silently override an org
   // blocklist — precisely what the policy_enforced flag exists to prevent.
   return remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
+}
+
+/**
+ * Proactive navigation check: checks newly completed tab navigations against
+ * Shield threat intelligence and pushes TAB_RISK_UPDATE immediately if risky.
+ */
+async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
+  if (!url || !/^https?:\/\//i.test(url)) return;
+  const hostname = extractHostname(url);
+  if (!hostname || isLocalOrPrivateHost(hostname)) return;
+
+  try {
+    const [disabled, allowlist, isShieldOn] = await Promise.all([
+      isSiteDisabled(hostname),
+      getDomainAllowlist(),
+      isShieldActive(),
+    ]);
+
+    if (disabled || !isShieldOn) return;
+    if (hasRiskApproval(tabId, hostname)) return;
+
+    const res = await browser.storage.session.get(['unlocked', 'vaultItems']);
+    const items = (res as Record<string, unknown>).unlocked
+      ? ((res as Record<string, unknown>).vaultItems as VaultItem[] | undefined)
+      : undefined;
+    const knownHosts = (items || [])
+      .filter((i) => !!i.url)
+      .map((i) => extractHostname(i.url!))
+      .filter(Boolean);
+
+    const matching = (items || []).filter(
+      (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)
+    );
+
+    const risk = await evaluateDomainRisk({
+      hostname,
+      currentUrl: url,
+      knownHosts,
+      allowlist,
+      savedDomain: matching[0]?.url ? extractHostname(matching[0].url) : '',
+      sensitivity: sensitivityForItems(matching),
+      remoteGate: listingRemoteGate(hostname, knownHosts, undefined, undefined),
+    });
+
+    if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
+      browser.tabs
+        .sendMessage(tabId, {
+          type: 'TAB_RISK_UPDATE',
+          payload: { risk },
+          risk,
+        })
+        .catch(() => {});
+    }
+  } catch (err) {
+    console.debug('[XoraPass] checkAndPushTabRisk error:', err);
+  }
 }
 
 /**
@@ -997,8 +1365,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       token?: string;
       offline?: boolean;
       refreshToken?: string;
+      offlineAuthHash?: string;
     };
-    const { decryptedItems, email, jwt, encKey, token, offline, refreshToken } = payload;
+    const { decryptedItems, email, jwt, encKey, token, offline, refreshToken, offlineAuthHash } = payload;
     // token and encKey are held so the popup can re-fetch and decrypt the vault
     // without a full re-authentication. They live in storage.session, which is
     // memory-only, cleared on browser restart, and already restricted to
@@ -1024,12 +1393,17 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // never has one to begin with, and everything falls back to today's
     // behavior: the access token dies at its own natural expiry.
     if (refreshToken) sessionData.refreshToken = refreshToken;
+    // Offline unlock: keep the login proof (memory-only, cleared on lock) so
+    // the session can sign in to the server once it is reachable again.
+    if (offline && offlineAuthHash) sessionData.offlineReauth = { email, clientAuthHash: offlineAuthHash };
     return browser.storage.session
       .set(sessionData)
       .then(() => {
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
         void scheduleTokenRefresh();
+        // Always-on Shield: get/rotate this browser's locked-mode credential.
+        if (jwt) void ensureShieldDeviceToken(jwt, email);
         // console.debug('[XoraPass] UNLOCK_VAULT -> session stored (', (decryptedItems as unknown[]).length, 'items )');
         return { success: true };
       });
@@ -1084,9 +1458,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const enabled = !!msg.payload?.enabled;
     clearRemoteRiskCache();
     clearRiskApprovals();
-    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => ({
-      success,
-    }));
+    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => {
+      // The user's own toggle is part of the always-on Shield entitlement.
+      void refreshShieldEntitlement();
+      return { success };
+    });
   }
 
   if (type === 'GET_DOMAIN_RISK_HISTORY') {
@@ -1189,6 +1565,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const formContext: FormThreatContext | undefined = msg.payload.formContext;
     // Structural page features from the content script (see pageSignals.ts).
     const pageSignals: PageSignals | undefined = msg.payload.pageSignals;
+    const scamCues: string[] | undefined = Array.isArray(msg.payload.scamCues)
+      ? msg.payload.scamCues.filter((c: unknown): c is string => typeof c === 'string')
+      : undefined;
     const senderTabId = sender.tab?.id;
     if (!hostname) {
       return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null });
@@ -1202,7 +1581,29 @@ browser.runtime.onMessage.addListener((message, sender) => {
       ]);
 
       if (!res.unlocked || !res.vaultItems) {
-        return { credentials: [], disabled, lookalike: null, risk: null };
+        // Locked: nothing to fill, but always-on Shield still protects the
+        // page (paid entitlement; device-token auth). With no saved sites to
+        // compare against, detection comes from the blocklist, the server's
+        // threat intel and its page classifier — escalated only for pages
+        // that ask for a credential (see listingRemoteGate).
+        if (disabled || !(await isShieldActive())) {
+          return { credentials: [], disabled, lookalike: null, risk: null };
+        }
+        const lockedRisk = await evaluateDomainRisk({
+          hostname,
+          currentUrl,
+          knownHosts: [],
+          allowlist,
+          savedDomain: '',
+          formContext,
+          pageSignals,
+          sensitivity: 'standard',
+          locked: true,
+          remoteGate: listingRemoteGate(hostname, [], formContext, pageSignals, scamCues),
+        });
+        const hit = lockedRisk.decision === 'block' ? null : await checkBlocklist(currentUrl);
+        const risk = hit ? blocklistAssessment(lockedRisk, hit.threatType) : lockedRisk;
+        return { credentials: [], disabled, lookalike: null, risk, locked: true };
       }
 
       // If the user disabled autofill for this site, offer nothing.
@@ -1239,6 +1640,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         formContext,
         pageSignals,
         sensitivity: sensitivityForItems(matching),
+        remoteGate: listingRemoteGate(hostname, knownHosts, formContext, pageSignals, scamCues),
       });
 
       // Maintain legacy lookalike compatibility for existing UI callers
@@ -1645,7 +2047,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       aiContext,
       sensitivity,
       globalThis.fetch,
-      getJwt,
+      // Works while locked too (Shield device token).
+      getShieldCredential,
       pageSignals
     ).then((result) => ({
       risk: result,
@@ -1662,6 +2065,75 @@ browser.runtime.onMessage.addListener((message, sender) => {
       .sendMessage(tabId, { type: 'CARD_FIELDS_IN_FRAME' }, { frameId: 0 })
       .then(() => ({ success: true }))
       .catch(() => ({ success: false }));
+  }
+
+  if (type === 'SHIELD_NAV_CHECK') {
+    // Navigation-time check from the document_start script (shieldNav.ts).
+    // The URL is the sender frame's REAL URL, never a payload value.
+    return handleShieldNavCheck(sender);
+  }
+
+  if (type === 'SHIELD_AI_SCAN') {
+    return handleShieldAiScan(sender, msg.payload);
+  }
+
+  if (type === 'SHIELD_GET_STATE') {
+    return getShieldState();
+  }
+
+  if (type === 'SHIELD_REFRESH') {
+    return (async () => {
+      await refreshShieldConfig();
+      await refreshShieldEntitlement();
+      await refreshBlocklist();
+      return getShieldState();
+    })();
+  }
+
+  if (type === 'SHIELD_SIGN_OUT') {
+    return shieldSignOut().then(() => ({ success: true }));
+  }
+
+  if (type === 'SHIELD_EMAIL_SCAN') {
+    return handleShieldEmailScan(sender, msg.payload?.email, msg.payload?.trigger);
+  }
+
+  if (type === 'SHIELD_BEHAVIOR') {
+    return Promise.resolve(recordBehavior(sender, msg.payload));
+  }
+
+  if (type === 'SHIELD_TAB_PRIVACY') {
+    const { tabId, url } = msg.payload as { tabId: number; url: string };
+    return Promise.resolve(getTabBehavior(tabId, url));
+  }
+
+  if (type === 'SHIELD_GET_PRIVACY_SETTINGS') {
+    return getPrivacySettings();
+  }
+
+  if (type === 'SHIELD_SET_PRIVACY_SETTINGS') {
+    return setPrivacySettings(msg.payload || {});
+  }
+
+  if (type === 'SHIELD_AUTH_HEADER') {
+    // Popup-only (messageGuard): the Is it Safe file upload is multipart,
+    // which can't cross runtime messaging, so the popup calls the API itself.
+    return (async () => {
+      const [cred, active, cfg, state] = await Promise.all([
+        getShieldCredential(),
+        isShieldActive(),
+        getShieldConfig(),
+        getShieldState(),
+      ]);
+      return {
+        header: cred ? authHeaderValue(cred) : '',
+        active,
+        apiBase: API_BASE_URL,
+        config: cfg,
+        features: active ? state.entitlement?.features || {} : {},
+        aiChecks: active ? state.entitlement?.aiChecks || null : null,
+      };
+    })();
   }
 
   if (type === 'SCAN_SITE') {
@@ -1735,7 +2207,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // just whichever vault item happens to be first.
       let risk = null;
       if (domainRiskOn) {
-        const local = assessDomainRisk(extractHostname(targetUrl), savedDomains, allowlist, targetUrl);
+        const local = assessWithCatalog(extractHostname(targetUrl), savedDomains, allowlist, targetUrl);
         const savedDomain = matching[0]?.url
           ? extractHostname(matching[0].url)
           : local.matchedTarget || findLookalikeTarget(extractHostname(targetUrl), savedDomains, allowlist)?.target || '';
@@ -1761,6 +2233,19 @@ browser.runtime.onMessage.addListener((message, sender) => {
         domainRiskEnabled: domainRiskOn,
         pageSignals,
       });
+
+      // If the scan produced a risk assessment that warrants warning/blocking,
+      // notify the tab directly so its proactive risk alert triggers immediately.
+      if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
+        browser.tabs.query({ active: true, currentWindow: true }).then(([activeTab]) => {
+          if (activeTab?.id && activeTab.url === targetUrl) {
+            browser.tabs.sendMessage(activeTab.id, {
+              type: 'TAB_RISK_UPDATE',
+              payload: { risk },
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+      }
 
       return { report };
     })();
@@ -1832,15 +2317,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'AUDIT_EXTENSIONS') {
-    // `management` is an OPTIONAL permission (its install-time warning —
-    // "Manage your apps, extensions, and themes" — is far too alarming for a
-    // feature most users never open). The popup requests it on click.
     return (async () => {
-      const granted = await browser.permissions
-        .contains({ permissions: ['management'] })
-        .catch(() => false);
-      if (!granted) return { permissionDenied: true };
-      return auditInstalledExtensions();
+      const malicious = await getMaliciousExtensionIds().catch(() => new Set<string>());
+      const api = (globalThis as any).chrome?.management || (browser as any)?.management;
+      return auditInstalledExtensions(malicious, api);
     })();
   }
 
@@ -2033,6 +2513,7 @@ async function applyBridgedSession(
 
   void scheduleAutoLock();
   void scheduleAiHeartbeat();
+  void ensureShieldDeviceToken(token, email);
   // Without this, a bridged session with a refresh token now correctly
   // stored would still never proactively renew -- only the reactive 401
   // backstop in apiJwt() would eventually catch it, and only once something
@@ -2374,12 +2855,11 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
     //    unlocked session) plus commonly phished brands.
     const destHost = extractHostname(finalUrl);
     const vaultHosts = await getVaultHostsIfUnlocked();
-    const knownHosts = Array.from(new Set([...vaultHosts, ...KNOWN_BRAND_DOMAINS]));
     const allowlist = await getDomainAllowlist();
 
     let risk: DomainRiskAssessment = isCustomScheme
       ? disabledDomainRiskAssessment(destHost)
-      : assessDomainRisk(destHost, knownHosts, allowlist, finalUrl);
+      : assessWithCatalog(destHost, vaultHosts, allowlist, finalUrl);
 
     // 4. Threat intel for the destination (query-stripped; plan-gated).
     if (!isCustomScheme && destHost && !unresolvedShortener) {
@@ -2419,5 +2899,47 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
     });
   } catch (err) {
     console.warn('[XoraPass] Failed to inspect link:', err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Popup lifecycle tracking & in-page risk alert suppression
+// ---------------------------------------------------------------------------
+browser.runtime.onConnect.addListener((port) => {
+  if (port.name === 'xorapass-popup') {
+    let openedTabId: number | undefined;
+
+    browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (tab?.id !== undefined) {
+        openedTabId = tab.id;
+        browser.tabs
+          .sendMessage(tab.id, {
+            type: 'POPUP_STATE_CHANGED',
+            payload: { open: true, isOpen: true },
+          })
+          .catch(() => {});
+      }
+    }).catch(() => {});
+
+    port.onDisconnect.addListener(() => {
+      if (openedTabId !== undefined) {
+        browser.tabs
+          .sendMessage(openedTabId, {
+            type: 'POPUP_STATE_CHANGED',
+            payload: { open: false, isOpen: false },
+          })
+          .catch(() => {});
+      }
+      browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+        if (tab?.id !== undefined && tab.id !== openedTabId) {
+          browser.tabs
+            .sendMessage(tab.id, {
+              type: 'POPUP_STATE_CHANGED',
+              payload: { open: false, isOpen: false },
+            })
+            .catch(() => {});
+        }
+      }).catch(() => {});
+    });
   }
 });

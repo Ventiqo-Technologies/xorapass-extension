@@ -11,10 +11,17 @@
     "idle",
     "offscreen",
     "clipboardWrite",
-    "contextMenus"
+    "contextMenus",
+    "management"
   ],
   "optional_permissions": [
-    "management"
+    "downloads",
+    "cookies",
+    "declarativeNetRequest"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
@@ -33,8 +40,9 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "addon@xorapass.com",
+      "strict_min_version": "140.0",
       "data_collection_permissions": {
-        "required": ["none"]
+        "required": ["personallyIdentifyingInfo", "authenticationInfo", "browsingActivity", "websiteContent", "personalCommunications"]
       }
     }
   },
@@ -45,9 +53,21 @@
   },
   "content_scripts": [
     {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["shieldNav.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["pageHooks.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "match_origin_as_fallback": true
     },
     {
       "matches": ["<all_urls>"],

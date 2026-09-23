@@ -15,6 +15,7 @@ export interface FormThreatContext {
   isLoginForm?: boolean;
   hasPasswordField?: boolean;
   hasMfaField?: boolean;
+  hasLeadCaptureForm?: boolean;
   isIframe?: boolean;
   actionUrl?: string;
   numInputs?: number;
@@ -34,6 +35,7 @@ export interface RemoteDomainRiskCheckRequest {
     is_login_form?: boolean;
     has_password_field?: boolean;
     has_mfa_field?: boolean;
+    has_lead_capture_form?: boolean;
     is_iframe?: boolean;
     action_url?: string;
     num_inputs?: number;
@@ -129,6 +131,16 @@ function buildCacheKey(
 export function clearRemoteRiskCache(): void {
   MEMORY_CACHE.clear();
   statusCache = null;
+}
+
+/**
+ * Builds the Authorization header value for a risk call. The credential is a
+ * session JWT, or — while the vault is locked — a ready-made
+ * "Shield <device-token>" value (see background/shield.ts), which the backend
+ * accepts on the Shield / Domain Risk read paths only.
+ */
+export function authHeaderValue(credential: string): string {
+  return /^(Bearer|Shield) /.test(credential) ? credential : `Bearer ${credential}`;
 }
 
 /**
@@ -245,6 +257,7 @@ export async function checkDomainRiskRemote(
       is_login_form: formContext.isLoginForm,
       has_password_field: formContext.hasPasswordField,
       has_mfa_field: formContext.hasMfaField,
+      has_lead_capture_form: formContext.hasLeadCaptureForm,
       is_iframe: formContext.isIframe,
       action_url: formContext.actionUrl ? sanitizeUrlForRiskCheck(formContext.actionUrl) : undefined,
       num_inputs: formContext.numInputs,
@@ -267,7 +280,7 @@ export async function checkDomainRiskRemote(
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const jwt = await getJwtOrEmpty(getJwtFn);
   if (jwt) {
-    headers['Authorization'] = `Bearer ${jwt}`;
+    headers['Authorization'] = authHeaderValue(jwt);
   }
 
   try {
@@ -319,8 +332,35 @@ export function mergeLocalAndRemoteRisk(
     return local;
   }
 
+  // An admin approved this site for this user (server-side, per account):
+  // the server already refused to apply it over policies or threat-intel
+  // hits, so honour it over local heuristics too.
+  if (remote.decision === 'allow' && (remote.reason_codes || []).includes('USER_ALLOWLIST_APPROVED')) {
+    return {
+      ...local,
+      riskScore: Math.min(local.riskScore, remote.risk_score),
+      riskLevel: 'safe',
+      decision: 'allow',
+      reasons: Array.from(new Set([...(remote.reasons || [])])),
+      isAllowlisted: true,
+      showInterstitial: false,
+      threatIntelSignals: remote.threat_intel_signals,
+    };
+  }
+
+  // Check whether threat intelligence (Google Web Risk, VirusTotal, Cloudflare, etc.) flagged
+  // this domain as suspected phishing or malware. A confirmed threat intel hit must NEVER
+  // be softened or presented as merely a low/medium warning.
+  const hasThreatIntelHit =
+    (remote.reason_codes || []).some(
+      (rc) => rc === 'THREAT_INTEL_PHISHING_HIT' || rc === 'THREAT_INTEL_MALWARE_HIT'
+    ) ||
+    Object.values(remote.threat_intel_signals || {}).some(
+      (sig) => sig === 'phishing_hit' || sig === 'malware_hit'
+    );
+
   // Choose stricter decision & higher score
-  const score = Math.max(local.riskScore, remote.risk_score);
+  let score = Math.max(local.riskScore, remote.risk_score);
   let decision: Decision = local.decision;
 
   const rank = (d: Decision): number => {
@@ -337,7 +377,10 @@ export function mergeLocalAndRemoteRisk(
     }
   };
 
-  if (rank(remote.decision) > rank(local.decision)) {
+  if (hasThreatIntelHit) {
+    if (score < 85) score = 85;
+    decision = 'block';
+  } else if (rank(remote.decision) > rank(local.decision)) {
     decision = remote.decision;
   }
 
@@ -347,6 +390,10 @@ export function mergeLocalAndRemoteRisk(
   else if (score >= 60) riskLevel = 'medium';
   else if (score >= 30) riskLevel = 'low';
   else riskLevel = 'safe';
+
+  if (hasThreatIntelHit && riskLevel !== 'critical') {
+    riskLevel = 'high';
+  }
 
   // Merge unique reason strings. Defensively coerced to [] — a backend
   // response with reasons serialized as null (a real bug that shipped
@@ -363,7 +410,7 @@ export function mergeLocalAndRemoteRisk(
     reasons: combinedReasons,
     matchedTarget: local.matchedTarget || remote.matched_target || null,
     safeWarningMessage: remote.safe_warning_message || local.safeWarningMessage,
-    showInterstitial: !!remote.show_interstitial,
+    showInterstitial: !!remote.show_interstitial || hasThreatIntelHit || (decision === 'block' && score >= 85),
     threatIntelSignals: remote.threat_intel_signals,
   };
 }
@@ -383,7 +430,7 @@ export async function reportPhishing(
 ): Promise<boolean> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const jwt = await getJwtOrEmpty(getJwtFn);
-  if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
+  if (jwt) headers['Authorization'] = authHeaderValue(jwt);
 
   try {
     const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/report`, {
@@ -419,7 +466,7 @@ export async function checkDomainRiskEnabled(
 
   const headers: Record<string, string> = {};
   const jwt = await getJwtOrEmpty(getJwtFn);
-  if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
+  if (jwt) headers['Authorization'] = authHeaderValue(jwt);
 
   try {
     const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/status`, { headers });
@@ -572,6 +619,8 @@ export interface DomainRiskAllowlistRequestRecord {
   id: string;
   hostname: string;
   status: 'pending' | 'approved' | 'denied';
+  /** Who an approval applies to: the requester, their workspace, or everyone. */
+  scope?: 'user' | 'workspace' | 'global' | '';
   requested_at: string;
 }
 

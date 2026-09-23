@@ -35,6 +35,7 @@ import {
   showPhishingInterstitial,
   closePhishingInterstitial,
   isInterstitialOpen,
+  isRiskWarningOpen,
   clearAll,
   showToast,
   showLinkInspectionModal,
@@ -43,12 +44,17 @@ import {
   showWebmailPhishingBanner,
   closeWebmailPhishingBanner,
   initOverlayTheme,
+  setPopupSuppressed,
+  getActiveRiskWarning,
   type OverlayCredential,
 } from './overlay';
 import { looksLikeCardNumber, looksLikeCvv, looksLikeCardExpiry } from './cardGuard';
 import { isSupportedWebmail, analyzeEmailSender } from '../utils/webmailGuard';
-import { collectPageSignals, isWorthAssessing, type PageSignals } from '../utils/pageSignals';
+import { collectPageSignals, isWorthAssessing, primeFaviconBrand, type PageSignals } from '../utils/pageSignals';
+import { collectPageText, shouldAiScan } from '../utils/pageContent';
 import { WEB_APP_URL } from '../utils/config';
+import { webRiskAdvisoryFromSignals } from '../utils/webRiskAttribution';
+import { scanEmailContent, checkInsecureForms, checkOpaqueOriginLogin, featureOn, collectPrivacySignals, showDownloadPrompt, showDownloadBlocked } from './secureBrowsing';
 
 let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
@@ -61,6 +67,8 @@ let domainRisk: {
   safeWarningMessage?: string;
   // Server-set: a full-page block rather than a corner banner.
   showInterstitial?: boolean;
+  // Provider signals (for the required Google Web Risk attribution).
+  threatIntelSignals?: Record<string, string>;
 } | null = null;
 
 // Tracks the last hostname+decision pair we already alerted on, so
@@ -189,6 +197,7 @@ function collectFormContext(): {
   isLoginForm: boolean;
   hasPasswordField: boolean;
   hasMfaField: boolean;
+  hasLeadCaptureForm?: boolean;
   isIframe: boolean;
   actionUrl?: string;
   numInputs: number;
@@ -208,6 +217,20 @@ function collectFormContext(): {
     return /\b(otp|totp|mfa|2fa|onetime|one-time|authcode|verificationcode)\b/.test(hint);
   });
 
+  // Lead-capture / scam-entry detection: pages asking for personal details
+  // (name + email or phone) even when no password field is present yet.
+  const hasPhoneField = inputs.some((el) => {
+    if (el.type === 'tel') return true;
+    const hint = `${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`.toLowerCase();
+    return /\b(phone|tel|mobile|cell|telephone)\b/.test(hint);
+  });
+  const hasEmailField = inputs.some((el) => {
+    if (el.type === 'email') return true;
+    const hint = `${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`.toLowerCase();
+    return /\b(email|e-mail|mail)\b/.test(hint);
+  });
+  const hasLeadCaptureForm = (hasPhoneField && hasEmailField) || (inputs.length >= 3 && (hasPhoneField || hasEmailField));
+
   // Resolved against the document so a relative action is compared as the
   // absolute URL the browser would actually POST to.
   let actionUrl: string | undefined;
@@ -224,6 +247,7 @@ function collectFormContext(): {
     isLoginForm: passwords.length > 0,
     hasPasswordField: passwords.length > 0,
     hasMfaField,
+    hasLeadCaptureForm,
     isIframe: window.top !== window.self,
     actionUrl,
     numInputs: inputs.length,
@@ -244,6 +268,12 @@ function isInsecureContext(): boolean {
 // Request the credential list (labels/usernames only) for the current domain.
 function loadCredentials(): void {
   const hostname = window.location.hostname;
+  let scamCues: string[] | undefined;
+  try {
+    scamCues = collectPageText(document).cues;
+  } catch {
+    /* ignore DOM errors */
+  }
   browser.runtime
     .sendMessage({
       type: 'GET_MATCHING_CREDENTIALS',
@@ -256,6 +286,7 @@ function loadCredentials(): void {
         // the server could act on, so shipping its shape is pure noise (and
         // needlessly busts the per-page verdict cache).
         pageSignals: worthAssessingSignals(),
+        scamCues,
       },
     })
     .then((response: any) => {
@@ -280,6 +311,7 @@ function loadCredentials(): void {
       scanForLoginFields();
       scanForPaymentFields();
       scanWebmailMessages();
+      scheduleAiScan();
     })
     .catch((err) => {
       console.warn('[XoraPass Content] Error requesting credentials:', err);
@@ -296,11 +328,85 @@ function worthAssessingSignals(): PageSignals | undefined {
   return isWorthAssessing(signals) ? signals : undefined;
 }
 
+// ---------------------------------------------------------------------------
+// AI scam analysis (always-on Shield, paid)
+// ---------------------------------------------------------------------------
+// Pages without a password field (fake tech-support, fake shops, crypto and
+// prize scams, "paste this command" traps) slip past the credential-focused
+// checks. For pages whose local scam cues (or risk score) justify it, a small
+// redacted text extract is sent for an AI verdict — see utils/pageContent.ts
+// for exactly what leaves the device. The background gates this on the
+// entitlement, the kill switch and trusted/allowlisted sites; the server
+// enforces a monthly quota. Warning copy comes from XoraPass, never the model.
+let aiScannedHref = '';
+let aiScanTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleAiScan(): void {
+  if (window !== window.top) return;
+  const href = window.location.href.split('#')[0];
+  if (aiScannedHref === href || aiScanTimer) return;
+  // Give client-rendered pages a moment to put their text on screen.
+  aiScanTimer = setTimeout(() => {
+    aiScanTimer = null;
+    void maybeRunAiScan(href);
+  }, 1500);
+}
+
+async function maybeRunAiScan(href: string): Promise<void> {
+  if (aiScannedHref === href || window.location.href.split('#')[0] !== href) return;
+  aiScannedHref = href;
+  const nav = (window as unknown as { __xoraShieldNav?: { shown: boolean } }).__xoraShieldNav;
+  if (nav?.shown || isInterstitialOpen()) return;
+
+  let page;
+  try {
+    page = collectPageText(document);
+  } catch {
+    return;
+  }
+  if (!shouldAiScan(page.cues, domainRisk?.riskScore ?? 0)) return;
+
+  const res: any = await browser.runtime
+    .sendMessage({ type: 'SHIELD_AI_SCAN', payload: { page, pageSignals: worthAssessingSignals() } })
+    .catch(() => null);
+  if (!res || typeof res.risk_score !== 'number' || res.risk_score < 45) return;
+  if (window.location.href.split('#')[0] !== href || isInterstitialOpen()) return;
+  // Never downgrade or replace a stronger warning that is already showing.
+  if (isRiskWarningOpen() && domainRisk?.decision === 'block') return;
+
+  const blocking = res.risk_score >= 75;
+  showRiskWarning({
+    severity: blocking ? 'block' : 'warn',
+    title: typeof res.title === 'string' && res.title ? res.title : 'Possible Scam Detected',
+    message:
+      typeof res.message === 'string' && res.message
+        ? res.message
+        : 'XoraPass Shield found signs that this page is a scam. Don\'t enter personal or payment details.',
+    currentDomain: window.location.hostname,
+    riskLevel: blocking ? 'high' : 'medium',
+    onReportPhishing: () =>
+      browser.runtime
+        .sendMessage({
+          type: 'REPORT_PHISHING',
+          payload: { hostname: window.location.hostname, decision: blocking ? 'block' : 'warn', riskLevel: blocking ? 'high' : 'medium' },
+        })
+        .then((r: any) => ({ success: !!r?.success }))
+        .catch(() => ({ success: false })),
+  });
+}
+
 // Surfaces a risky decision immediately, without requiring the user to click
 // a login field's icon first (which may not even exist on this page). Keyed
 // on hostname+decision so repeated loadCredentials() calls (tab focus,
 // visibility change, SPA route watchers) don't re-pop an already-seen alert.
 async function maybeShowProactiveRiskWarning(): Promise<void> {
+  // The document_start navigation guard (shieldNav.ts) may already have
+  // shown the full-page warning for this page — never stack a second one,
+  // and if the user chose to continue there, don't re-block them here.
+  const nav = (window as unknown as { __xoraShieldNav?: { host: string; action: string; shown: boolean } })
+    .__xoraShieldNav;
+  const navHandled = !!nav && nav.shown && nav.host === window.location.hostname;
+  if (navHandled && nav!.action === 'block') return;
   const decision = domainRisk?.decision;
   const isRisky = decision === 'block' || decision === 'warn' || decision === 'require_approval';
   const key = `${window.location.hostname}|${decision || ''}`;
@@ -319,10 +425,11 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // A server-confirmed critical verdict on a credential page gets the full-page
   // block instead of a corner banner: at that point letting the user read and
   // interact with the page at all is the risk being managed.
-  if (domainRisk?.showInterstitial) {
+  if (domainRisk?.showInterstitial && !navHandled) {
     lastWarnedRiskKey = key;
     closeRiskWarning();
     showPhishingInterstitial({
+      advisory: webRiskAdvisoryFromSignals(domainRisk.threatIntelSignals),
       currentDomain: window.location.hostname,
       expectedDomain: domainRisk.matchedTarget || lookalikeWarning?.target || null,
       message,
@@ -333,11 +440,26 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
           }
         : undefined,
       onLeave: () => {
-        // history.back() can land straight back here on a redirect chain, so
-        // prefer a neutral destination when there is nothing safe behind us.
-        if (window.history.length > 1) window.history.back();
-        else window.location.href = 'about:blank';
+        try {
+          if (window.history.length > 1) {
+            window.history.back();
+            setTimeout(() => {
+              if (window.location.href !== 'about:blank') {
+                window.location.replace('about:blank');
+              }
+            }, 300);
+          } else {
+            window.location.replace('about:blank');
+          }
+        } catch {
+          window.location.replace('about:blank');
+        }
       },
+      onRequestAllowlist: () =>
+        browser.runtime
+          .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: window.location.hostname } })
+          .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
+          .catch(() => ({ success: false, reason: 'network' })),
       onReportPhishing: () =>
         browser.runtime
           .sendMessage({
@@ -386,10 +508,15 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // Bail rather than showing a warning for a state that's no longer current.
   if (lastWarnedRiskKey !== key) return;
 
+  const isMalware = (domainRisk?.reasons || []).some((r) => /malware/i.test(r)) ||
+    Object.values(domainRisk?.threatIntelSignals || {}).some((s) => s === 'malware_hit');
+  const blockTitle = isMalware ? 'Dangerous Malware Site Blocked' : 'Likely Phishing Site Blocked';
+
   showRiskWarning({
     severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
-    title: decision === 'block' ? 'Phishing Site Blocked' : 'Suspicious Site Detected',
+    title: decision === 'block' ? blockTitle : 'Suspicious Site Detected',
     message,
+    advisory: webRiskAdvisoryFromSignals(domainRisk?.threatIntelSignals),
     currentDomain: currentHostname,
     expectedDomain,
     riskLevel: domainRisk?.riskLevel,
@@ -481,6 +608,19 @@ browser.runtime.onMessage.addListener((message: any) => {
     renderAiBanner(message.payload as AiFillOffer);
   } else if (message.type === 'SHORTCUT_AUTOFILL') {
     void handleShortcutAutofill();
+  } else if (message.type === 'TAB_RISK_UPDATE') {
+    const risk = message.payload?.risk || message.risk;
+    if (risk) {
+      domainRisk = risk;
+      lastWarnedRiskKey = null; // force fresh evaluation
+      maybeShowProactiveRiskWarning();
+    }
+  } else if (message.type === 'POPUP_STATE_CHANGED') {
+    setPopupSuppressed(Boolean(message.payload?.open ?? message.payload?.isOpen));
+  } else if (message.type === 'GET_ACTIVE_TAB_WARNING') {
+    return Promise.resolve(getActiveRiskWarning());
+  } else if (message.type === 'DISMISS_TAB_RISK_WARNING') {
+    closeRiskWarning();
   }
   return undefined;
 });
@@ -907,7 +1047,15 @@ function scanForPaymentFields(): void {
 const warnedSendersOnPage = new Set<string>();
 
 function scanWebmailMessages(): void {
-  if (!webmailGuardEnabled || !isSupportedWebmail(window.location.hostname)) return;
+  if (window === window.top) {
+    checkInsecureForms();
+    checkOpaqueOriginLogin();
+  }
+  if (!webmailGuardEnabled || !isSupportedWebmail(window.location.hostname, window.location.pathname)) return;
+  scanEmailContent(window.location.hostname);
+  // With Email Guard rolled out, the email panel shows the sender check (and
+  // more) above the message — don't also raise the older sender banner.
+  if (featureOn('email_guard')) return;
 
   // Gmail: sender name usually in span[email] or .gD; email in [email] attribute
   // Outlook: sender name in .b80yQ or [data-testid="SenderDetails"]
@@ -2195,7 +2343,16 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   initOverlayTheme();
   initPasteGuard();
   initWebBridge();
-  loadCredentials();
+  if (window === window.top) setTimeout(checkOpaqueOriginLogin, 300);
+  // Webmail checks shouldn't depend on the credential lookup finishing.
+  if (window === window.top) setTimeout(scanWebmailMessages, 600);
+  // The first risk check includes the on-device favicon match. The tab icon
+  // is normally cached, so this waits a few ms (400 ms at most).
+  if (window === window.top && /^https?:$/.test(location.protocol)) {
+    void Promise.race([primeFaviconBrand(), new Promise((r) => setTimeout(r, 400))]).then(() => loadCredentials());
+  } else {
+    loadCredentials();
+  }
   checkAiFill();
   watchForUsernameEntry();
   watchForSubmission();
@@ -2269,9 +2426,28 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     if (message?.type === 'GET_PAGE_SIGNALS') {
       return Promise.resolve({ pageSignals: collectPageSignals() });
     }
+    // Privacy report (popup): trackers + mixed content seen by this page.
+    if (message?.type === 'GET_PRIVACY_SIGNALS' && window === window.top) {
+      return Promise.resolve({ privacy: collectPrivacySignals() });
+    }
+    // Download guard (background): ask before keeping a risky file.
+    if (message?.type === 'SHIELD_DOWNLOAD_PROMPT' && window === window.top) {
+      return showDownloadPrompt(message.payload || {});
+    }
+    if (message?.type === 'SHIELD_DOWNLOAD_BLOCKED' && window === window.top) {
+      showDownloadBlocked(message.payload || {});
+    }
     if (message?.type === 'CARD_FIELDS_IN_FRAME') {
       paymentFieldsInSubframe = true;
       scanForPaymentFields();
+    }
+    if (message?.type === 'TAB_RISK_UPDATE' && window === window.top) {
+      if (message.risk) {
+        domainRisk = message.risk;
+        lastWarnedRiskKey = null; // force re-evaluation
+        maybeShowProactiveRiskWarning();
+      }
+      return Promise.resolve({ received: true });
     }
     return undefined;
   });

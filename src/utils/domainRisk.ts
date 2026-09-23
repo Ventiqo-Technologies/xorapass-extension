@@ -10,6 +10,7 @@
 // Kept free of DOM and chrome APIs for universal unit-testability and reuse
 // across background, popup, and content script contexts.
 
+import { BRAND_CATALOG, brandOwnsHost, catalogDomains, type CatalogBrand } from './brandCatalog';
 import {
   extractHostname,
   normalizeHostname,
@@ -19,6 +20,7 @@ import {
   hasPunycode,
   stripPublicSuffix,
   isUserContentHost,
+  isFreeHostingHost,
 } from './siteTrust';
 
 export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
@@ -39,6 +41,8 @@ export interface DomainRiskSignals {
   suspiciousTldChange?: { savedTld: string; currentTld: string; brand: string };
   isInsecureTransport: boolean;
   isHighRiskTld: boolean;
+  isFreeHosting?: boolean;
+  isUserContentHost?: boolean;
   subdomainCount: number;
 }
 
@@ -85,6 +89,13 @@ export const SUSPICIOUS_KEYWORDS = new Set([
   'auth',
   'authorize',
   'authorization',
+  'okta',
+  'sso',
+  'idp',
+  'saml',
+  'oauth',
+  'mfa',
+  '2fa',
   'portal',
   'update',
   'billing',
@@ -104,6 +115,22 @@ export const SUSPICIOUS_KEYWORDS = new Set([
   'validation',
   'recovery',
   'session',
+  'click',
+  'rewards',
+  'reward',
+  'claim',
+  'points',
+  'miles',
+  'millas',
+  'puntos',
+  'canje',
+  'canjear',
+  'promocion',
+  'premio',
+  'beneficio',
+  'sorteo',
+  'bono',
+  'clubmiles',
 ]);
 
 /** High-risk and frequently abused phishing/disposable TLDs. */
@@ -146,6 +173,10 @@ export const HIGH_RISK_TLDS = new Set([
   'trade',
   'accountant',
   'science',
+  'vip',
+  'cc',
+  'cfd',
+  'sbs',
 ]);
 
 /**
@@ -596,12 +627,45 @@ export function disabledDomainRiskAssessment(pageHost: string): DomainRiskAssess
   };
 }
 
+/**
+ * Runtime tuning from the Shield remote config (see utils/shieldConfig.ts):
+ * individual rules can be switched off and the warn/block thresholds moved
+ * without an extension release. Omitted → the built-in behaviour.
+ */
+export interface AssessOptions {
+  disabledRules?: readonly string[];
+  warnScore?: number;
+  blockScore?: number;
+  /**
+   * knownHosts is the built-in brand catalog (utils/brandCatalog.ts), not the
+   * user's saved sites. Stricter: the user never chose these brands, and many
+   * are ordinary words (apple, chase, steam, zoom, wise), so weak patterns
+   * only warn and short brand names only count for exact-lookalike rules.
+   */
+  catalog?: boolean;
+}
+
+/** Catalog brands that are everyday words — weaker evidence when they appear in a host. */
+const CATALOG_COMMON_WORDS = new Set(['apple', 'chase', 'steam', 'zoom', 'wise', 'slack', 'stripe', 'booking', 'kraken', 'adobe', 'google', 'amazon', 'outlook', 'discord']);
+/** Real words / brands one letter away from a catalog brand. */
+const CATALOG_TYPO_COLLISIONS = new Set(['finance', 'stream', 'ample', 'goggle', 'google', 'dropbear', 'chaser', 'paypay', 'binancy', 'steamy', 'roblex']);
+
+/** Multi-character lookalikes: rn→m, vv→w, cl→d, plus hyphens removed (pay-pal). */
+export function normalizeLookalike(label: string): string {
+  return label.toLowerCase().replace(/rn/g, 'm').replace(/vv/g, 'w').replace(/cl/g, 'd').replace(/-/g, '');
+}
+
 export function assessDomainRisk(
   pageHost: string,
   knownHosts: string[],
   allowlist: string[] = [],
-  pageUrl = ''
+  pageUrl = '',
+  options: AssessOptions = {}
 ): DomainRiskAssessment {
+  const ruleOn = (rule: string) => !(options.disabledRules || []).includes(rule);
+  const catalog = !!options.catalog;
+  const warnScore = options.warnScore ?? 40;
+  const blockScore = options.blockScore ?? 75;
   const pageHostname = normalizeHostname(pageHost);
   const pageReg = registrableDomain(pageHostname);
 
@@ -624,6 +688,8 @@ export function assessDomainRisk(
       suspiciousKeywords: [],
       isInsecureTransport: /^http:\/\//i.test(pageUrl.trim()),
       isHighRiskTld: false,
+      isFreeHosting: isFreeHostingHost(pageHostname),
+      isUserContentHost: isUserContentHost(pageHostname),
       subdomainCount: pageHostname ? pageHostname.split('.').length : 0,
     },
   };
@@ -667,6 +733,9 @@ export function assessDomainRisk(
   // USER_CONTENT_HOST_SUFFIXES): a Google Form or an Azure blob page is not
   // Google's or Microsoft's page.
   if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg) && !isUserContentHost(pageHostname)) {
+    assessment.signals.isSameRegistrableDomain = true;
+    assessment.signals.isSubdomainMatch = pageHostname !== pageReg && isSubdomainOf(pageHostname, pageReg);
+    assessment.signals.isExactMatch = pageHostname === pageReg;
     assessment.matchedTarget = pageReg;
     return assessment; // Safe legitimate platform domain
   }
@@ -734,6 +803,7 @@ export function assessDomainRisk(
     const decodedSldSkeleton = toHomoglyphSkeleton(decodedSld);
 
     if (
+      ruleOn('homograph') &&
       (isPuny || decodedPageHost !== pageHostname || pageHasConfusables) &&
       (decodedRegSkeleton === target ||
         decodedSldSkeleton === brand ||
@@ -761,13 +831,16 @@ export function assessDomainRisk(
     const pageSldClean = pageSld.toLowerCase();
     const isExactBrandSld = pageSldClean === brand;
 
-    if (isBrandInHost && pageReg !== target) {
+    // Catalog brands shorter than 5 letters (ups, dhl, aws, hsbc) collide with
+    // ordinary tokens ("sign-ups"), so they only count via exact lookalikes.
+    const catalogWeak = catalog && brand.length < 5;
+    if (ruleOn('brand_abuse') && !catalogWeak && isBrandInHost && pageReg !== target) {
       // Check if brand is combined with login/secure/verify keywords or hyphenated/subdomain
       const brandRegex = new RegExp(`(^|[-._])${brand}([-._]|$)`, 'i');
       const isTokenMatch = brandRegex.test(pageHostname) || brandRegex.test(pageSld) || brandRegex.test(decodedPageHost);
 
       if (isTokenMatch && hasSuspiciousKeyword) {
-        const score = 90;
+        const score = catalog && CATALOG_COMMON_WORDS.has(brand) ? 70 : 90;
         if (score > highestScore) {
           highestScore = score;
           assessment.matchedTarget = target;
@@ -781,10 +854,10 @@ export function assessDomainRisk(
         detectedReasons.push(
           `Brand keyword abuse: Brand "${brand}" (for "${target}") combined with security keywords [${kwList}] on unauthorized domain "${pageReg}"`
         );
-      } else if (isTokenMatch && !isExactBrandSld) {
+      } else if (isTokenMatch && !isExactBrandSld && !(catalog && CATALOG_COMMON_WORDS.has(brand))) {
         // Brand name used as a prefix/suffix or token on an unrelated domain
         // e.g. stripe-portal.net, stripe-app.org (excluding exact regional domain variations like google.nl vs google.com)
-        const score = 80;
+        const score = catalog ? 45 : 80;
         if (score > highestScore) {
           highestScore = score;
           assessment.matchedTarget = target;
@@ -804,10 +877,11 @@ export function assessDomainRisk(
     // Threat C: Suspicious TLD / Domain Extension Changes
     // e.g. user has paypal.com, current site is paypal.xyz or paypal.top
     // ──────────────────────────────────────────────────────────────────────────
-    if (isExactBrandSld && pageReg !== target) {
+    if (ruleOn('tld_change') && !catalogWeak && isExactBrandSld && pageReg !== target) {
       const isHighTld = assessment.signals.isHighRiskTld;
       // Only flag as suspicious TLD change if hosted on a known high-risk/disposable TLD or has security keywords
-      if (isHighTld || hasSuspiciousKeyword) {
+      // (catalog: high-risk TLD only — brands legitimately own many ccTLDs)
+      if (isHighTld || (hasSuspiciousKeyword && !catalog)) {
         const score = isHighTld ? 85 : 75;
         if (score > highestScore) {
           highestScore = score;
@@ -834,13 +908,15 @@ export function assessDomainRisk(
     const distSld = damerauLevenshtein(pageSldClean, brand);
     const minLen = Math.min(pageSldClean.length, brand.length);
 
-    if (distReg !== 0 && pageReg !== target) {
+    const typoHit = catalog
+      ? // Catalog: one edit on a brand of 6+ letters, never a known real word.
+        distSld === 1 && brand.length >= 6 && !CATALOG_TYPO_COLLISIONS.has(pageSldClean)
+      : (distSld > 0 && distSld <= 2 && minLen >= 4 && Math.abs(pageSldClean.length - brand.length) <= 2) ||
+        (distReg > 0 && distReg <= 2 && target.length >= 6 && Math.abs(pageReg.length - target.length) <= 2);
+    if (ruleOn('typosquat') && distReg !== 0 && pageReg !== target) {
       // 1-2 char typosquats on brand name or registrable domain
-      if (
-        (distSld > 0 && distSld <= 2 && minLen >= 4 && Math.abs(pageSldClean.length - brand.length) <= 2) ||
-        (distReg > 0 && distReg <= 2 && target.length >= 6 && Math.abs(pageReg.length - target.length) <= 2)
-      ) {
-        const score = 80;
+      if (typoHit) {
+        const score = catalog ? 60 : 80;
         if (score > highestScore) {
           highestScore = score;
           assessment.matchedTarget = target;
@@ -854,11 +930,61 @@ export function assessDomainRisk(
     }
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Threat E: multi-character lookalikes and split brand names
+  // e.g. rnicrosoft.com (rn→m), paypaI-style done above; pay-pal.com, vvise.com
+  // Threat F: the real brand domain used as SUBDOMAIN labels of another site
+  // e.g. paypal.com.account-review.io, login.microsoftonline.com.evil.top
+  // ──────────────────────────────────────────────────────────────────────────
+  if (ruleOn('typosquat')) {
+    const normSld = normalizeLookalike(pageSld);
+    for (const profile of brandProfiles) {
+      if (pageReg === profile.targetDomain || profile.brand.length < (catalog ? 5 : 4)) continue;
+      if (normSld === profile.brand && pageSld.toLowerCase() !== profile.brand) {
+        const score = 85;
+        if (score > highestScore) {
+          highestScore = score;
+          assessment.matchedTarget = profile.targetDomain;
+        }
+        assessment.signals.typosquatTarget = profile.targetDomain;
+        detectedReasons.push(`Lookalike spelling: "${pageReg}" reads like "${profile.targetDomain}"`);
+      }
+    }
+  }
+  if (ruleOn('brand_abuse')) {
+    for (const profile of brandProfiles) {
+      const t = profile.targetDomain;
+      // Skip regional variants the brand may own (ups.com.br: registrant label is still "ups").
+      if (pageReg === t || t.split('.').length < 2 || pageSld.toLowerCase() === profile.brand) continue;
+      if (pageHostname.startsWith(`${t}.`) || pageHostname.includes(`.${t}.`)) {
+        const score = 90;
+        if (score > highestScore) {
+          highestScore = score;
+          assessment.matchedTarget = t;
+        }
+        assessment.signals.brandAbuse = { brand: profile.brand, pattern: `${t} as subdomain`, matchedTarget: t };
+        detectedReasons.push(`Deceptive address: "${t}" is only part of the name — the site is really "${pageReg}"`);
+      }
+    }
+  }
+
+  // Generic check for Free Hosting platforms or User Content hosts with security/verification keywords
+  if (ruleOn('free_hosting') && (assessment.signals.isFreeHosting || assessment.signals.isUserContentHost)) {
+    if (assessment.signals.suspiciousKeywords.length > 0 && highestScore < 70) {
+      highestScore = 70;
+      detectedReasons.push(
+        `Untrusted free hosting service (${pageReg}) used with authentication/security keywords [${assessment.signals.suspiciousKeywords.join(
+          ', '
+        )}]`
+      );
+    }
+  }
+
   // Generic check for high-risk TLD with security keywords (even if brand not directly recognized)
-  if (assessment.signals.isHighRiskTld && assessment.signals.suspiciousKeywords.length >= 2 && highestScore < 60) {
+  if (ruleOn('keyword_tld') && assessment.signals.isHighRiskTld && assessment.signals.suspiciousKeywords.length >= 1 && highestScore < 65) {
     highestScore = 65;
     detectedReasons.push(
-      `Suspicious pattern: Multiple auth/login keywords [${assessment.signals.suspiciousKeywords.join(
+      `Suspicious pattern: Auth/login keywords [${assessment.signals.suspiciousKeywords.join(
         ', '
       )}] on high-risk disposable TLD ".${pageBaseTld}"`
     );
@@ -869,10 +995,10 @@ export function assessDomainRisk(
   assessment.riskScore = highestScore;
 
   // Determine Risk Level and Decision
-  if (highestScore >= 75) {
+  if (highestScore >= blockScore) {
     assessment.riskLevel = highestScore >= 90 ? 'critical' : 'high';
     assessment.decision = 'block';
-  } else if (highestScore >= 40) {
+  } else if (highestScore >= warnScore) {
     assessment.riskLevel = 'medium';
     assessment.decision = 'warn';
   } else if (highestScore > 0) {
@@ -884,4 +1010,27 @@ export function assessDomainRisk(
   }
 
   return assessment;
+}
+
+/**
+ * The local check used everywhere Shield runs on its own: the user's saved
+ * sites (strict, as before) PLUS the built-in brand catalog (catalog rules),
+ * so lookalikes are caught even when the vault is locked or empty. A site
+ * the user saved, or one a catalog brand owns, is never flagged by the catalog.
+ */
+export function assessWithCatalog(
+  pageHost: string,
+  vaultHosts: string[],
+  allowlist: string[] = [],
+  pageUrl = '',
+  options: AssessOptions = {},
+  brands: readonly CatalogBrand[] = BRAND_CATALOG
+): DomainRiskAssessment {
+  const vault = assessDomainRisk(pageHost, vaultHosts, allowlist, pageUrl, options);
+  if (vault.isAllowlisted || vault.signals.isSameRegistrableDomain) return vault;
+  const host = normalizeHostname(pageHost);
+  if (!host || brands.some((b) => brandOwnsHost(b, host))) return vault;
+  const cat = assessDomainRisk(pageHost, catalogDomains(brands), allowlist, pageUrl, { ...options, catalog: true });
+  if (cat.riskScore <= vault.riskScore) return vault;
+  return { ...cat, reasons: Array.from(new Set([...cat.reasons, ...vault.reasons])) };
 }

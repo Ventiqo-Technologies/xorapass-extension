@@ -297,4 +297,11 @@ describe('validateMessage — companion-device linking bridge', () => {
     expect(validateMessage({ type: 'APPLY_UPDATE' }, contentSender()).reason).toBe('privileged-from-content');
     expect(validateMessage({ type: 'CHECK_UPDATE' }, externalWebSender()).reason).toBe('unauthorized-external-type');
   });
+
+  it('recognizes popup state and risk warning message types', () => {
+    expect(validateMessage({ type: 'POPUP_STATE_CHANGED', payload: { open: true } }, popupSender()).ok).toBe(true);
+    expect(validateMessage({ type: 'GET_ACTIVE_TAB_WARNING' }, popupSender()).ok).toBe(true);
+    expect(validateMessage({ type: 'DISMISS_TAB_RISK_WARNING' }, popupSender()).ok).toBe(true);
+  });
 });
+
