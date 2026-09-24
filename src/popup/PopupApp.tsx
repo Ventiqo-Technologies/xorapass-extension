@@ -424,7 +424,7 @@ export const PopupApp: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   // Report / request-review actions for the current site (Site Scanner card).
-  const [siteReportState, setSiteReportState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
+  const [siteReportState, setSiteReportState] = useState<'idle' | 'busy' | 'done' | 'already_blocked' | 'error'>('idle');
   const [siteRequestState, setSiteRequestState] = useState<'idle' | 'busy' | 'done' | 'error' | 'login'>('idle');
   const [reauthPassword, setReauthPassword] = useState('');
   const [reauthBusy, setReauthBusy] = useState(false);
@@ -1051,7 +1051,7 @@ export const PopupApp: React.FC = () => {
         },
       })
       .catch(() => null);
-    setSiteReportState(res?.success ? 'done' : 'error');
+    setSiteReportState(res?.alreadyBlocked ? 'already_blocked' : res?.success ? 'done' : 'error');
     if (res?.success) reloadSecurityEvents();
   };
 
@@ -1795,21 +1795,27 @@ export const PopupApp: React.FC = () => {
             </span>
           </button>
 
-          <button
-            onClick={() => void handleThreatReportPhishing()}
-            disabled={siteReportState === 'busy' || siteReportState === 'done'}
-            className="py-1.5 px-2.5 rounded-lg text-xs font-bold border transition cursor-pointer disabled:opacity-60 flex items-center justify-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-xs"
-            title="Report this site as malicious"
-          >
-            <Flag className="w-3.5 h-3.5" />
-            <span>
-              {siteReportState === 'done'
-                ? 'Reported'
-                : siteReportState === 'busy'
-                ? 'Reporting…'
-                : 'Report Phishing'}
+          {siteReportState === 'already_blocked' ? (
+            <span className="inline-flex items-center gap-1 py-1.5 px-2.5 rounded-lg text-xs font-bold bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-700/60">
+              <Shield className="w-3.5 h-3.5" />
+              Blocked by Shield
             </span>
-          </button>
+          ) : siteReportState === 'done' ? (
+            <span className="inline-flex items-center gap-1 py-1.5 px-2.5 rounded-lg text-xs font-bold bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700/60">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Reported
+            </span>
+          ) : (
+            <button
+              onClick={() => void handleThreatReportPhishing()}
+              disabled={siteReportState === 'busy'}
+              className="py-1.5 px-2.5 rounded-lg text-xs font-bold border transition cursor-pointer disabled:opacity-60 flex items-center justify-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-xs"
+              title="Report this site as malicious"
+            >
+              <Flag className="w-3.5 h-3.5" />
+              <span>{siteReportState === 'busy' ? 'Reporting…' : 'Report Phishing'}</span>
+            </button>
+          )}
 
           <button
             onClick={handleDismissThreatWarning}
@@ -3764,28 +3770,40 @@ export const PopupApp: React.FC = () => {
 
                   {/* Report / request review for the current site */}
                   {currentHostname && /^https?:$/.test(currentProtocol) && !isLocalHost && (() => {
-                    const flagged =
+                    const isBlocked =
                       domainRiskAssessment?.decision === 'block' ||
+                      remoteDomainRisk?.decision === 'block' ||
+                      siteReport?.verdict === 'danger' ||
+                      siteReportState === 'already_blocked';
+                    const flagged =
+                      isBlocked ||
                       domainRiskAssessment?.decision === 'warn' ||
                       domainRiskAssessment?.decision === 'require_approval';
                     const existingRequest = domainRiskAllowlistRequests.find((r) => r.hostname === currentHostname);
                     const alreadyReported = domainRiskReports.some((r) => r.hostname === currentHostname);
                     return (
                       <div className="pt-2.5 border-t border-slate-900/10 flex flex-wrap items-center gap-1.5">
-                        <button
-                          onClick={() => void reportCurrentSite()}
-                          disabled={siteReportState === 'busy' || siteReportState === 'done' || alreadyReported}
-                          className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 disabled:opacity-60 cursor-pointer"
-                          title="Tell XoraPass this site looks like phishing or a scam"
-                        >
-                          {alreadyReported || siteReportState === 'done'
-                            ? 'Reported'
-                            : siteReportState === 'busy'
-                            ? 'Reporting…'
-                            : siteReportState === 'error'
-                            ? 'Try again'
-                            : 'Report this site'}
-                        </button>
+                        {!isBlocked ? (
+                          <button
+                            onClick={() => void reportCurrentSite()}
+                            disabled={siteReportState === 'busy' || siteReportState === 'done' || alreadyReported}
+                            className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 disabled:opacity-60 cursor-pointer"
+                            title="Tell XoraPass this site looks like phishing or a scam"
+                          >
+                            {alreadyReported || siteReportState === 'done'
+                              ? 'Reported'
+                              : siteReportState === 'busy'
+                              ? 'Reporting…'
+                              : siteReportState === 'error'
+                              ? 'Try again'
+                              : 'Report this site'}
+                          </button>
+                        ) : (
+                          <span className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-rose-200 text-rose-700 bg-rose-50 flex items-center gap-1">
+                            <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />
+                            Blocked by Shield
+                          </span>
+                        )}
                         {flagged && (
                           <button
                             onClick={() => void requestReviewForCurrentSite()}

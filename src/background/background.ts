@@ -13,6 +13,7 @@ import {
   getMyPhishingReports,
   getMyDomainAllowlistRequests,
   clearRemoteRiskCache,
+  clearRemoteRiskCacheForHost,
   type FormThreatContext,
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
@@ -792,17 +793,28 @@ async function saveSecretToVault(input: {
 // cache -- that one call is the moment-of-truth check right before a secret
 // is used, and always reads live state.
 let sessionsCache: { data: AiSession[]; fetchedAt: number } | null = null;
-const SESSIONS_CACHE_MS = 4000;
+const SESSIONS_CACHE_MS = 5000;
+let sessionsInFlight: Promise<AiSession[]> | null = null;
 
 async function getActiveAiSessions(): Promise<AiSession[]> {
   const now = Date.now();
   if (sessionsCache && now - sessionsCache.fetchedAt < SESSIONS_CACHE_MS) {
     return sessionsCache.data;
   }
-  const { ok, data } = await apiJwt('GET', '/ai/sessions');
-  const sessions = ok && Array.isArray(data) ? (data as AiSession[]) : [];
-  sessionsCache = { data: sessions, fetchedAt: now };
-  return sessions;
+  if (sessionsInFlight) {
+    return sessionsInFlight;
+  }
+  sessionsInFlight = (async () => {
+    try {
+      const { ok, data } = await apiJwt('GET', '/ai/sessions');
+      const sessions = ok && Array.isArray(data) ? (data as AiSession[]) : [];
+      sessionsCache = { data: sessions, fetchedAt: Date.now() };
+      return sessions;
+    } finally {
+      sessionsInFlight = null;
+    }
+  })();
+  return sessionsInFlight;
 }
 
 /**
@@ -1048,7 +1060,12 @@ async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload
     ? ((session as Record<string, unknown>).vaultItems as VaultItem[] | undefined)
     : undefined;
   const knownHosts = (items || []).filter((i) => !!i.url).map((i) => extractHostname(i.url!)).filter(Boolean);
-  if (isAllowlistedHost(host, allowlist) || isTrustedHost(host, knownHosts, cfg.trusted_domains)) return none;
+  const hasThreatAlert =
+    payload?.hasThreatIntelHit ||
+    Object.values(payload?.threatIntelSignals || {}).some(
+      (s) => s === 'phishing_hit' || s === 'malware_hit' || s === 'suspicious_scan'
+    );
+  if (!hasThreatAlert && (isAllowlistedHost(host, allowlist) || isTrustedHost(host, knownHosts, cfg.trusted_domains))) return none;
 
   const cleanUrl = sanitizeUrlForRiskCheck(url);
   const page = payload?.page;
@@ -2268,8 +2285,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'REPORT_PHISHING') {
     const { hostname, decision, riskLevel } = msg.payload || {};
-    return reportPhishing(hostname, decision, riskLevel, globalThis.fetch, getJwt).then((success) => ({
-      success,
+    return reportPhishing(hostname, decision, riskLevel, globalThis.fetch, getJwt).then((res) => ({
+      success: res.success,
+      alreadyBlocked: res.alreadyBlocked,
+      duplicate: res.duplicate,
     }));
   }
 
@@ -2329,7 +2348,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
     type === 'WEB_BRIDGE_LOGIN' ||
     type === 'WEB_BRIDGE_DEVICE_INFO' ||
     type === 'WEB_BRIDGE_DELIVER_KEY' ||
-    type === 'WEB_BRIDGE_REQUEST_SESSION'
+    type === 'WEB_BRIDGE_REQUEST_SESSION' ||
+    type === 'WEB_BRIDGE_DOMAIN_BLOCKED'
   ) {
     return handleWebBridgeMessage(type, msg.payload);
   }
@@ -2658,6 +2678,35 @@ async function handleWebBridgeMessage(type: string, payload: any): Promise<any> 
       console.error('[XoraPass Bridge] Session request failed:', err);
       return { error: 'request_failed', detail: String(err) };
     }
+  }
+
+  if (type === 'WEB_BRIDGE_DOMAIN_BLOCKED') {
+    const rawHost = payload?.hostname;
+    const hostname = extractHostname(typeof rawHost === 'string' ? rawHost : '');
+    if (!hostname) return { success: false, error: 'invalid_hostname' };
+    clearRemoteRiskCacheForHost(hostname);
+    void refreshBlocklist();
+    // Query open tabs and apply the full-page block immediately
+    browser.tabs.query({}).then((tabs) => {
+      for (const tab of tabs) {
+        if (tab.id !== undefined && tab.url && extractHostname(tab.url) === hostname) {
+          browser.tabs.sendMessage(tab.id, {
+            type: 'TAB_RISK_UPDATE',
+            payload: {
+              risk: {
+                decision: 'block',
+                showInterstitial: true,
+                riskScore: 100,
+                riskLevel: 'critical',
+                reasons: ['Domain blocked by platform administrator policy.'],
+                matchedTarget: null,
+              },
+            },
+          }).catch(() => {});
+        }
+      }
+    }).catch(() => {});
+    return { success: true };
   }
 
   return { error: 'unsupported_bridge_type' };

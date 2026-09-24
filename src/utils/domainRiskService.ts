@@ -134,6 +134,18 @@ export function clearRemoteRiskCache(): void {
 }
 
 /**
+ * Drops cached remote verdicts for a specific hostname.
+ */
+export function clearRemoteRiskCacheForHost(hostname: string): void {
+  const norm = extractHostname(hostname);
+  for (const key of MEMORY_CACHE.keys()) {
+    if (key.startsWith(norm + '|')) {
+      MEMORY_CACHE.delete(key);
+    }
+  }
+}
+
+/**
  * Builds the Authorization header value for a risk call. The credential is a
  * session JWT, or — while the vault is locked — a ready-made
  * "Shield <device-token>" value (see background/shield.ts), which the backend
@@ -377,22 +389,37 @@ export function mergeLocalAndRemoteRisk(
     }
   };
 
-  if (hasThreatIntelHit) {
+  const isPolicyAllowed = !!remote.policy_enforced && remote.decision === 'allow';
+  const isUnblockedOverride = (remote.reason_codes || []).some(
+    (rc) => rc === 'THREAT_INTEL_UNBLOCKED_WARNING'
+  );
+
+  if (isPolicyAllowed) {
+    decision = 'allow';
+    score = remote.risk_score || 0;
+  } else if (hasThreatIntelHit && !isUnblockedOverride) {
     if (score < 85) score = 85;
     decision = 'block';
+  } else if (hasThreatIntelHit && isUnblockedOverride) {
+    decision = 'warn';
+    if (score < 65) score = 65;
   } else if (rank(remote.decision) > rank(local.decision)) {
     decision = remote.decision;
   }
 
   let riskLevel: RiskLevel = local.riskLevel;
-  if (score >= 90) riskLevel = 'critical';
-  else if (score >= 80) riskLevel = 'high';
-  else if (score >= 60) riskLevel = 'medium';
-  else if (score >= 30) riskLevel = 'low';
-  else riskLevel = 'safe';
+  if (isPolicyAllowed) {
+    riskLevel = 'safe';
+  } else {
+    if (score >= 90) riskLevel = 'critical';
+    else if (score >= 80) riskLevel = 'high';
+    else if (score >= 60) riskLevel = 'medium';
+    else if (score >= 30) riskLevel = 'low';
+    else riskLevel = 'safe';
 
-  if (hasThreatIntelHit && riskLevel !== 'critical') {
-    riskLevel = 'high';
+    if (hasThreatIntelHit && riskLevel !== 'critical' && !isUnblockedOverride) {
+      riskLevel = 'high';
+    }
   }
 
   // Merge unique reason strings. Defensively coerced to [] — a backend
@@ -410,9 +437,19 @@ export function mergeLocalAndRemoteRisk(
     reasons: combinedReasons,
     matchedTarget: local.matchedTarget || remote.matched_target || null,
     safeWarningMessage: remote.safe_warning_message || local.safeWarningMessage,
-    showInterstitial: !!remote.show_interstitial || hasThreatIntelHit || (decision === 'block' && score >= 85),
+    showInterstitial:
+      !isPolicyAllowed &&
+      (!!remote.show_interstitial ||
+        (hasThreatIntelHit && !isUnblockedOverride) ||
+        (decision === 'block' && (!!remote.policy_enforced || score >= 85))),
     threatIntelSignals: remote.threat_intel_signals,
   };
+}
+
+export interface ReportPhishingResponse {
+  success: boolean;
+  alreadyBlocked?: boolean;
+  duplicate?: boolean;
 }
 
 /**
@@ -427,7 +464,7 @@ export async function reportPhishing(
   riskLevel?: string,
   fetchFn: typeof fetch = globalThis.fetch,
   getJwtFn?: () => Promise<string>
-): Promise<boolean> {
+): Promise<ReportPhishingResponse> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const jwt = await getJwtOrEmpty(getJwtFn);
   if (jwt) headers['Authorization'] = authHeaderValue(jwt);
@@ -438,11 +475,16 @@ export async function reportPhishing(
       headers,
       body: JSON.stringify({ hostname, decision, risk_level: riskLevel }),
     });
-    if (!res.ok) return false;
-    const data = (await res.json()) as { success?: boolean };
-    return !!data.success;
+    if (!res.ok) return { success: false };
+    clearRemoteRiskCacheForHost(hostname);
+    const data = (await res.json()) as { success?: boolean; already_blocked?: boolean; duplicate?: boolean };
+    return {
+      success: !!data.success,
+      alreadyBlocked: !!data.already_blocked,
+      duplicate: !!data.duplicate,
+    };
   } catch {
-    return false;
+    return { success: false };
   }
 }
 

@@ -4,7 +4,12 @@
 export const LOWER = 'abcdefghijklmnopqrstuvwxyz';
 export const UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 export const DIGITS = '0123456789';
-export const SYMBOLS = '!@#$%^&*()-_=+[]{}:;,.?';
+// Universally safe symbols — accepted by Steam, most banks, Google, Apple, and
+// government portals. Characters like []{}:;,. are excluded because many sites
+// silently reject them, causing "password not allowed" errors.
+export const SYMBOLS = '!@#$%^&*()-_=+?';
+// Full extended set for sites that accept all printable ASCII.
+export const SYMBOLS_EXTENDED = '!@#$%^&*()-_=+[]{}:;,.?';
 
 // Glyphs that are easy to confuse when a password has to be read aloud or
 // typed from a screen.

@@ -364,10 +364,23 @@ async function maybeRunAiScan(href: string): Promise<void> {
   } catch {
     return;
   }
-  if (!shouldAiScan(page.cues, domainRisk?.riskScore ?? 0)) return;
+  const hasThreatAlert =
+    Object.values(domainRisk?.threatIntelSignals || {}).some(
+      (s) => s === 'phishing_hit' || s === 'malware_hit' || s === 'suspicious_scan'
+    ) || (domainRisk?.reasons || []).some((r: string) => /threat-intel|threat intel|web risk|radar/i.test(r));
+
+  if (!hasThreatAlert && !shouldAiScan(page.cues, domainRisk?.riskScore ?? 0)) return;
 
   const res: any = await browser.runtime
-    .sendMessage({ type: 'SHIELD_AI_SCAN', payload: { page, pageSignals: worthAssessingSignals() } })
+    .sendMessage({
+      type: 'SHIELD_AI_SCAN',
+      payload: {
+        page,
+        pageSignals: worthAssessingSignals(),
+        threatIntelSignals: domainRisk?.threatIntelSignals,
+        hasThreatIntelHit: hasThreatAlert,
+      },
+    })
     .catch(() => null);
   if (!res || typeof res.risk_score !== 'number' || res.risk_score < 45) return;
   if (window.location.href.split('#')[0] !== href || isInterstitialOpen()) return;
@@ -384,13 +397,92 @@ async function maybeRunAiScan(href: string): Promise<void> {
         : 'XoraPass Shield found signs that this page is a scam. Don\'t enter personal or payment details.',
     currentDomain: window.location.hostname,
     riskLevel: blocking ? 'high' : 'medium',
-    onReportPhishing: () =>
+    onReportPhishing: blocking
+      ? undefined
+      : async () => {
+          try {
+            const r: any = await browser.runtime.sendMessage({
+              type: 'REPORT_PHISHING',
+              payload: { hostname: window.location.hostname, decision: 'warn', riskLevel: 'medium' },
+            });
+            if (r?.alreadyBlocked) {
+              triggerFullPageBlock({
+                message: 'This domain has been confirmed as phishing or malware and is blocked by XoraPass Shield.',
+                reasons: ['User phishing report confirmed domain is blocked.'],
+              });
+              return { success: true, alreadyBlocked: true };
+            }
+            if (r?.success) {
+              setTimeout(async () => {
+                try {
+                  const checkRes: any = await browser.runtime.sendMessage({
+                    type: 'GET_CREDENTIALS',
+                    payload: { url: window.location.href },
+                  });
+                  if (checkRes?.risk?.decision === 'block') {
+                    domainRisk = checkRes.risk;
+                    triggerFullPageBlock({
+                      message: checkRes.risk.safeWarningMessage || 'This domain has been verified and blocked by XoraPass Shield.',
+                      reasons: checkRes.risk.reasons,
+                    });
+                  }
+                } catch {}
+              }, 4000);
+            }
+            return { success: !!r?.success, alreadyBlocked: !!r?.alreadyBlocked };
+          } catch {
+            return { success: false };
+          }
+        },
+  });
+}
+
+function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): void {
+  closeRiskWarning();
+  const currentHostname = window.location.hostname;
+  const expectedDomain = domainRisk?.matchedTarget || lookalikeWarning?.target || null;
+  const message =
+    opts?.message ||
+    getRiskWarningMessage() ||
+    'XoraPass Shield blocked this site: Confirmed phishing or malware domain.';
+  const reasons = opts?.reasons || domainRisk?.reasons || ['Domain confirmed blocked by security policy.'];
+
+  showPhishingInterstitial({
+    advisory: webRiskAdvisoryFromSignals(domainRisk?.threatIntelSignals),
+    currentDomain: currentHostname,
+    expectedDomain,
+    message,
+    reasons,
+    onGoToOfficial: expectedDomain
+      ? () => {
+          window.location.href = `https://${expectedDomain}`;
+        }
+      : undefined,
+    onLeave: () => {
+      try {
+        if (window.history.length > 1) {
+          window.history.back();
+          setTimeout(() => {
+            if (window.location.href !== 'about:blank') {
+              window.location.replace('about:blank');
+            }
+          }, 300);
+        } else {
+          window.location.replace('about:blank');
+        }
+      } catch {
+        window.location.replace('about:blank');
+      }
+    },
+    onRequestAllowlist: () =>
       browser.runtime
-        .sendMessage({
-          type: 'REPORT_PHISHING',
-          payload: { hostname: window.location.hostname, decision: blocking ? 'block' : 'warn', riskLevel: blocking ? 'high' : 'medium' },
-        })
-        .then((r: any) => ({ success: !!r?.success }))
+        .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: currentHostname } })
+        .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
+        .catch(() => ({ success: false, reason: 'network' })),
+    onProceedAnyway: () =>
+      browser.runtime
+        .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname } })
+        .then((res: any) => ({ success: !!res?.success }))
         .catch(() => ({ success: false })),
   });
 }
@@ -422,58 +514,12 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   const message = getRiskWarningMessage();
   if (!message) return;
 
-  // A server-confirmed critical verdict on a credential page gets the full-page
+  // A server-confirmed critical verdict or block decision gets the full-page
   // block instead of a corner banner: at that point letting the user read and
   // interact with the page at all is the risk being managed.
-  if (domainRisk?.showInterstitial && !navHandled) {
+  if ((domainRisk?.showInterstitial || (domainRisk as any)?.show_interstitial || domainRisk?.decision === 'block') && !navHandled) {
     lastWarnedRiskKey = key;
-    closeRiskWarning();
-    showPhishingInterstitial({
-      advisory: webRiskAdvisoryFromSignals(domainRisk.threatIntelSignals),
-      currentDomain: window.location.hostname,
-      expectedDomain: domainRisk.matchedTarget || lookalikeWarning?.target || null,
-      message,
-      reasons: domainRisk.reasons,
-      onGoToOfficial: domainRisk.matchedTarget
-        ? () => {
-            window.location.href = `https://${domainRisk!.matchedTarget}`;
-          }
-        : undefined,
-      onLeave: () => {
-        try {
-          if (window.history.length > 1) {
-            window.history.back();
-            setTimeout(() => {
-              if (window.location.href !== 'about:blank') {
-                window.location.replace('about:blank');
-              }
-            }, 300);
-          } else {
-            window.location.replace('about:blank');
-          }
-        } catch {
-          window.location.replace('about:blank');
-        }
-      },
-      onRequestAllowlist: () =>
-        browser.runtime
-          .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: window.location.hostname } })
-          .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
-          .catch(() => ({ success: false, reason: 'network' })),
-      onReportPhishing: () =>
-        browser.runtime
-          .sendMessage({
-            type: 'REPORT_PHISHING',
-            payload: { hostname: window.location.hostname, decision, riskLevel: domainRisk?.riskLevel },
-          })
-          .then((res: any) => ({ success: !!res?.success }))
-          .catch(() => ({ success: false })),
-      onProceedAnyway: () =>
-        browser.runtime
-          .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: window.location.hostname } })
-          .then((res: any) => ({ success: !!res?.success }))
-          .catch(() => ({ success: false })),
-    });
+    triggerFullPageBlock();
     return;
   }
 
@@ -530,14 +576,43 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
           window.location.href = `https://${expectedDomain}`;
         }
       : undefined,
-    onReportPhishing: () =>
-      browser.runtime
-        .sendMessage({
-          type: 'REPORT_PHISHING',
-          payload: { hostname: currentHostname, decision, riskLevel: domainRisk?.riskLevel },
-        })
-        .then((res: any) => ({ success: !!res?.success }))
-        .catch(() => ({ success: false })),
+    onReportPhishing: decision === 'block'
+      ? undefined
+      : async () => {
+          try {
+            const res: any = await browser.runtime.sendMessage({
+              type: 'REPORT_PHISHING',
+              payload: { hostname: currentHostname, decision, riskLevel: domainRisk?.riskLevel },
+            });
+            if (res?.alreadyBlocked) {
+              triggerFullPageBlock({
+                message: 'This domain has been confirmed as phishing or malware and is blocked by XoraPass Shield.',
+                reasons: ['User phishing report confirmed domain is blocked.'],
+              });
+              return { success: true, alreadyBlocked: true };
+            }
+            if (res?.success) {
+              setTimeout(async () => {
+                try {
+                  const checkRes: any = await browser.runtime.sendMessage({
+                    type: 'GET_CREDENTIALS',
+                    payload: { url: window.location.href },
+                  });
+                  if (checkRes?.risk?.decision === 'block') {
+                    domainRisk = checkRes.risk;
+                    triggerFullPageBlock({
+                      message: checkRes.risk.safeWarningMessage || 'This domain has been verified and blocked by XoraPass Shield.',
+                      reasons: checkRes.risk.reasons,
+                    });
+                  }
+                } catch {}
+              }, 4000);
+            }
+            return { success: !!res?.success, alreadyBlocked: !!res?.alreadyBlocked };
+          } catch {
+            return { success: false };
+          }
+        },
     onRequestAllowlist: () =>
       browser.runtime
         .sendMessage({
@@ -1375,6 +1450,29 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
       autofillField(usernameEl, res.username);
     }
     autofillField(passInput, res.value);
+
+    // Fill any confirm-password sibling with the same value so the user
+    // doesn't have to retype it. Only fill fields that are empty, fillable,
+    // and look like a "confirm / repeat" new-password box — never the primary
+    // password input we just filled.
+    const confirmSiblings = (Array.from(
+      document.querySelectorAll('input[type="password"]')
+    ) as HTMLInputElement[]).filter((p) => p !== passInput && isFillable(p) && !p.value);
+
+    for (const sibling of confirmSiblings) {
+      const isNew = looksLikeNewPassword(
+        {
+          autocomplete: sibling.getAttribute('autocomplete'),
+          name: sibling.name,
+          id: sibling.id,
+          placeholder: sibling.getAttribute('placeholder'),
+          ariaLabel: sibling.getAttribute('aria-label'),
+        },
+        true,
+        window.location.href
+      );
+      if (isNew) autofillField(sibling, res.value);
+    }
   }
 
   // ── 2FA TOTP Code Handling ──────────────────────────────────────────────────
@@ -1602,20 +1700,42 @@ async function confirmFillIfNeeded(cred: OverlayCredential): Promise<boolean> {
  * plain `el.value = x` is silently reverted by React's controlled inputs.
  */
 function autofillField(el: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(
+  // Use the native setter to bypass React/Vue's value tracking so the
+  // internal state and the DOM value are both updated.
+  const nativeSetter = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
     'value'
   )?.set;
 
-  if (setter) {
-    setter.call(el, value);
+  // 1. Focus — many validators (Steam, Angular, custom) only arm their
+  //    change-detection after the field has been focused.
+  el.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+
+  // 2. Set the value via the native prototype setter so React's synthetic
+  //    event system sees the change (direct el.value = x is intercepted by
+  //    React and won't update internal fiber state).
+  if (nativeSetter) {
+    nativeSetter.call(el, value);
   } else {
     el.value = value;
   }
 
-  el.dispatchEvent(new Event('input', { bubbles: true }));
+  // 3. InputEvent with inputType='insertText' — React, Vue 3, and many
+  //    plain-JS validators check event.inputType to decide whether to run
+  //    validation. A generic Event('input') is ignored by those frameworks.
+  el.dispatchEvent(
+    new InputEvent('input', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: value,
+    })
+  );
+
+  // 4. change + blur — needed by jQuery validate, Angular, and sites that
+  //    only compare confirm vs. password on blur.
   el.dispatchEvent(new Event('change', { bubbles: true }));
-  el.dispatchEvent(new Event('blur', { bubbles: true }));
+  el.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
 }
 
 // ---------------------------------------------------------------------------
