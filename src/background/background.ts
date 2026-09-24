@@ -792,17 +792,28 @@ async function saveSecretToVault(input: {
 // cache -- that one call is the moment-of-truth check right before a secret
 // is used, and always reads live state.
 let sessionsCache: { data: AiSession[]; fetchedAt: number } | null = null;
-const SESSIONS_CACHE_MS = 4000;
+const SESSIONS_CACHE_MS = 5000;
+let sessionsInFlight: Promise<AiSession[]> | null = null;
 
 async function getActiveAiSessions(): Promise<AiSession[]> {
   const now = Date.now();
   if (sessionsCache && now - sessionsCache.fetchedAt < SESSIONS_CACHE_MS) {
     return sessionsCache.data;
   }
-  const { ok, data } = await apiJwt('GET', '/ai/sessions');
-  const sessions = ok && Array.isArray(data) ? (data as AiSession[]) : [];
-  sessionsCache = { data: sessions, fetchedAt: now };
-  return sessions;
+  if (sessionsInFlight) {
+    return sessionsInFlight;
+  }
+  sessionsInFlight = (async () => {
+    try {
+      const { ok, data } = await apiJwt('GET', '/ai/sessions');
+      const sessions = ok && Array.isArray(data) ? (data as AiSession[]) : [];
+      sessionsCache = { data: sessions, fetchedAt: Date.now() };
+      return sessions;
+    } finally {
+      sessionsInFlight = null;
+    }
+  })();
+  return sessionsInFlight;
 }
 
 /**
