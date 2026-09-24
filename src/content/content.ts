@@ -1450,6 +1450,29 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
       autofillField(usernameEl, res.username);
     }
     autofillField(passInput, res.value);
+
+    // Fill any confirm-password sibling with the same value so the user
+    // doesn't have to retype it. Only fill fields that are empty, fillable,
+    // and look like a "confirm / repeat" new-password box — never the primary
+    // password input we just filled.
+    const confirmSiblings = (Array.from(
+      document.querySelectorAll('input[type="password"]')
+    ) as HTMLInputElement[]).filter((p) => p !== passInput && isFillable(p) && !p.value);
+
+    for (const sibling of confirmSiblings) {
+      const isNew = looksLikeNewPassword(
+        {
+          autocomplete: sibling.getAttribute('autocomplete'),
+          name: sibling.name,
+          id: sibling.id,
+          placeholder: sibling.getAttribute('placeholder'),
+          ariaLabel: sibling.getAttribute('aria-label'),
+        },
+        true,
+        window.location.href
+      );
+      if (isNew) autofillField(sibling, res.value);
+    }
   }
 
   // ── 2FA TOTP Code Handling ──────────────────────────────────────────────────
