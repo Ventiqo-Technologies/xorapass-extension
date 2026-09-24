@@ -76,6 +76,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // extension is genuinely unlocked; there is no separate approval step here
   // because the real consent already happened when a human unlocked it.
   'WEB_BRIDGE_REQUEST_SESSION',
+  'WEB_BRIDGE_DOMAIN_BLOCKED',
   'GET_COPIED_SECRET',
   'CHECK_DOMAIN_RISK',
   // Risk-warning safe actions: same trust tier as CHECK_DOMAIN_RISK — our own
@@ -261,6 +262,7 @@ export function validateMessage(
     'WEB_BRIDGE_DEVICE_INFO',
     'WEB_BRIDGE_DELIVER_KEY',
     'WEB_BRIDGE_REQUEST_SESSION',
+    'WEB_BRIDGE_DOMAIN_BLOCKED',
   ]);
   if (isExternalWebPage && !EXTERNAL_WEB_ALLOWED.has(type)) {
     return { ok: false, reason: 'unauthorized-external-type' };
@@ -275,6 +277,11 @@ export function validateMessage(
   const payload = isPlainObject(message.payload) ? message.payload : undefined;
 
   switch (type) {
+    case 'WEB_BRIDGE_DOMAIN_BLOCKED':
+      if (!payload || typeof payload.hostname !== 'string' || !payload.hostname.trim()) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
     case 'WEB_BRIDGE_LOGIN':
       if (!payload || typeof payload.token !== 'string' || typeof payload.encKey !== 'string' || typeof payload.email !== 'string') {
         return { ok: false, reason: 'bad-payload' };

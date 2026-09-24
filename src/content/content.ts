@@ -514,10 +514,10 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   const message = getRiskWarningMessage();
   if (!message) return;
 
-  // A server-confirmed critical verdict on a credential page gets the full-page
+  // A server-confirmed critical verdict or block decision gets the full-page
   // block instead of a corner banner: at that point letting the user read and
   // interact with the page at all is the risk being managed.
-  if (domainRisk?.showInterstitial && !navHandled) {
+  if ((domainRisk?.showInterstitial || (domainRisk as any)?.show_interstitial || domainRisk?.decision === 'block') && !navHandled) {
     lastWarnedRiskKey = key;
     triggerFullPageBlock();
     return;

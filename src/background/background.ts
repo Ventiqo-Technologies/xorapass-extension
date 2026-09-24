@@ -13,6 +13,7 @@ import {
   getMyPhishingReports,
   getMyDomainAllowlistRequests,
   clearRemoteRiskCache,
+  clearRemoteRiskCacheForHost,
   type FormThreatContext,
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
@@ -2347,7 +2348,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
     type === 'WEB_BRIDGE_LOGIN' ||
     type === 'WEB_BRIDGE_DEVICE_INFO' ||
     type === 'WEB_BRIDGE_DELIVER_KEY' ||
-    type === 'WEB_BRIDGE_REQUEST_SESSION'
+    type === 'WEB_BRIDGE_REQUEST_SESSION' ||
+    type === 'WEB_BRIDGE_DOMAIN_BLOCKED'
   ) {
     return handleWebBridgeMessage(type, msg.payload);
   }
@@ -2676,6 +2678,35 @@ async function handleWebBridgeMessage(type: string, payload: any): Promise<any> 
       console.error('[XoraPass Bridge] Session request failed:', err);
       return { error: 'request_failed', detail: String(err) };
     }
+  }
+
+  if (type === 'WEB_BRIDGE_DOMAIN_BLOCKED') {
+    const rawHost = payload?.hostname;
+    const hostname = extractHostname(typeof rawHost === 'string' ? rawHost : '');
+    if (!hostname) return { success: false, error: 'invalid_hostname' };
+    clearRemoteRiskCacheForHost(hostname);
+    void refreshBlocklist();
+    // Query open tabs and apply the full-page block immediately
+    browser.tabs.query({}).then((tabs) => {
+      for (const tab of tabs) {
+        if (tab.id !== undefined && tab.url && extractHostname(tab.url) === hostname) {
+          browser.tabs.sendMessage(tab.id, {
+            type: 'TAB_RISK_UPDATE',
+            payload: {
+              risk: {
+                decision: 'block',
+                showInterstitial: true,
+                riskScore: 100,
+                riskLevel: 'critical',
+                reasons: ['Domain blocked by platform administrator policy.'],
+                matchedTarget: null,
+              },
+            },
+          }).catch(() => {});
+        }
+      }
+    }).catch(() => {});
+    return { success: true };
   }
 
   return { error: 'unsupported_bridge_type' };
