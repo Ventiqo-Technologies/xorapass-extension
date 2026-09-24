@@ -208,4 +208,55 @@ describe('mergeLocalAndRemoteRisk', () => {
     expect(merged.riskScore).toBeGreaterThanOrEqual(85);
     expect(merged.showInterstitial).toBe(true);
   });
+
+  it('preserves clean allow when an administrative policy is enforced even with threat intel signals', () => {
+    const cleanLocal: DomainRiskAssessment = {
+      pageHostname: 'internal-tool.company.com',
+      decision: 'allow',
+      riskScore: 0,
+      riskLevel: 'safe',
+      reasons: [],
+    };
+
+    const remote: RemoteDomainRiskResponse = {
+      decision: 'allow',
+      risk_score: 0,
+      risk_level: 'safe',
+      policy_enforced: true,
+      reasons: ['Domain explicitly allowed by workspace security policy.'],
+      reason_codes: ['POLICY_MATCH_ALLOW'],
+      threat_intel_signals: { google_web_risk: 'phishing_hit' },
+    };
+
+    const merged = mergeLocalAndRemoteRisk(cleanLocal, remote);
+    expect(merged.decision).toBe('allow');
+    expect(merged.riskLevel).toBe('safe');
+    expect(merged.riskScore).toBe(0);
+    expect(merged.showInterstitial).toBe(false);
+  });
+
+  it('downgrades to warn and does not force full-screen interstitial when domain was unblocked by admin', () => {
+    const cleanLocal: DomainRiskAssessment = {
+      pageHostname: 'unblocked-domain.com',
+      decision: 'allow',
+      riskScore: 10,
+      riskLevel: 'safe',
+      reasons: [],
+    };
+
+    const remote: RemoteDomainRiskResponse = {
+      decision: 'warn',
+      risk_score: 65,
+      risk_level: 'medium',
+      reasons: ['Threat intelligence flags this domain, but admin previously unblocked it.'],
+      reason_codes: ['THREAT_INTEL_UNBLOCKED_WARNING', 'THREAT_INTEL_PHISHING_HIT'],
+      threat_intel_signals: { google_web_risk: 'phishing_hit' },
+    };
+
+    const merged = mergeLocalAndRemoteRisk(cleanLocal, remote);
+    expect(merged.decision).toBe('warn');
+    expect(merged.riskScore).toBeGreaterThanOrEqual(65);
+    expect(merged.showInterstitial).toBe(false);
+  });
 });
+

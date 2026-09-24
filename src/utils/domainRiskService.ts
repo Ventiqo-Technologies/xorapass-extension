@@ -389,11 +389,15 @@ export function mergeLocalAndRemoteRisk(
     }
   };
 
+  const isPolicyAllowed = !!remote.policy_enforced && remote.decision === 'allow';
   const isUnblockedOverride = (remote.reason_codes || []).some(
-    (rc) => rc === 'THREAT_INTEL_UNBLOCKED_WARNING' || rc === 'THREAT_INTEL_ALLOWLIST_WARNING'
+    (rc) => rc === 'THREAT_INTEL_UNBLOCKED_WARNING'
   );
 
-  if (hasThreatIntelHit && !isUnblockedOverride) {
+  if (isPolicyAllowed) {
+    decision = 'allow';
+    score = remote.risk_score || 0;
+  } else if (hasThreatIntelHit && !isUnblockedOverride) {
     if (score < 85) score = 85;
     decision = 'block';
   } else if (hasThreatIntelHit && isUnblockedOverride) {
@@ -404,14 +408,18 @@ export function mergeLocalAndRemoteRisk(
   }
 
   let riskLevel: RiskLevel = local.riskLevel;
-  if (score >= 90) riskLevel = 'critical';
-  else if (score >= 80) riskLevel = 'high';
-  else if (score >= 60) riskLevel = 'medium';
-  else if (score >= 30) riskLevel = 'low';
-  else riskLevel = 'safe';
+  if (isPolicyAllowed) {
+    riskLevel = 'safe';
+  } else {
+    if (score >= 90) riskLevel = 'critical';
+    else if (score >= 80) riskLevel = 'high';
+    else if (score >= 60) riskLevel = 'medium';
+    else if (score >= 30) riskLevel = 'low';
+    else riskLevel = 'safe';
 
-  if (hasThreatIntelHit && riskLevel !== 'critical' && !isUnblockedOverride) {
-    riskLevel = 'high';
+    if (hasThreatIntelHit && riskLevel !== 'critical' && !isUnblockedOverride) {
+      riskLevel = 'high';
+    }
   }
 
   // Merge unique reason strings. Defensively coerced to [] — a backend
@@ -430,9 +438,10 @@ export function mergeLocalAndRemoteRisk(
     matchedTarget: local.matchedTarget || remote.matched_target || null,
     safeWarningMessage: remote.safe_warning_message || local.safeWarningMessage,
     showInterstitial:
-      !!remote.show_interstitial ||
-      hasThreatIntelHit ||
-      (decision === 'block' && (!!remote.policy_enforced || score >= 85)),
+      !isPolicyAllowed &&
+      (!!remote.show_interstitial ||
+        (hasThreatIntelHit && !isUnblockedOverride) ||
+        (decision === 'block' && (!!remote.policy_enforced || score >= 85))),
     threatIntelSignals: remote.threat_intel_signals,
   };
 }
