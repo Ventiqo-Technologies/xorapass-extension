@@ -177,6 +177,12 @@ export const HIGH_RISK_TLDS = new Set([
   'cc',
   'cfd',
   'sbs',
+  'shop',
+  'homes',
+  'store',
+  'site',
+  'live',
+  'online',
 ]);
 
 /**
