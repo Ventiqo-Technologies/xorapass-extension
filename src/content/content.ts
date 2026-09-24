@@ -364,10 +364,23 @@ async function maybeRunAiScan(href: string): Promise<void> {
   } catch {
     return;
   }
-  if (!shouldAiScan(page.cues, domainRisk?.riskScore ?? 0)) return;
+  const hasThreatAlert =
+    Object.values(domainRisk?.threatIntelSignals || {}).some(
+      (s) => s === 'phishing_hit' || s === 'malware_hit' || s === 'suspicious_scan'
+    ) || (domainRisk?.reasons || []).some((r: string) => /threat-intel|threat intel|web risk|radar/i.test(r));
+
+  if (!hasThreatAlert && !shouldAiScan(page.cues, domainRisk?.riskScore ?? 0)) return;
 
   const res: any = await browser.runtime
-    .sendMessage({ type: 'SHIELD_AI_SCAN', payload: { page, pageSignals: worthAssessingSignals() } })
+    .sendMessage({
+      type: 'SHIELD_AI_SCAN',
+      payload: {
+        page,
+        pageSignals: worthAssessingSignals(),
+        threatIntelSignals: domainRisk?.threatIntelSignals,
+        hasThreatIntelHit: hasThreatAlert,
+      },
+    })
     .catch(() => null);
   if (!res || typeof res.risk_score !== 'number' || res.risk_score < 45) return;
   if (window.location.href.split('#')[0] !== href || isInterstitialOpen()) return;

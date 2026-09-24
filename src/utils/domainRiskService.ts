@@ -389,9 +389,16 @@ export function mergeLocalAndRemoteRisk(
     }
   };
 
-  if (hasThreatIntelHit) {
+  const isUnblockedOverride = (remote.reason_codes || []).some(
+    (rc) => rc === 'THREAT_INTEL_UNBLOCKED_WARNING' || rc === 'THREAT_INTEL_ALLOWLIST_WARNING'
+  );
+
+  if (hasThreatIntelHit && !isUnblockedOverride) {
     if (score < 85) score = 85;
     decision = 'block';
+  } else if (hasThreatIntelHit && isUnblockedOverride) {
+    decision = 'warn';
+    if (score < 65) score = 65;
   } else if (rank(remote.decision) > rank(local.decision)) {
     decision = remote.decision;
   }
@@ -403,7 +410,7 @@ export function mergeLocalAndRemoteRisk(
   else if (score >= 30) riskLevel = 'low';
   else riskLevel = 'safe';
 
-  if (hasThreatIntelHit && riskLevel !== 'critical') {
+  if (hasThreatIntelHit && riskLevel !== 'critical' && !isUnblockedOverride) {
     riskLevel = 'high';
   }
 

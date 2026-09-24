@@ -1048,7 +1048,12 @@ async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload
     ? ((session as Record<string, unknown>).vaultItems as VaultItem[] | undefined)
     : undefined;
   const knownHosts = (items || []).filter((i) => !!i.url).map((i) => extractHostname(i.url!)).filter(Boolean);
-  if (isAllowlistedHost(host, allowlist) || isTrustedHost(host, knownHosts, cfg.trusted_domains)) return none;
+  const hasThreatAlert =
+    payload?.hasThreatIntelHit ||
+    Object.values(payload?.threatIntelSignals || {}).some(
+      (s) => s === 'phishing_hit' || s === 'malware_hit' || s === 'suspicious_scan'
+    );
+  if (!hasThreatAlert && (isAllowlistedHost(host, allowlist) || isTrustedHost(host, knownHosts, cfg.trusted_domains))) return none;
 
   const cleanUrl = sanitizeUrlForRiskCheck(url);
   const page = payload?.page;
