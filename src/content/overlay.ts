@@ -1643,6 +1643,7 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
     menu.appendChild(banner);
   }
 
+
   if (opts.suggestion) {
     const sug = opts.suggestion;
     let currentLength = sug.length || 20;
@@ -1742,6 +1743,7 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
   }
 
   for (const cred of opts.credentials) {
+
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'menu-item';

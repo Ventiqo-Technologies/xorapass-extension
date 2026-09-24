@@ -1700,20 +1700,42 @@ async function confirmFillIfNeeded(cred: OverlayCredential): Promise<boolean> {
  * plain `el.value = x` is silently reverted by React's controlled inputs.
  */
 function autofillField(el: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(
+  // Use the native setter to bypass React/Vue's value tracking so the
+  // internal state and the DOM value are both updated.
+  const nativeSetter = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
     'value'
   )?.set;
 
-  if (setter) {
-    setter.call(el, value);
+  // 1. Focus — many validators (Steam, Angular, custom) only arm their
+  //    change-detection after the field has been focused.
+  el.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+
+  // 2. Set the value via the native prototype setter so React's synthetic
+  //    event system sees the change (direct el.value = x is intercepted by
+  //    React and won't update internal fiber state).
+  if (nativeSetter) {
+    nativeSetter.call(el, value);
   } else {
     el.value = value;
   }
 
-  el.dispatchEvent(new Event('input', { bubbles: true }));
+  // 3. InputEvent with inputType='insertText' — React, Vue 3, and many
+  //    plain-JS validators check event.inputType to decide whether to run
+  //    validation. A generic Event('input') is ignored by those frameworks.
+  el.dispatchEvent(
+    new InputEvent('input', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: value,
+    })
+  );
+
+  // 4. change + blur — needed by jQuery validate, Angular, and sites that
+  //    only compare confirm vs. password on blur.
   el.dispatchEvent(new Event('change', { bubbles: true }));
-  el.dispatchEvent(new Event('blur', { bubbles: true }));
+  el.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
 }
 
 // ---------------------------------------------------------------------------
