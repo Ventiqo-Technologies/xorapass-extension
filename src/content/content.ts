@@ -386,14 +386,91 @@ async function maybeRunAiScan(href: string): Promise<void> {
     riskLevel: blocking ? 'high' : 'medium',
     onReportPhishing: blocking
       ? undefined
-      : () =>
-          browser.runtime
-            .sendMessage({
+      : async () => {
+          try {
+            const r: any = await browser.runtime.sendMessage({
               type: 'REPORT_PHISHING',
               payload: { hostname: window.location.hostname, decision: 'warn', riskLevel: 'medium' },
-            })
-            .then((r: any) => ({ success: !!r?.success, alreadyBlocked: !!r?.alreadyBlocked }))
-            .catch(() => ({ success: false })),
+            });
+            if (r?.alreadyBlocked) {
+              triggerFullPageBlock({
+                message: 'This domain has been confirmed as phishing or malware and is blocked by XoraPass Shield.',
+                reasons: ['User phishing report confirmed domain is blocked.'],
+              });
+              return { success: true, alreadyBlocked: true };
+            }
+            if (r?.success) {
+              setTimeout(async () => {
+                try {
+                  const checkRes: any = await browser.runtime.sendMessage({
+                    type: 'GET_CREDENTIALS',
+                    payload: { url: window.location.href },
+                  });
+                  if (checkRes?.risk?.decision === 'block') {
+                    domainRisk = checkRes.risk;
+                    triggerFullPageBlock({
+                      message: checkRes.risk.safeWarningMessage || 'This domain has been verified and blocked by XoraPass Shield.',
+                      reasons: checkRes.risk.reasons,
+                    });
+                  }
+                } catch {}
+              }, 4000);
+            }
+            return { success: !!r?.success, alreadyBlocked: !!r?.alreadyBlocked };
+          } catch {
+            return { success: false };
+          }
+        },
+  });
+}
+
+function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): void {
+  closeRiskWarning();
+  const currentHostname = window.location.hostname;
+  const expectedDomain = domainRisk?.matchedTarget || lookalikeWarning?.target || null;
+  const message =
+    opts?.message ||
+    getRiskWarningMessage() ||
+    'XoraPass Shield blocked this site: Confirmed phishing or malware domain.';
+  const reasons = opts?.reasons || domainRisk?.reasons || ['Domain confirmed blocked by security policy.'];
+
+  showPhishingInterstitial({
+    advisory: webRiskAdvisoryFromSignals(domainRisk?.threatIntelSignals),
+    currentDomain: currentHostname,
+    expectedDomain,
+    message,
+    reasons,
+    onGoToOfficial: expectedDomain
+      ? () => {
+          window.location.href = `https://${expectedDomain}`;
+        }
+      : undefined,
+    onLeave: () => {
+      try {
+        if (window.history.length > 1) {
+          window.history.back();
+          setTimeout(() => {
+            if (window.location.href !== 'about:blank') {
+              window.location.replace('about:blank');
+            }
+          }, 300);
+        } else {
+          window.location.replace('about:blank');
+        }
+      } catch {
+        window.location.replace('about:blank');
+      }
+    },
+    onRequestAllowlist: () =>
+      browser.runtime
+        .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: currentHostname } })
+        .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
+        .catch(() => ({ success: false, reason: 'network' })),
+    onProceedAnyway: () =>
+      browser.runtime
+        .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname } })
+        .then((res: any) => ({ success: !!res?.success }))
+        .catch(() => ({ success: false })),
   });
 }
 
@@ -429,55 +506,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // interact with the page at all is the risk being managed.
   if (domainRisk?.showInterstitial && !navHandled) {
     lastWarnedRiskKey = key;
-    closeRiskWarning();
-    showPhishingInterstitial({
-      advisory: webRiskAdvisoryFromSignals(domainRisk.threatIntelSignals),
-      currentDomain: window.location.hostname,
-      expectedDomain: domainRisk.matchedTarget || lookalikeWarning?.target || null,
-      message,
-      reasons: domainRisk.reasons,
-      onGoToOfficial: domainRisk.matchedTarget
-        ? () => {
-            window.location.href = `https://${domainRisk!.matchedTarget}`;
-          }
-        : undefined,
-      onLeave: () => {
-        try {
-          if (window.history.length > 1) {
-            window.history.back();
-            setTimeout(() => {
-              if (window.location.href !== 'about:blank') {
-                window.location.replace('about:blank');
-              }
-            }, 300);
-          } else {
-            window.location.replace('about:blank');
-          }
-        } catch {
-          window.location.replace('about:blank');
-        }
-      },
-      onRequestAllowlist: () =>
-        browser.runtime
-          .sendMessage({ type: 'REQUEST_DOMAIN_ALLOWLIST', payload: { hostname: window.location.hostname } })
-          .then((res: any) => ({ success: !!res?.success, reason: res?.reason }))
-          .catch(() => ({ success: false, reason: 'network' })),
-      onReportPhishing: decision === 'block'
-        ? undefined
-        : () =>
-            browser.runtime
-              .sendMessage({
-                type: 'REPORT_PHISHING',
-                payload: { hostname: window.location.hostname, decision, riskLevel: domainRisk?.riskLevel },
-              })
-              .then((res: any) => ({ success: !!res?.success, alreadyBlocked: !!res?.alreadyBlocked }))
-              .catch(() => ({ success: false })),
-      onProceedAnyway: () =>
-        browser.runtime
-          .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: window.location.hostname } })
-          .then((res: any) => ({ success: !!res?.success }))
-          .catch(() => ({ success: false })),
-    });
+    triggerFullPageBlock();
     return;
   }
 
@@ -536,14 +565,41 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
       : undefined,
     onReportPhishing: decision === 'block'
       ? undefined
-      : () =>
-          browser.runtime
-            .sendMessage({
+      : async () => {
+          try {
+            const res: any = await browser.runtime.sendMessage({
               type: 'REPORT_PHISHING',
               payload: { hostname: currentHostname, decision, riskLevel: domainRisk?.riskLevel },
-            })
-            .then((res: any) => ({ success: !!res?.success, alreadyBlocked: !!res?.alreadyBlocked }))
-            .catch(() => ({ success: false })),
+            });
+            if (res?.alreadyBlocked) {
+              triggerFullPageBlock({
+                message: 'This domain has been confirmed as phishing or malware and is blocked by XoraPass Shield.',
+                reasons: ['User phishing report confirmed domain is blocked.'],
+              });
+              return { success: true, alreadyBlocked: true };
+            }
+            if (res?.success) {
+              setTimeout(async () => {
+                try {
+                  const checkRes: any = await browser.runtime.sendMessage({
+                    type: 'GET_CREDENTIALS',
+                    payload: { url: window.location.href },
+                  });
+                  if (checkRes?.risk?.decision === 'block') {
+                    domainRisk = checkRes.risk;
+                    triggerFullPageBlock({
+                      message: checkRes.risk.safeWarningMessage || 'This domain has been verified and blocked by XoraPass Shield.',
+                      reasons: checkRes.risk.reasons,
+                    });
+                  }
+                } catch {}
+              }, 4000);
+            }
+            return { success: !!res?.success, alreadyBlocked: !!res?.alreadyBlocked };
+          } catch {
+            return { success: false };
+          }
+        },
     onRequestAllowlist: () =>
       browser.runtime
         .sendMessage({

@@ -134,6 +134,18 @@ export function clearRemoteRiskCache(): void {
 }
 
 /**
+ * Drops cached remote verdicts for a specific hostname.
+ */
+export function clearRemoteRiskCacheForHost(hostname: string): void {
+  const norm = extractHostname(hostname);
+  for (const key of MEMORY_CACHE.keys()) {
+    if (key.startsWith(norm + '|')) {
+      MEMORY_CACHE.delete(key);
+    }
+  }
+}
+
+/**
  * Builds the Authorization header value for a risk call. The credential is a
  * session JWT, or — while the vault is locked — a ready-made
  * "Shield <device-token>" value (see background/shield.ts), which the backend
@@ -410,7 +422,10 @@ export function mergeLocalAndRemoteRisk(
     reasons: combinedReasons,
     matchedTarget: local.matchedTarget || remote.matched_target || null,
     safeWarningMessage: remote.safe_warning_message || local.safeWarningMessage,
-    showInterstitial: !!remote.show_interstitial || hasThreatIntelHit || (decision === 'block' && score >= 85),
+    showInterstitial:
+      !!remote.show_interstitial ||
+      hasThreatIntelHit ||
+      (decision === 'block' && (!!remote.policy_enforced || score >= 85)),
     threatIntelSignals: remote.threat_intel_signals,
   };
 }
@@ -445,6 +460,7 @@ export async function reportPhishing(
       body: JSON.stringify({ hostname, decision, risk_level: riskLevel }),
     });
     if (!res.ok) return { success: false };
+    clearRemoteRiskCacheForHost(hostname);
     const data = (await res.json()) as { success?: boolean; already_blocked?: boolean; duplicate?: boolean };
     return {
       success: !!data.success,
