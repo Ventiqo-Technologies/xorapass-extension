@@ -1380,19 +1380,21 @@ function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
     initialLength = fieldMinLength;
   }
 
-  const isPasswordField = anchor.type === 'password' || passInput.type === 'password';
-  const isNew = newPasswordFields.get(passInput) === true || looksLikeNewPassword({
+  // Password suggestions are ONLY offered when the active field (anchor) is the password input itself.
+  // Never offer password suggestions when the user is focused on a username, email, or identifier field.
+  const isAnchorPasswordField = anchor === passInput;
+  const isNew = isAnchorPasswordField && (newPasswordFields.get(passInput) === true || looksLikeNewPassword({
     name: passInput.name,
     id: passInput.id,
     placeholder: passInput.placeholder,
     autocomplete: passInput.autocomplete,
     ariaLabel: passInput.getAttribute('aria-label') || undefined,
-  });
+  }));
 
   // Only offer password suggestions on sign-up, registration, or password-change fields.
   // On sign-in / login forms, users are authenticating with existing credentials, so offering
   // a password generator creates confusion and would cause login failures.
-  const showSuggestion = isPasswordField && isNew;
+  const showSuggestion = isAnchorPasswordField && isNew;
 
   openDropdown(anchor, {
     credentials: activeCredentials,
