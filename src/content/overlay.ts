@@ -1785,6 +1785,17 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
     menu.appendChild(item);
   }
 
+  if (opts.credentials.length === 0 && !opts.suggestion) {
+    const emptyItem = document.createElement('div');
+    emptyItem.className = 'menu-empty';
+    emptyItem.style.padding = '12px 14px';
+    emptyItem.style.color = '#94a3b8';
+    emptyItem.style.fontSize = '12px';
+    emptyItem.style.textAlign = 'center';
+    emptyItem.textContent = 'No saved logins for this site';
+    menu.appendChild(emptyItem);
+  }
+
   root.appendChild(menu);
   openMenu = menu;
   menuAnchor = anchor;

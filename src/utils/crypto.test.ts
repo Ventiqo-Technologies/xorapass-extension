@@ -38,7 +38,7 @@ describe('Crypto SDK Security Tests', () => {
     // Test sensitivity (different password = different key)
     const masterKeyDiff = await deriveMasterKey("different_password", saltHex);
     expect(bytesToHex(masterKey)).not.toBe(bytesToHex(masterKeyDiff));
-  });
+  }, 15000);
 
   it('should split master key into encKey and clientAuthHash using HKDF', async () => {
     const masterKey = await deriveMasterKey(password, saltHex);

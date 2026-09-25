@@ -891,10 +891,6 @@ function scanForLoginFields(): void {
       }
     }
 
-    // Sign-up fields are worth decorating even with an empty vault — that is
-    // exactly when there is nothing to fill but a password to generate.
-    if (!isNew && activeCredentials.length === 0) continue;
-
     if (hasIcon(passInput)) continue;
 
     newPasswordFields.set(passInput, isNew);
@@ -1369,7 +1365,6 @@ let preferredSuggestionLength = 20;
 // the user actually clicked or focused, so the menu appears where they are
 // looking. On a sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
-  const isNew = newPasswordFields.get(passInput) === true;
   const warning = getRiskWarningMessage();
 
   // Inspect website password field constraints if present
@@ -1385,9 +1380,9 @@ function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
     initialLength = fieldMinLength;
   }
 
-  // Only offer password suggestions on the actual password input itself, never on email/username fields
-  const isPasswordField = anchor.type === 'password';
-  const showSuggestion = isNew && isPasswordField;
+  // Offer password suggestions on password inputs, never on email/username fields
+  const isPasswordField = anchor.type === 'password' || passInput.type === 'password';
+  const showSuggestion = isPasswordField;
 
   openDropdown(anchor, {
     credentials: activeCredentials,
