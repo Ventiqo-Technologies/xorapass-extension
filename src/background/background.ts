@@ -2298,31 +2298,57 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'CHECK_UPDATE') {
-    return new Promise<{ status: string; version?: string }>((resolve) => {
+    // requestUpdateCheck() differs between browsers:
+    //   Firefox (webextension-polyfill / native browser.*):
+    //     Promise-based — takes NO arguments, resolves to { status, version? }.
+    //     Passing a callback argument is silently ignored, leaving the Promise
+    //     caller hanging forever → the old callback-style code was the bug.
+    //   Chrome (MV3 / chrome.*):
+    //     Still callback-based in the chrome.* namespace. The polyfilled
+    //     browser.* version also works as a Promise on modern Chrome.
+    //
+    // Strategy:
+    //   1. Try browser.runtime.requestUpdateCheck() as a Promise (Firefox + polyfill).
+    //   2. If the resolved value is already an object, use it directly.
+    //   3. If the resolved value is a string (old Chrome callback shim), wrap it.
+    //   4. If (1) is unavailable, fall back to chrome.* with a callback wrapper.
+    return (async (): Promise<{ status: string; version?: string }> => {
       try {
+        const browserRuntime = browser.runtime as any;
         const chromeApi = (globalThis as any).chrome;
-        const updateCheckFn =
-          (browser.runtime as any)?.requestUpdateCheck ||
-          (chromeApi?.runtime?.requestUpdateCheck);
 
-        if (typeof updateCheckFn === 'function') {
-          updateCheckFn.call(
-            (browser.runtime as any)?.requestUpdateCheck ? browser.runtime : chromeApi?.runtime,
-            (status: string, details?: { version?: string }) => {
-              resolve({
-                status: status || 'no_update',
-                version: details?.version,
-              });
-            }
-          );
-        } else {
-          resolve({ status: 'no_update' });
+        // Prefer the polyfilled browser.* API — works on both Firefox and Chrome.
+        if (typeof browserRuntime?.requestUpdateCheck === 'function') {
+          const result = await browserRuntime.requestUpdateCheck();
+          // Firefox resolves with { status, version? } object.
+          if (result !== null && typeof result === 'object') {
+            return {
+              status: (result.status as string) || 'no_update',
+              version: result.version as string | undefined,
+            };
+          }
+          // Older Chrome polyfill shims may resolve with just the status string.
+          return { status: (result as string) || 'no_update' };
         }
+
+        // Last-resort: raw chrome.* callback API (no polyfill present).
+        if (typeof chromeApi?.runtime?.requestUpdateCheck === 'function') {
+          return await new Promise<{ status: string; version?: string }>((resolve) => {
+            chromeApi.runtime.requestUpdateCheck(
+              (status: string, details?: { version?: string }) => {
+                resolve({ status: status || 'no_update', version: details?.version });
+              }
+            );
+          });
+        }
+
+        // API unavailable (e.g. sideloaded / developer mode).
+        return { status: 'no_update' };
       } catch (err) {
         console.warn('[XoraPass] requestUpdateCheck failed:', err);
-        resolve({ status: 'no_update' });
+        return { status: 'no_update' };
       }
-    });
+    })();
   }
 
   if (type === 'APPLY_UPDATE') {
