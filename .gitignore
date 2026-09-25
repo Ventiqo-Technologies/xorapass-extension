@@ -4,3 +4,4 @@ dist/
 *.local
 .env
 *.zip
+web-ext-artifacts/
