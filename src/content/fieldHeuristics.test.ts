@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   looksLikeUsername,
   looksLikeNewPassword,
+  looksLikeCurrentPassword,
   looksLikeAwsAccountId,
   inferFormIntent,
   type FormContext,
@@ -23,6 +24,14 @@ describe('looksLikeUsername', () => {
     expect(looksLikeUsername({ type: 'text', id: 'accountEmail' })).toBe(true);
     expect(looksLikeUsername({ type: 'tel', placeholder: 'Mobile number' })).toBe(true);
     expect(looksLikeUsername({ type: 'text', ariaLabel: 'Your email address' })).toBe(true);
+  });
+
+  it('accepts multilingual username fields (DE, FR, ES, JA, ZH)', () => {
+    expect(looksLikeUsername({ type: 'text', name: 'benutzername' })).toBe(true);
+    expect(looksLikeUsername({ type: 'text', placeholder: 'Identifiant ou e-mail' })).toBe(true);
+    expect(looksLikeUsername({ type: 'text', name: 'nombre_usuario' })).toBe(true);
+    expect(looksLikeUsername({ type: 'text', placeholder: 'ユーザー名またはメールアドレス' })).toBe(true);
+    expect(looksLikeUsername({ type: 'text', placeholder: '请输入手机号或邮箱' })).toBe(true);
   });
 
   it('rejects password, hidden and submit inputs outright', () => {
@@ -73,6 +82,32 @@ describe('looksLikeAwsAccountId', () => {
   });
 });
 
+describe('looksLikeCurrentPassword', () => {
+  it('detects explicit autocomplete current-password', () => {
+    expect(looksLikeCurrentPassword({ autocomplete: 'current-password' })).toBe(true);
+  });
+
+  it('detects current and old password names and placeholders', () => {
+    expect(looksLikeCurrentPassword({ name: 'current_password' })).toBe(true);
+    expect(looksLikeCurrentPassword({ id: 'oldPassword' })).toBe(true);
+    expect(looksLikeCurrentPassword({ placeholder: 'Enter current password' })).toBe(true);
+  });
+
+  it('detects multilingual current password fields (DE, FR, ES, JA, ZH)', () => {
+    expect(looksLikeCurrentPassword({ name: 'altes_passwort' })).toBe(true);
+    expect(looksLikeCurrentPassword({ placeholder: 'Mot de passe actuel' })).toBe(true);
+    expect(looksLikeCurrentPassword({ name: 'contrasena_actual' })).toBe(true);
+    expect(looksLikeCurrentPassword({ placeholder: '現在のパスワード' })).toBe(true);
+    expect(looksLikeCurrentPassword({ placeholder: '请输入原密码' })).toBe(true);
+  });
+
+  it('rejects new password fields', () => {
+    expect(looksLikeCurrentPassword({ name: 'new_password' })).toBe(false);
+    expect(looksLikeCurrentPassword({ id: 'confirmPassword' })).toBe(false);
+    expect(looksLikeCurrentPassword({ autocomplete: 'new-password' })).toBe(false);
+  });
+});
+
 describe('looksLikeNewPassword', () => {
   it('trusts the autocomplete token in both directions', () => {
     expect(looksLikeNewPassword({ autocomplete: 'new-password' })).toBe(true);
@@ -85,6 +120,21 @@ describe('looksLikeNewPassword', () => {
     expect(looksLikeNewPassword({ id: 'confirmPassword' })).toBe(true);
     expect(looksLikeNewPassword({ placeholder: 'Repeat password' })).toBe(true);
     expect(looksLikeNewPassword({ ariaLabel: 'Create a password' })).toBe(true);
+  });
+
+  it('recognises multilingual new and confirm password wording', () => {
+    expect(looksLikeNewPassword({ name: 'neues_passwort' })).toBe(true);
+    expect(looksLikeNewPassword({ placeholder: 'Passwort bestätigen' })).toBe(true);
+    expect(looksLikeNewPassword({ placeholder: 'Confirmer le mot de passe' })).toBe(true);
+    expect(looksLikeNewPassword({ name: 'nueva_contrasena' })).toBe(true);
+    expect(looksLikeNewPassword({ placeholder: '新しいパスワード' })).toBe(true);
+    expect(looksLikeNewPassword({ placeholder: '确认新密码' })).toBe(true);
+  });
+
+  it('never classifies a current-password field as new-password', () => {
+    expect(looksLikeNewPassword({ name: 'current_password' })).toBe(false);
+    expect(looksLikeNewPassword({ id: 'old_password' })).toBe(false);
+    expect(looksLikeNewPassword({ placeholder: 'Mot de passe actuel' })).toBe(false);
   });
 
   it('treats a second password field as a sign-up signal', () => {
@@ -198,6 +248,33 @@ describe('inferFormIntent', () => {
       nearbyLinkText: "Don't have an account? Create one",
       nonPasswordInputCount: 1,
     }))).toBe('login');
+  });
+
+  it('classifies password change flows by submit button or heading', () => {
+    expect(inferFormIntent(ctx({ submitButtonText: 'Change Password' }))).toBe('password_change');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Reset Password' }))).toBe('password_change');
+    expect(inferFormIntent(ctx({ headingText: 'Update your password' }))).toBe('password_change');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Passwort ändern' }))).toBe('password_change');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Modifier mot de passe' }))).toBe('password_change');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Cambiar contraseña' }))).toBe('password_change');
+    expect(inferFormIntent(ctx({ headingText: 'パスワードの変更' }))).toBe('password_change');
+    expect(inferFormIntent(ctx({ submitButtonText: '修改密码' }))).toBe('password_change');
+  });
+
+  it('classifies multilingual signup forms', () => {
+    expect(inferFormIntent(ctx({ submitButtonText: 'Registrieren' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Créer un compte' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Registrarse' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ submitButtonText: '新規登録' }))).toBe('signup');
+    expect(inferFormIntent(ctx({ submitButtonText: '注册' }))).toBe('signup');
+  });
+
+  it('classifies multilingual login forms', () => {
+    expect(inferFormIntent(ctx({ submitButtonText: 'Anmelden' }))).toBe('login');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Se connecter' }))).toBe('login');
+    expect(inferFormIntent(ctx({ submitButtonText: 'Iniciar sesión' }))).toBe('login');
+    expect(inferFormIntent(ctx({ submitButtonText: 'ログイン' }))).toBe('login');
+    expect(inferFormIntent(ctx({ submitButtonText: '登录' }))).toBe('login');
   });
 
   it('returns unknown when evidence is evenly balanced', () => {

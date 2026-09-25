@@ -15,7 +15,20 @@
 // and a warning is shown. All detection is on-device -- the pasted text is
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
-import { looksLikeUsername, looksLikeNewPassword, looksLikeAwsAccountId, collectFormContext as collectSignupFormContext, inferFormIntent } from './fieldHeuristics';
+import {
+  looksLikeUsername,
+  looksLikeNewPassword,
+  looksLikeCurrentPassword,
+  looksLikeAwsAccountId,
+  collectFormContext as collectSignupFormContext,
+  inferFormIntent,
+} from './fieldHeuristics';
+import { querySelectorAllDeep } from '../utils/domDeep';
+import {
+  saveFormFingerprint,
+  getFormFingerprint,
+  queryFingerprintedFields,
+} from '../utils/fieldFingerprint';
 import { generatePassword } from '../utils/passwordGenerator';
 import { scanForSecrets, redact, type ScanResult, type SecretType } from '../utils/secretScan';
 import { coercePolicy, DEFAULT_POLICY, isAiSite, shouldGuard, type PastePolicy } from '../utils/pasteGuard';
@@ -707,15 +720,33 @@ async function handleShortcutAutofill(): Promise<void> {
     return;
   }
 
-  // Look for visible password field first, or AWS resolving input
-  const passwordInputs = (Array.from(
-    document.querySelectorAll('input[type="password"]')
-  ) as HTMLInputElement[]).filter(isFillable);
+  let targetInput: HTMLInputElement | null = null;
 
-  let targetInput: HTMLInputElement | null = passwordInputs[0] || null;
+  // 1. Check form memory cache for fast-path recall
+  try {
+    const fp = await getFormFingerprint(window.location.hostname);
+    if (fp) {
+      const cached = queryFingerprintedFields(document, fp);
+      if (cached.passwordInput && isFillable(cached.passwordInput)) {
+        targetInput = cached.passwordInput;
+      } else if (cached.usernameInput && isFillable(cached.usernameInput)) {
+        targetInput = cached.usernameInput;
+      }
+    }
+  } catch {}
 
+  // 2. Look for visible password field (piercing open Shadow DOMs)
+  if (!targetInput) {
+    const passwordInputs = querySelectorAllDeep<HTMLInputElement>(
+      document,
+      'input[type="password"]'
+    ).filter(isFillable);
+    targetInput = passwordInputs[0] || null;
+  }
+
+  // 3. AWS resolving input on AWS domains
   if (!targetInput && window.location.hostname.endsWith('aws.amazon.com')) {
-    const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const awsInputs = querySelectorAllDeep<HTMLInputElement>(document, 'input');
     const foundAws = awsInputs.find(el => isFillable(el) && looksLikeAwsAccountId({
       type: el.type,
       name: el.name,
@@ -726,9 +757,9 @@ async function handleShortcutAutofill(): Promise<void> {
     if (foundAws) targetInput = foundAws;
   }
 
+  // 4. Look for visible username / identifier input
   if (!targetInput) {
-    // Look for any visible username input
-    const allInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const allInputs = querySelectorAllDeep<HTMLInputElement>(document, 'input');
     const foundUser = allInputs.find(el => isFillable(el) && looksLikeUsername({
       type: el.type,
       name: el.name,
@@ -746,7 +777,10 @@ async function handleShortcutAutofill(): Promise<void> {
       await handlePick(activeCredentials[0].id, targetInput);
     } else {
       // Username or AWS account input
-      const pairedPass = (Array.from(document.querySelectorAll('input[type="password"]')) as HTMLInputElement[]).find(isFillable);
+      const pairedPass = querySelectorAllDeep<HTMLInputElement>(
+        document,
+        'input[type="password"]'
+      ).find(isFillable);
       if (pairedPass) {
         await handlePick(activeCredentials[0].id, pairedPass);
       } else {
@@ -810,15 +844,24 @@ function isFillable(el: HTMLInputElement): boolean {
  * idempotent, so the MutationObserver can call it freely.
  */
 function scanForLoginFields(): void {
-  const passwordInputs = Array.from(
-    document.querySelectorAll('input[type="password"]')
-  ) as HTMLInputElement[];
+  const passwordInputs = querySelectorAllDeep<HTMLInputElement>(
+    document,
+    'input[type="password"]'
+  );
 
   const visible = passwordInputs.filter(isFillable);
   const hasSibling = visible.length > 1;
 
   for (const passInput of visible) {
-    let isNew = looksLikeNewPassword(
+    const isCurrent = looksLikeCurrentPassword({
+      autocomplete: passInput.getAttribute('autocomplete'),
+      name: passInput.name,
+      id: passInput.id,
+      placeholder: passInput.getAttribute('placeholder'),
+      ariaLabel: passInput.getAttribute('aria-label'),
+    });
+
+    let isNew = !isCurrent && looksLikeNewPassword(
       {
         autocomplete: passInput.getAttribute('autocomplete'),
         name: passInput.name,
@@ -834,9 +877,18 @@ function scanForLoginFields(): void {
     // signal, read the surrounding form's DOM context — button text, heading,
     // page title, cross-links, terms checkbox, field count — to infer intent.
     // This handles any site automatically without per-site code changes.
-    if (!isNew) {
+    if (!isNew && !isCurrent) {
       const intent = inferFormIntent(collectSignupFormContext(passInput));
-      if (intent === 'signup') isNew = true;
+      if (intent === 'signup') {
+        isNew = true;
+      } else if (intent === 'password_change') {
+        // In a password change form with multiple password inputs:
+        // the first is the existing password; subsequent ones are new and confirm.
+        const related = visible.filter((p) => (passInput.form ? p.form === passInput.form : true));
+        if (related.length >= 2) {
+          isNew = related[0] !== passInput;
+        }
+      }
     }
 
     // Sign-up fields are worth decorating even with an empty vault — that is
@@ -866,7 +918,7 @@ function scanForLoginFields(): void {
   // When no password input is currently visible (e.g. AWS SSO, Google, Microsoft Step 1)
   // decorate any visible username/identifier input so the user can autofill their username.
   if (visible.length === 0 && activeCredentials.length > 0) {
-    const allInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const allInputs = querySelectorAllDeep<HTMLInputElement>(document, 'input');
     const fillableInputs = allInputs.filter(isFillable);
 
     const standaloneUserInputs = fillableInputs.filter(el => {
@@ -1232,8 +1284,9 @@ function scanWebmailMessages(): void {
 // Searches the enclosing <form> when present, otherwise the whole document, in
 // DOM order â€” so it works even when fields live in separate containers.
 function findUsernameField(passInput: HTMLInputElement): HTMLInputElement | null {
-  const scope: ParentNode = passInput.form || document;
-  const inputs = Array.from(scope.querySelectorAll('input')) as HTMLInputElement[];
+  const rootNode = typeof passInput.getRootNode === 'function' ? passInput.getRootNode() : null;
+  const scope: ParentNode = passInput.form || (rootNode instanceof ShadowRoot ? rootNode : document);
+  const inputs = querySelectorAllDeep<HTMLInputElement>(scope, 'input');
   const passIdx = inputs.indexOf(passInput);
   if (passIdx === -1) return null;
 
@@ -1365,11 +1418,23 @@ function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
 function applyGeneratedPassword(passInput: HTMLInputElement, password: string): void {
   autofillField(passInput, password);
 
-  const others = (Array.from(
-    document.querySelectorAll('input[type="password"]')
-  ) as HTMLInputElement[]).filter((p) => p !== passInput && isFillable(p) && !p.value);
+  const others = querySelectorAllDeep<HTMLInputElement>(
+    document,
+    'input[type="password"]'
+  ).filter((p) => p !== passInput && isFillable(p) && !p.value);
 
   for (const other of others) {
+    // Never overwrite an existing/current password field with a newly generated password!
+    if (looksLikeCurrentPassword({
+      autocomplete: other.getAttribute('autocomplete'),
+      name: other.name,
+      id: other.id,
+      placeholder: other.getAttribute('placeholder'),
+      ariaLabel: other.getAttribute('aria-label'),
+    })) {
+      continue;
+    }
+
     const isNew = looksLikeNewPassword(
       {
         autocomplete: other.getAttribute('autocomplete'),
@@ -1407,7 +1472,7 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
 
   // ── AWS Step 2 Multi-field Handling ────────────────────────────────────────
   if (cred.category === 'aws' || window.location.hostname.endsWith('aws.amazon.com')) {
-    const awsInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const awsInputs = querySelectorAllDeep<HTMLInputElement>(document, 'input');
     
     // 1. Find Account ID / Alias field
     const accountInput = awsInputs.find(el => looksLikeAwsAccountId({
@@ -1444,6 +1509,12 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
     }
     
     autofillField(passInput, res.value);
+
+    void saveFormFingerprint(window.location.hostname, {
+      usernameEl: usernameInput,
+      passwordEl: passInput,
+      formIntent: 'login',
+    });
   } else {
     const usernameEl = fieldPairs.get(passInput) ?? null;
     if (usernameEl && usernameEl !== passInput && res.username) {
@@ -1451,35 +1522,64 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
     }
     autofillField(passInput, res.value);
 
-    // Fill any confirm-password sibling with the same value so the user
-    // doesn't have to retype it. Only fill fields that are empty, fillable,
-    // and look like a "confirm / repeat" new-password box — never the primary
-    // password input we just filled.
-    const confirmSiblings = (Array.from(
-      document.querySelectorAll('input[type="password"]')
-    ) as HTMLInputElement[]).filter((p) => p !== passInput && isFillable(p) && !p.value);
+    // Check whether the field we just filled is a current/existing password box.
+    const isCurrent = looksLikeCurrentPassword({
+      autocomplete: passInput.getAttribute('autocomplete'),
+      name: passInput.name,
+      id: passInput.id,
+      placeholder: passInput.getAttribute('placeholder'),
+      ariaLabel: passInput.getAttribute('aria-label'),
+    });
 
-    for (const sibling of confirmSiblings) {
-      const isNew = looksLikeNewPassword(
-        {
+    // Fill any confirm-password sibling with the same value so the user
+    // doesn't have to retype it.
+    // CRITICAL: On a 3-way password change form (or when passInput is current-password),
+    // NEVER overwrite new / confirm password fields with the current password!
+    if (!isCurrent) {
+      const confirmSiblings = querySelectorAllDeep<HTMLInputElement>(
+        document,
+        'input[type="password"]'
+      ).filter((p) => p !== passInput && isFillable(p) && !p.value);
+
+      for (const sibling of confirmSiblings) {
+        if (looksLikeCurrentPassword({
           autocomplete: sibling.getAttribute('autocomplete'),
           name: sibling.name,
           id: sibling.id,
           placeholder: sibling.getAttribute('placeholder'),
           ariaLabel: sibling.getAttribute('aria-label'),
-        },
-        true,
-        window.location.href
-      );
-      if (isNew) autofillField(sibling, res.value);
+        })) {
+          continue;
+        }
+
+        const isNew = looksLikeNewPassword(
+          {
+            autocomplete: sibling.getAttribute('autocomplete'),
+            name: sibling.name,
+            id: sibling.id,
+            placeholder: sibling.getAttribute('placeholder'),
+            ariaLabel: sibling.getAttribute('aria-label'),
+          },
+          true,
+          window.location.href
+        );
+        if (isNew) autofillField(sibling, res.value);
+      }
     }
+
+    void saveFormFingerprint(window.location.hostname, {
+      usernameEl: usernameEl && usernameEl !== passInput ? usernameEl : undefined,
+      passwordEl: isCurrent ? undefined : passInput,
+      currentPasswordEl: isCurrent ? passInput : undefined,
+      formIntent: isCurrent ? 'password_change' : 'login',
+    });
   }
 
   // ── 2FA TOTP Code Handling ──────────────────────────────────────────────────
   if (res.totpCode) {
     const code = res.totpCode;
     // Look for any visible one-time code field on the page
-    const allInputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const allInputs = querySelectorAllDeep<HTMLInputElement>(document, 'input');
     const otpInput = allInputs.find((el) => {
       if (!isFillable(el) || el.type === 'password' || el.type === 'hidden') return false;
       const auto = (el.getAttribute('autocomplete') || '').toLowerCase();
@@ -1748,19 +1848,40 @@ let lastCaptured = '';
 
 // Reads the credential out of a scope that contains a filled password field.
 function readCredential(scope: ParentNode): { username: string; password: string } | null {
-  const passwords = Array.from(
-    scope.querySelectorAll('input[type="password"]')
-  ) as HTMLInputElement[];
+  const passwords = querySelectorAllDeep<HTMLInputElement>(
+    scope,
+    'input[type="password"]'
+  );
 
   const filled = passwords.find((p) => p.value && isFillable(p));
   if (!filled) return null;
 
-  // Several filled password boxes are fine when they all hold the same value â€”
-  // that is a sign-up form's "password + confirm", and it is a credential worth
-  // offering to save. Differing values mean a change-password form, where which
-  // one to store is ambiguous, so leave those alone.
-  const filledValues = new Set(passwords.filter((p) => p.value).map((p) => p.value));
-  if (filledValues.size > 1) return null;
+  // Several filled password boxes are fine when they all hold the same value —
+  // that is a sign-up form's "password + confirm", and it is a credential worth offering to save.
+  const filledPasswords = passwords.filter((p) => p.value && isFillable(p));
+  const filledValues = new Set(filledPasswords.map((p) => p.value));
+
+  if (filledValues.size > 1) {
+    // Password change form: resolve the target new password instead of abandoning
+    const newPassField = filledPasswords.find((p) =>
+      looksLikeNewPassword(
+        {
+          autocomplete: p.getAttribute('autocomplete'),
+          name: p.name,
+          id: p.id,
+          placeholder: p.getAttribute('placeholder'),
+          ariaLabel: p.getAttribute('aria-label'),
+        },
+        true,
+        window.location.href
+      )
+    );
+    if (newPassField && newPassField.value) {
+      const usernameEl = findUsernameField(newPassField);
+      return { username: usernameEl?.value || '', password: newPassField.value };
+    }
+    return null;
+  }
 
   const usernameEl = findUsernameField(filled);
   return { username: usernameEl?.value || '', password: filled.value };

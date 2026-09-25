@@ -15,11 +15,13 @@ export interface FieldAttrs {
   className?: string | null;
 }
 
-const USERNAME_HINT = /user|email|login|account|phone|mobile|identifier/i;
+const USERNAME_HINT =
+  /user|email|login|account|phone|mobile|identifier|benutzer|mitglied|kundennummer|utilisateur|courriel|identifiant|compte|usuario|correo|cuenta|identificador|usuário|utilizador|utente|accesso|gebruikersnaam|пользователь|логин|аккаунт|ユーザー|アカウント|メール|用户|账号|手机|邮箱/i;
 
 // Fields that look username-ish by name but must never receive a username —
 // checked before the positive hints so "search-user" style inputs stay excluded.
-const NEGATIVE_HINT = /search|query|filter|find|lookup|keyword|coupon|promo|captcha|otp|token|code|zip|postal/i;
+const NEGATIVE_HINT =
+  /search|query|filter|find|lookup|keyword|coupon|promo|captcha|otp|token|code|zip|postal|suche|recherche|buscar|pesquisa|cerca|поиск|検索|搜索/i;
 
 /**
  * Heuristic for "is this the username/email input paired with a password
@@ -71,13 +73,33 @@ export function looksLikeAwsAccountId(attrs: FieldAttrs): boolean {
   return false;
 }
 
-const NEW_PASSWORD_HINT = /new|signup|sign-up|register|create|confirm|repeat|retype|verify/i;
+const NEW_PASSWORD_HINT =
+  /new|signup|sign-up|register|create|confirm|repeat|retype|verify|neu|erstellen|bestätigen|wiederholen|registrieren|nouveau|nouvelle|créer|confirmer|répéter|inscrire|nueva|nuevo|crear|confirmar|repetir|registrar|nova|cadastrar|nuova|nuovo|conferma|ripeti|registra|新密码|确认|重复|注册|创建|新規|新しい|確認|再入力|作成|登録/i;
+
+const CURRENT_PASSWORD_HINT =
+  /current|existing|old|previous|alt|aktuell|bisherig|actuel|ancien|actual|anterior|atual|antiga|attuale|当前|原密码|旧密码|現在|以前/i;
+
+/**
+ * Whether a password field represents entering the user's *current/existing*
+ * password on a change-password or re-authentication form.
+ */
+export function looksLikeCurrentPassword(attrs: FieldAttrs): boolean {
+  const ac = (attrs.autocomplete || '').toLowerCase();
+  if (ac.includes('current-password')) return true;
+  if (ac.includes('new-password')) return false;
+
+  const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel, attrs.labelText]
+    .filter(Boolean)
+    .join(' ');
+
+  return CURRENT_PASSWORD_HINT.test(hints);
+}
 
 // URL path/search tokens that reliably indicate a sign-up or account-creation
 // page, used as a page-level fallback when field attributes give no signal
 // (e.g. Zoho signup.html uses id="password", no autocomplete, no placeholder).
 const SIGNUP_URL_HINT =
-  /signup|sign-up|register|join|create[_-]?account|new[_-]?account|enroll|onboarding/i;
+  /signup|sign-up|register|join|create[_-]?account|new[_-]?account|enroll|onboarding|registrieren|inscrire|cadastrar/i;
 
 /**
  * Whether a password field is being used to choose a *new* password (sign-up,
@@ -107,6 +129,7 @@ export function looksLikeNewPassword(
     .filter(Boolean)
     .join(' ');
 
+  if (CURRENT_PASSWORD_HINT.test(hints)) return false;
   if (NEW_PASSWORD_HINT.test(hints)) return true;
   if (hasSibling) return true;
 
@@ -153,15 +176,19 @@ export interface FormContext {
   nonPasswordInputCount: number;
 }
 
-export type FormIntent = 'signup' | 'login' | 'unknown';
+export type FormIntent = 'signup' | 'login' | 'password_change' | 'unknown';
+
+// Words indicating password change / reset / update flows
+const PASSWORD_CHANGE_WORDS =
+  /(?:\b(?:change[ -]?password|reset[ -]?password|update[ -]?password|new[ -]?password|set[ -]?password|passwort[ -]?ändern|kennwort[ -]?ändern|wachtwoord[ -]?wijzigen)\b|update.{0,10}password|change.{0,10}password|reset.{0,10}password|changer.{0,10}mot de passe|modifier.{0,10}mot de passe|cambiar.{0,10}contraseña|modificar.{0,10}contraseña|alterar.{0,10}senha|mudar.{0,10}senha|cambia.{0,10}password|сменить[ -]?пароль|изменить[ -]?пароль|パスワード(の)?変更|修改密码|更改密码)/i;
 
 // Words that strongly suggest the form's purpose is account creation.
 const SIGNUP_WORDS =
-  /\b(sign[ -]?up|create|register|join|get started|start free|new account|open account|enrol{1,2}|onboard)\b/i;
+  /(?:\b(?:sign[ -]?up|create|register|join|get started|start free|new account|open account|enrol{1,2}|onboard|registrieren|konto erstellen|neues konto|registrarse|crear cuenta|registro|cadastrar|cadastre-se|criar conta|registrati|crea account|iscriviti|registreren|account aanmaken)\b|créer.{0,10}compte|s'inscrire|inscription|регистрация|создать аккаунт|新規登録|アカウント作成|注册|创建账户|新建账号)/i;
 
 // Words that strongly suggest the form's purpose is authentication.
 const LOGIN_WORDS =
-  /\b(sign[ -]?in|log[ -]?in|login|continue|enter|access|unlock|welcome back)\b/i;
+  /(?:\b(?:sign[ -]?in|log[ -]?in|login|continue|enter|access|unlock|welcome back|anmelden|einloggen|connexion|ingresar|entrar|accedi|accesso|inloggen)\b|se connecter|iniciar sesión|iniciar sessão|войти|вход|авторизация|ログイン|サインイン|登录|登入)/i;
 
 // "Already have an account?" style cross-links appear on signup pages.
 // Note: avoid bare "have an account" which is a substring of "Don't have an account".
@@ -172,42 +199,50 @@ const NO_ACCOUNT_LINK = /don.t have|no account|new (here|user|to)|create.{0,10}a
 
 /**
  * Scores the surrounding DOM context of a password field to determine whether
- * its containing form is a sign-up form or a sign-in form.
+ * its containing form is a sign-up form, sign-in form, or password change form.
  *
  * All DOM reading is done by the caller (content.ts), which passes a plain
  * `FormContext` object so this function stays pure and fully unit-testable.
  *
- * Returns 'signup', 'login', or 'unknown' when the evidence is inconclusive.
+ * Returns 'signup', 'login', 'password_change', or 'unknown' when the evidence is inconclusive.
  */
 export function inferFormIntent(ctx: FormContext): FormIntent {
+  // ① Priority check: Password change / reset intent
+  let changeScore = 0;
+  if (PASSWORD_CHANGE_WORDS.test(ctx.submitButtonText)) changeScore += 4;
+  if (PASSWORD_CHANGE_WORDS.test(ctx.headingText))      changeScore += 3;
+  if (PASSWORD_CHANGE_WORDS.test(ctx.pageTitle))        changeScore += 2;
+  if (/change|reset|update-password|password_reset|password-change/i.test(ctx.formAction)) changeScore += 2;
+  if (changeScore >= 3) return 'password_change';
+
   let score = 0;
 
-  // ① Submit button text  (strongest single signal, weight ±3)
+  // ② Submit button text  (strongest single signal, weight ±3)
   if (SIGNUP_WORDS.test(ctx.submitButtonText)) score += 3;
   if (LOGIN_WORDS.test(ctx.submitButtonText))  score -= 3;
 
-  // ② Page heading (h1/h2/h3)  (weight ±2)
+  // ③ Page heading (h1/h2/h3)  (weight ±2)
   if (SIGNUP_WORDS.test(ctx.headingText)) score += 2;
   if (LOGIN_WORDS.test(ctx.headingText))  score -= 2;
 
-  // ③ Page <title>  (weight ±1 — titles are less reliable)
+  // ④ Page <title>  (weight ±1 — titles are less reliable)
   if (SIGNUP_WORDS.test(ctx.pageTitle)) score += 1;
   if (LOGIN_WORDS.test(ctx.pageTitle))  score -= 1;
 
-  // ④ Form action URL  (weight ±2)
+  // ⑤ Form action URL  (weight ±2)
   if (SIGNUP_URL_HINT.test(ctx.formAction)) score += 2;
   if (/login|signin|sign-in|auth|session/i.test(ctx.formAction)) score -= 2;
 
-  // ⑤ Cross-links near the form  (weight ±2)
+  // ⑥ Cross-links near the form  (weight ±2)
   //    "Already have an account? Sign in" → we are on a signup page
   //    "Don't have an account? Sign up"   → we are on a login page
   if (HAVE_ACCOUNT_LINK.test(ctx.nearbyLinkText)) score += 2;
   if (NO_ACCOUNT_LINK.test(ctx.nearbyLinkText))   score -= 2;
 
-  // ⑥ Terms / privacy checkbox (weight +2 — almost never on login forms)
+  // ⑦ Terms / privacy checkbox (weight +2 — almost never on login forms)
   if (ctx.hasTermsCheckbox) score += 2;
 
-  // ⑦ Field count: signup forms usually have 3+ inputs (name, email, phone…)
+  // ⑧ Field count: signup forms usually have 3+ inputs (name, email, phone…)
   //    login forms usually have 1–2 (email + password)
   if (ctx.nonPasswordInputCount >= 3) score += 1;
   if (ctx.nonPasswordInputCount <= 1) score -= 1;
