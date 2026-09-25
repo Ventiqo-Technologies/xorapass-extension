@@ -250,6 +250,15 @@ describe('inferFormIntent', () => {
     }))).toBe('login');
   });
 
+  it('combines signals — Salesforce login scenario', () => {
+    expect(inferFormIntent(ctx({
+      headingText: 'Salesforce login',
+      submitButtonText: 'Log In',
+      pageTitle: 'Login | Salesforce',
+      nonPasswordInputCount: 1,
+    }))).toBe('login');
+  });
+
   it('classifies password change flows by submit button or heading', () => {
     expect(inferFormIntent(ctx({ submitButtonText: 'Change Password' }))).toBe('password_change');
     expect(inferFormIntent(ctx({ submitButtonText: 'Reset Password' }))).toBe('password_change');
