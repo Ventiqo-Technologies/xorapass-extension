@@ -38,7 +38,9 @@ export interface DropdownOptions {
   /** Optional phishing/lookalike banner shown above the credential list. */
   warning?: string | null;
   onPick: (credentialId: string) => void;
-  /** Present on sign-up fields: offers a generated password above the list. */
+  /** True when the field is a sign-up or new-password field. */
+  isNew?: boolean;
+  /** Present on password fields: offers a generated password. */
   suggestion?: {
     password: string;
     length: number;
@@ -225,6 +227,41 @@ const STYLES = `
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.menu-action-item {
+  width: 100%;
+  padding: 9px 12px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--xp-item-border);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  text-align: left;
+  color: var(--xp-text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background-color 0.15s, color 0.15s;
+}
+.menu-action-item:hover, .menu-action-item:focus-visible {
+  background-color: rgba(45, 212, 191, 0.08);
+  color: #0d9488;
+  outline: none;
+}
+.layer:not(.theme-light) .menu-action-item:hover,
+.layer:not(.theme-light) .menu-action-item:focus-visible {
+  color: #2dd4bf;
+}
+.menu-action-icon {
+  font-size: 11px;
+  color: #0d9488;
+  display: inline-flex;
+  align-items: center;
+}
+.layer:not(.theme-light) .menu-action-icon {
+  color: #2dd4bf;
 }
 .toast {
   position: fixed;
@@ -1623,6 +1660,106 @@ export function scheduleReposition(): void {
 // Credential dropdown
 // ---------------------------------------------------------------------------
 
+function buildSuggestionBox(
+  sug: NonNullable<DropdownOptions['suggestion']>,
+  onClose: () => void
+): HTMLElement {
+  let currentLength = sug.length || 20;
+  const box = document.createElement('div');
+  box.className = 'suggest';
+
+  const header = document.createElement('div');
+  header.className = 'suggest-header';
+
+  const label = document.createElement('div');
+  label.className = 'suggest-label';
+  label.textContent = 'Password';
+  header.appendChild(label);
+
+  const lengthBadge = document.createElement('div');
+  lengthBadge.className = 'suggest-length-badge';
+  lengthBadge.textContent = `${currentLength} chars`;
+  header.appendChild(lengthBadge);
+  box.appendChild(header);
+
+  const row = document.createElement('div');
+  row.className = 'suggest-row';
+
+  const value = document.createElement('div');
+  value.className = 'suggest-value';
+  value.textContent = sug.password;
+  row.appendChild(value);
+
+  const refresh = document.createElement('button');
+  refresh.type = 'button';
+  refresh.className = 'suggest-refresh';
+  refresh.setAttribute('aria-label', 'Generate another');
+  refresh.textContent = '⟳';
+  refresh.addEventListener('mousedown', (e) => e.preventDefault());
+  refresh.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    value.textContent = sug.onRegenerate(currentLength);
+    lengthBadge.textContent = `${value.textContent.length} chars`;
+  });
+  row.appendChild(refresh);
+  box.appendChild(row);
+
+  // Length Slider bar
+  const maxConstraint = sug.maxLength && sug.maxLength > 4 ? sug.maxLength : undefined;
+  const minConstraint = sug.minLength && sug.minLength > 0 ? sug.minLength : 8;
+  const sliderMin = minConstraint;
+  const sliderMax = Math.max(sliderMin, maxConstraint ? Math.min(maxConstraint, 64) : 64);
+
+  if (currentLength < sliderMin) currentLength = sliderMin;
+  if (currentLength > sliderMax) currentLength = sliderMax;
+
+  const sliderContainer = document.createElement('div');
+  sliderContainer.className = 'suggest-slider-container';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.className = 'suggest-slider';
+  slider.min = String(sliderMin);
+  slider.max = String(sliderMax);
+  slider.value = String(currentLength);
+  slider.setAttribute('aria-label', 'Password length');
+
+  slider.addEventListener('mousedown', (e) => e.stopPropagation());
+  slider.addEventListener('input', (e) => {
+    e.stopPropagation();
+    const len = parseInt((e.target as HTMLInputElement).value, 10);
+    currentLength = len;
+    lengthBadge.textContent = `${len} chars`;
+    value.textContent = sug.onRegenerate(len);
+  });
+
+  sliderContainer.appendChild(slider);
+  box.appendChild(sliderContainer);
+
+  if (maxConstraint && maxConstraint < 32) {
+    const hint = document.createElement('div');
+    hint.className = 'suggest-limit-hint';
+    hint.textContent = `ⓘ Field limited to max ${maxConstraint} characters by website`;
+    box.appendChild(hint);
+  }
+
+  const use = document.createElement('button');
+  use.type = 'button';
+  use.className = 'suggest-use';
+  use.textContent = 'Use this password';
+  use.addEventListener('mousedown', (e) => e.preventDefault());
+  use.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onClose();
+    sug.onUse(value.textContent || sug.password);
+  });
+  box.appendChild(use);
+
+  return box;
+}
+
 export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): void {
   closeDropdown();
   const root = ensureHost();
@@ -1643,107 +1780,15 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
     menu.appendChild(banner);
   }
 
+  // If this is a sign-up/new-password form, or the user has no saved logins for this site,
+  // lead with the password generator directly at the top.
+  const showSugTop = Boolean(opts.suggestion && (opts.isNew || opts.credentials.length === 0));
 
-  if (opts.suggestion) {
-    const sug = opts.suggestion;
-    let currentLength = sug.length || 20;
-    const box = document.createElement('div');
-    box.className = 'suggest';
-
-    const header = document.createElement('div');
-    header.className = 'suggest-header';
-
-    const label = document.createElement('div');
-    label.className = 'suggest-label';
-    label.textContent = 'Password';
-    header.appendChild(label);
-
-    const lengthBadge = document.createElement('div');
-    lengthBadge.className = 'suggest-length-badge';
-    lengthBadge.textContent = `${currentLength} chars`;
-    header.appendChild(lengthBadge);
-    box.appendChild(header);
-
-    const row = document.createElement('div');
-    row.className = 'suggest-row';
-
-    const value = document.createElement('div');
-    value.className = 'suggest-value';
-    value.textContent = sug.password;
-    row.appendChild(value);
-
-    const refresh = document.createElement('button');
-    refresh.type = 'button';
-    refresh.className = 'suggest-refresh';
-    refresh.setAttribute('aria-label', 'Generate another');
-    refresh.textContent = '⟳';
-    refresh.addEventListener('mousedown', (e) => e.preventDefault());
-    refresh.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      value.textContent = sug.onRegenerate(currentLength);
-      lengthBadge.textContent = `${value.textContent.length} chars`;
-    });
-    row.appendChild(refresh);
-    box.appendChild(row);
-
-    // Length Slider bar
-    const maxConstraint = sug.maxLength && sug.maxLength > 4 ? sug.maxLength : undefined;
-    const minConstraint = sug.minLength && sug.minLength > 0 ? sug.minLength : 8;
-    const sliderMin = minConstraint;
-    const sliderMax = Math.max(sliderMin, maxConstraint ? Math.min(maxConstraint, 64) : 64);
-
-    if (currentLength < sliderMin) currentLength = sliderMin;
-    if (currentLength > sliderMax) currentLength = sliderMax;
-
-    const sliderContainer = document.createElement('div');
-    sliderContainer.className = 'suggest-slider-container';
-
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.className = 'suggest-slider';
-    slider.min = String(sliderMin);
-    slider.max = String(sliderMax);
-    slider.value = String(currentLength);
-    slider.setAttribute('aria-label', 'Password length');
-
-    slider.addEventListener('mousedown', (e) => e.stopPropagation());
-    slider.addEventListener('input', (e) => {
-      e.stopPropagation();
-      const len = parseInt((e.target as HTMLInputElement).value, 10);
-      currentLength = len;
-      lengthBadge.textContent = `${len} chars`;
-      value.textContent = sug.onRegenerate(len);
-    });
-
-    sliderContainer.appendChild(slider);
-    box.appendChild(sliderContainer);
-
-    if (maxConstraint && maxConstraint < 32) {
-      const hint = document.createElement('div');
-      hint.className = 'suggest-limit-hint';
-      hint.textContent = `ⓘ Field limited to max ${maxConstraint} characters by website`;
-      box.appendChild(hint);
-    }
-
-    const use = document.createElement('button');
-    use.type = 'button';
-    use.className = 'suggest-use';
-    use.textContent = 'Use this password';
-    use.addEventListener('mousedown', (e) => e.preventDefault());
-    use.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      closeDropdown();
-      sug.onUse(value.textContent || sug.password);
-    });
-    box.appendChild(use);
-
-    menu.appendChild(box);
+  if (showSugTop && opts.suggestion) {
+    menu.appendChild(buildSuggestionBox(opts.suggestion, closeDropdown));
   }
 
   for (const cred of opts.credentials) {
-
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'menu-item';
@@ -1783,6 +1828,46 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
     });
 
     menu.appendChild(item);
+  }
+
+  if (opts.credentials.length === 0 && !opts.suggestion) {
+    const emptyItem = document.createElement('div');
+    emptyItem.className = 'menu-empty';
+    emptyItem.style.padding = '12px 14px';
+    emptyItem.style.color = '#94a3b8';
+    emptyItem.style.fontSize = '12px';
+    emptyItem.style.textAlign = 'center';
+    emptyItem.textContent = 'No saved logins for this site';
+    menu.appendChild(emptyItem);
+  }
+
+  // On sign-in forms where the user already has saved credentials, offer the password
+  // generator cleanly as an expandable action button at the bottom of the list.
+  if (opts.suggestion && !showSugTop) {
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'menu-action-item';
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'menu-action-icon';
+    iconSpan.textContent = '⚡';
+
+    const textSpan = document.createElement('span');
+    textSpan.textContent = 'Generate new password';
+
+    toggleBtn.appendChild(iconSpan);
+    toggleBtn.appendChild(textSpan);
+
+    toggleBtn.addEventListener('mousedown', (e) => e.preventDefault());
+    toggleBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const sugBox = buildSuggestionBox(opts.suggestion!, closeDropdown);
+      toggleBtn.replaceWith(sugBox);
+      reposition();
+    });
+
+    menu.appendChild(toggleBtn);
   }
 
   root.appendChild(menu);
