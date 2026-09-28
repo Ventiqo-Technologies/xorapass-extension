@@ -298,6 +298,19 @@ export const KNOWN_LEGITIMATE_DOMAINS = new Set([
   'bankofamerica.com',
   'wellsfargo.com',
   'citigroup.com',
+
+  // Gaming & Entertainment Platforms
+  'riotgames.com',
+  'leagueoflegends.com',
+  'playvalorant.com',
+  'steampowered.com',
+  'steamcommunity.com',
+  'epicgames.com',
+  'roblox.com',
+  'ea.com',
+  'ubisoft.com',
+  'blizzard.com',
+  'battle.net',
 ]);
 
 /**
