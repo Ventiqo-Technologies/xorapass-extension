@@ -6,27 +6,81 @@ import { findLookalikeTarget, registrableDomain } from './siteTrust';
 
 // Common high-target brands frequently impersonated in phishing campaigns
 export const BRAND_DOMAINS: Record<string, string[]> = {
+  // Travel & Accommodation
   booking: ['booking.com'],
+  airbnb: ['airbnb.com'],
+  expedia: ['expedia.com'],
+  tripadvisor: ['tripadvisor.com'],
+  uber: ['uber.com'],
+
+  // Payments, Banking & Fintech
   paypal: ['paypal.com'],
-  microsoft: ['microsoft.com', 'office.com', 'live.com', 'outlook.com'],
-  apple: ['apple.com', 'icloud.com'],
-  google: ['google.com', 'gmail.com'],
-  amazon: ['amazon.com'],
-  netflix: ['netflix.com'],
+  stripe: ['stripe.com'],
   chase: ['chase.com'],
   'bank of america': ['bankofamerica.com', 'bofa.com'],
   'wells fargo': ['wellsfargo.com', 'wf.com'],
+  'american express': ['americanexpress.com', 'amex.com'],
+  'capital one': ['capitalone.com'],
+  citibank: ['citibank.com', 'citi.com'],
+  hsbc: ['hsbc.com', 'hsbc.co.uk'],
+  barclays: ['barclays.com', 'barclays.co.uk'],
+  revolut: ['revolut.com'],
+  wise: ['wise.com', 'transferwise.com'],
+  venmo: ['venmo.com'],
+  'western union': ['westernunion.com'],
+  square: ['squareup.com', 'square.com', 'cash.app'],
+  mastercard: ['mastercard.com'],
+  visa: ['visa.com'],
+
+  // Big Tech, Cloud & Identity
+  microsoft: ['microsoft.com', 'office.com', 'live.com', 'outlook.com'],
+  apple: ['apple.com', 'icloud.com'],
+  google: ['google.com', 'gmail.com'],
+  amazon: ['amazon.com', 'amazon.co.uk', 'amazon.de', 'amazonaws.com'],
   meta: ['meta.com', 'facebook.com', 'instagram.com'],
+  linkedin: ['linkedin.com'],
+  whatsapp: ['whatsapp.com'],
+  twitter: ['twitter.com', 'x.com'],
+
+  // AI, Productivity & Software
+  openai: ['openai.com', 'chatgpt.com'],
+  chatgpt: ['chatgpt.com', 'openai.com'],
+  adobe: ['adobe.com'],
+  docusign: ['docusign.com', 'docusign.net'],
+  dropbox: ['dropbox.com'],
+  slack: ['slack.com'],
+  zoom: ['zoom.us', 'zoom.com'],
+  atlassian: ['atlassian.com', 'jira.com', 'confluence.com'],
+  salesforce: ['salesforce.com'],
+  intuit: ['intuit.com', 'turbotax.com', 'quickbooks.com'],
+
+  // Developer Platforms
+  github: ['github.com'],
+  gitlab: ['gitlab.com'],
+  cloudflare: ['cloudflare.com'],
+  vercel: ['vercel.com'],
+
+  // Crypto & Web3
+  coinbase: ['coinbase.com'],
+  binance: ['binance.com'],
+  metamask: ['metamask.io'],
+  kraken: ['kraken.com'],
+
+  // Delivery & Couriers
   dhl: ['dhl.com'],
   fedex: ['fedex.com'],
   ups: ['ups.com'],
   usps: ['usps.com'],
-  coinbase: ['coinbase.com'],
-  binance: ['binance.com'],
-  stripe: ['stripe.com'],
-  dropbox: ['dropbox.com'],
-  linkedin: ['linkedin.com'],
-  github: ['github.com'],
+  'royal mail': ['royalmail.com'],
+
+  // Streaming, Gaming & E-Commerce
+  netflix: ['netflix.com'],
+  spotify: ['spotify.com'],
+  steam: ['steampowered.com', 'steamcommunity.com'],
+  discord: ['discord.com'],
+  ebay: ['ebay.com'],
+  alibaba: ['alibaba.com', 'aliexpress.com'],
+  walmart: ['walmart.com'],
 };
 
 // Brands whose name is also an everyday first name, surname or word. For
@@ -34,7 +88,11 @@ export const BRAND_DOMAINS: Record<string, string[]> = {
 // Dental") is NOT a brand claim — the display name must read as a corporate
 // sender: the brand plus only generic corporate words ("Chase Alerts",
 // "Apple Support", "Amazon.com").
-const AMBIGUOUS_BRANDS = new Set(['chase', 'meta', 'apple', 'amazon', 'stripe', 'ups']);
+const AMBIGUOUS_BRANDS = new Set([
+  'chase', 'meta', 'apple', 'amazon', 'stripe', 'ups',
+  'wise', 'slack', 'zoom', 'adobe', 'steam', 'uber',
+  'square', 'visa',
+]);
 
 const CORPORATE_WORDS = new Set([
   'support', 'service', 'services', 'customer', 'customers', 'care', 'team', 'security',
@@ -45,6 +103,7 @@ const CORPORATE_WORDS = new Set([
   'inc', 'llc', 'ltd', 'corp', 'com', 'co', 'us', 'uk', 'express', 'delivery', 'shipping',
   'order', 'orders', 'prime', 'web', 'card', 'cards', 'member', 'members', 'rewards',
   'store', 'id', 'for', 'business', 'the', 'and', 'my', 'secure', 'services', 'dashboard',
+  'app', 'portal', 'cloud', 'global', 'travel', 'trips', 'messages', 'message', 'auth', 'login',
 ]);
 
 function displayTokens(displayName: string): string[] {
