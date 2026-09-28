@@ -56,6 +56,20 @@ export const WEBMAIL_REDIRECTOR_DOMAINS: ReadonlySet<string> = new Set([
   'office.com',
 ]);
 
+export const STANDARD_EMAIL_EXTERNAL_DOMAINS: ReadonlySet<string> = new Set([
+  'facebook.com',
+  'instagram.com',
+  'twitter.com',
+  'x.com',
+  'linkedin.com',
+  'youtube.com',
+  'tiktok.com',
+  'threads.net',
+  'pinterest.com',
+  'apple.com',
+  'google.com',
+]);
+
 /**
  * Analyses one link in an email. `knownHosts` are the user's saved sites
  * (when unlocked) — lookalikes of those, or of well-known brands, are flagged.
@@ -81,6 +95,7 @@ export function analyzeEmailLink(text: string, href: string, knownHosts: readonl
   const actual = registrableDomain(host);
   const isEsp = actual ? ESP_TRACKING_DOMAINS.has(actual) : false;
   const isWebmailRedir = actual ? WEBMAIL_REDIRECTOR_DOMAINS.has(actual) : false;
+  const isStandardDest = actual ? STANDARD_EMAIL_EXTERNAL_DOMAINS.has(actual) : false;
 
   if (claimed && actual && claimed !== actual) {
     if (!isEsp && !isWebmailRedir) {
@@ -88,7 +103,7 @@ export function analyzeEmailLink(text: string, href: string, knownHosts: readonl
     }
   }
 
-  if (!isEsp && !isWebmailRedir) {
+  if (!isEsp && !isWebmailRedir && !isStandardDest) {
     const risk = assessWithCatalog(host, [...knownHosts], [], finalUrl);
     if (risk.signals.isHomograph || risk.signals.hasPunycode) raise('danger', `Uses look-alike characters to imitate ${risk.matchedTarget || 'a real site'}`);
     else if (risk.signals.typosquatTarget) raise('danger', `Misspelled look-alike of ${risk.signals.typosquatTarget}`);
