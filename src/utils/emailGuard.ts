@@ -5,7 +5,7 @@
 import { extractHostname, registrableDomain } from './siteTrust';
 import { assessWithCatalog } from './domainRisk';
 import { unwrapLink, isShortenerUrl } from './linkInspect';
-import { analyzeEmailSender } from './webmailGuard';
+import { analyzeEmailSender, isSameBrandOrAlias } from './webmailGuard';
 
 export interface EmailFinding {
   level: 'danger' | 'caution';
@@ -98,7 +98,7 @@ export function analyzeEmailLink(text: string, href: string, knownHosts: readonl
   const isStandardDest = actual ? STANDARD_EMAIL_EXTERNAL_DOMAINS.has(actual) : false;
 
   if (claimed && actual && claimed !== actual) {
-    if (!isEsp && !isWebmailRedir) {
+    if (!isEsp && !isWebmailRedir && !isSameBrandOrAlias(claimed, actual)) {
       raise('danger', `Link text shows ${claimed} but it really goes to ${actual}`);
     }
   }
