@@ -6,6 +6,7 @@ import { findLookalikeTarget, registrableDomain } from './siteTrust';
 
 // Common high-target brands frequently impersonated in phishing campaigns
 export const BRAND_DOMAINS: Record<string, string[]> = {
+  booking: ['booking.com'],
   paypal: ['paypal.com'],
   microsoft: ['microsoft.com', 'office.com', 'live.com', 'outlook.com'],
   apple: ['apple.com', 'icloud.com'],

@@ -43,6 +43,12 @@ describe('webmailGuard', () => {
       expect(analysis.riskScore).toBe(0);
     });
 
+    it('allows legitimate Booking.com domain', () => {
+      const analysis = analyzeEmailSender('Booking.com <noreply@booking.com>');
+      expect(analysis.isImpersonation).toBe(false);
+      expect(analysis.riskScore).toBe(0);
+    });
+
     it('detects Microsoft display name from freemail address', () => {
       const analysis = analyzeEmailSender('Microsoft Account Team <support3891@gmail.com>');
       expect(analysis.isImpersonation).toBe(true);
