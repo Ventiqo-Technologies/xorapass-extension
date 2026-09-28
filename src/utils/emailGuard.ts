@@ -68,6 +68,7 @@ export const STANDARD_EMAIL_EXTERNAL_DOMAINS: ReadonlySet<string> = new Set([
   'pinterest.com',
   'apple.com',
   'google.com',
+  'adobe.com',
 ]);
 
 /**
@@ -114,7 +115,7 @@ export function analyzeEmailLink(text: string, href: string, knownHosts: readonl
 
   if (IP_HOST.test(host)) raise('danger', 'Goes to a raw IP address instead of a website name');
   if (isShortenerUrl(finalUrl)) raise('caution', 'Hides its destination behind a link shortener');
-  if (/^http:\/\//i.test(finalUrl) && !level) raise('caution', 'Opens an unencrypted (HTTP) page');
+  if (/^http:\/\//i.test(finalUrl) && !level && !isStandardDest) raise('caution', 'Opens an unencrypted (HTTP) page');
   const nonMailHops = hops.filter((h) => {
     const r = registrableDomain(extractHostname(h) || '');
     return r ? !WEBMAIL_REDIRECTOR_DOMAINS.has(r) : true;
