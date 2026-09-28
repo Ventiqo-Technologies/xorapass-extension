@@ -5,7 +5,7 @@
 import { extractHostname, registrableDomain } from './siteTrust';
 import { assessWithCatalog } from './domainRisk';
 import { unwrapLink, isShortenerUrl } from './linkInspect';
-import { analyzeEmailSender } from './webmailGuard';
+import { analyzeEmailSender, isSameBrandOrAlias } from './webmailGuard';
 
 export interface EmailFinding {
   level: 'danger' | 'caution';
@@ -23,6 +23,53 @@ export function domainClaimedByText(text: string): string | null {
   if (!m) return null;
   return registrableDomain(m[1].toLowerCase()) || null;
 }
+
+export const ESP_TRACKING_DOMAINS: ReadonlySet<string> = new Set([
+  'resend-links.com',
+  'sendgrid.net',
+  'mailgun.org',
+  'pstmrk.it',
+  'postmarkapp.com',
+  'mandrillapp.com',
+  'mailchimp.com',
+  'hubspotlinks.com',
+  'hs-sites.com',
+  'klaviyomail.com',
+  'constantcontact.com',
+  'campaign-monitor.com',
+  'cmail19.com',
+  'cmail20.com',
+  'brevo.com',
+  'sendinblue.com',
+  'customeriomail.com',
+  'sparkpostmail.com',
+  'intercom-mail.com',
+  'intercom-clicks.com',
+  'sailthru.com',
+]);
+
+export const WEBMAIL_REDIRECTOR_DOMAINS: ReadonlySet<string> = new Set([
+  'google.com',
+  'google.co.uk',
+  'google.ca',
+  'outlook.com',
+  'office.com',
+]);
+
+export const STANDARD_EMAIL_EXTERNAL_DOMAINS: ReadonlySet<string> = new Set([
+  'facebook.com',
+  'instagram.com',
+  'twitter.com',
+  'x.com',
+  'linkedin.com',
+  'youtube.com',
+  'tiktok.com',
+  'threads.net',
+  'pinterest.com',
+  'apple.com',
+  'google.com',
+  'adobe.com',
+]);
 
 /**
  * Analyses one link in an email. `knownHosts` are the user's saved sites
@@ -47,20 +94,33 @@ export function analyzeEmailLink(text: string, href: string, knownHosts: readonl
 
   const claimed = domainClaimedByText(text);
   const actual = registrableDomain(host);
+  const isEsp = actual ? ESP_TRACKING_DOMAINS.has(actual) : false;
+  const isWebmailRedir = actual ? WEBMAIL_REDIRECTOR_DOMAINS.has(actual) : false;
+  const isStandardDest = actual ? STANDARD_EMAIL_EXTERNAL_DOMAINS.has(actual) : false;
+
   if (claimed && actual && claimed !== actual) {
-    raise('danger', `Link text shows ${claimed} but it really goes to ${actual}`);
+    if (!isEsp && !isWebmailRedir && !isSameBrandOrAlias(claimed, actual)) {
+      raise('danger', `Link text shows ${claimed} but it really goes to ${actual}`);
+    }
   }
 
-  const risk = assessWithCatalog(host, [...knownHosts], [], finalUrl);
-  if (risk.signals.isHomograph || risk.signals.hasPunycode) raise('danger', `Uses look-alike characters to imitate ${risk.matchedTarget || 'a real site'}`);
-  else if (risk.signals.typosquatTarget) raise('danger', `Misspelled look-alike of ${risk.signals.typosquatTarget}`);
-  else if (risk.signals.brandAbuse) raise('danger', `Uses the ${risk.signals.brandAbuse.brand} name on a site it doesn't own`);
+  if (!isEsp && !isWebmailRedir && !isStandardDest) {
+    const risk = assessWithCatalog(host, [...knownHosts], [], finalUrl);
+    if (risk.signals.isHomograph || risk.signals.hasPunycode) raise('danger', `Uses look-alike characters to imitate ${risk.matchedTarget || 'a real site'}`);
+    else if (risk.signals.typosquatTarget) raise('danger', `Misspelled look-alike of ${risk.signals.typosquatTarget}`);
+    else if (risk.signals.brandAbuse) raise('danger', `Uses the ${risk.signals.brandAbuse.brand} name on a site it doesn't own`);
+
+    if (risk.signals.isHighRiskTld && !level) raise('caution', 'Uses a web address ending often used for scams');
+  }
 
   if (IP_HOST.test(host)) raise('danger', 'Goes to a raw IP address instead of a website name');
   if (isShortenerUrl(finalUrl)) raise('caution', 'Hides its destination behind a link shortener');
-  if (/^http:\/\//i.test(finalUrl) && !level) raise('caution', 'Opens an unencrypted (HTTP) page');
-  if (risk.signals.isHighRiskTld && !level) raise('caution', 'Uses a web address ending often used for scams');
-  if (hops.length >= 2 && !level) raise('caution', 'Passes through several redirectors');
+  if (/^http:\/\//i.test(finalUrl) && !level && !isStandardDest) raise('caution', 'Opens an unencrypted (HTTP) page');
+  const nonMailHops = hops.filter((h) => {
+    const r = registrableDomain(extractHostname(h) || '');
+    return r ? !WEBMAIL_REDIRECTOR_DOMAINS.has(r) : true;
+  });
+  if (nonMailHops.length >= 2 && !level) raise('caution', 'Passes through several redirectors');
 
   return level ? { level, reasons } : null;
 }

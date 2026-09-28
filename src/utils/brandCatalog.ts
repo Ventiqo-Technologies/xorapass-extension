@@ -69,6 +69,8 @@ export const BRAND_CATALOG: readonly CatalogBrand[] = [
   { token: 'walmart', name: 'Walmart', domains: ['walmart.com'] },
   { token: 'americanexpress', name: 'American Express', domains: ['americanexpress.com'] },
   { token: 'booking', name: 'Booking.com', domains: ['booking.com'] },
+  { token: 'riotgames', name: 'Riot Games', domains: ['riotgames.com', 'leagueoflegends.com', 'playvalorant.com'] },
+  { token: 'epicgames', name: 'Epic Games', domains: ['epicgames.com'] },
   // Regional telecoms & service providers frequently targeted by SMS/phishing lures
   { token: 'maxis', name: 'Maxis', domains: ['maxis.com.my', 'maxis.my'] },
   { token: 'celcom', name: 'CelcomDigi', domains: ['celcomdigi.com', 'celcom.com.my'] },

@@ -97,7 +97,12 @@ export function extractOpenEmail(host: string): OpenEmail | null {
     '';
 
   const links = Array.from(root.querySelectorAll('a[href]'))
-    .map((a) => ({ text: cleanText(a).slice(0, 200), href: (a as HTMLAnchorElement).href }))
+    .map((a) => {
+      const el = a as HTMLAnchorElement;
+      const rawHref = el.getAttribute('data-saferedirecturl') || el.href || '';
+      const unwrapped = unwrapLink(rawHref).url;
+      return { text: cleanText(a).slice(0, 200), href: unwrapped };
+    })
     .filter((l) => /^https?:/i.test(l.href))
     .slice(0, 20);
   const attachments = attachmentNames(host)
@@ -162,7 +167,13 @@ function payloadFor(m: OpenEmail, local: EmailLocalSummary) {
     sender_email: m.senderEmail.slice(0, 254),
     reply_to: (m.replyTo || '').slice(0, 254),
     subject: redactText(m.subject, 300),
-    links: m.links.map((l) => ({ text: redactText(l.text, 120), href: l.href.split(/[?#]/)[0].slice(0, 2048) })),
+    links: m.links.map((l) => {
+      const unwrapped = unwrapLink(l.href).url;
+      return {
+        text: redactText(l.text, 120),
+        href: unwrapped.split(/[?#]/)[0].slice(0, 2048),
+      };
+    }),
     attachments: m.attachments.map((a) => a.slice(0, 120)),
     body_excerpt: redactText(m.bodyText, 1500),
     local_flags: local.flags.slice(0, 12),

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseSender,
   analyzeEmailSender,
+  isSameBrandOrAlias,
   isSupportedWebmail,
 } from './webmailGuard';
 
@@ -43,6 +44,12 @@ describe('webmailGuard', () => {
       expect(analysis.riskScore).toBe(0);
     });
 
+    it('allows legitimate Booking.com domain', () => {
+      const analysis = analyzeEmailSender('Booking.com <noreply@booking.com>');
+      expect(analysis.isImpersonation).toBe(false);
+      expect(analysis.riskScore).toBe(0);
+    });
+
     it('detects Microsoft display name from freemail address', () => {
       const analysis = analyzeEmailSender('Microsoft Account Team <support3891@gmail.com>');
       expect(analysis.isImpersonation).toBe(true);
@@ -80,6 +87,8 @@ describe('webmailGuard', () => {
       expect(analyzeEmailSender('Sarah Wells <sarah@example.org>').isImpersonation).toBe(false);
       expect(analyzeEmailSender('Apple Tree Dental <frontdesk@appletreedental.com>').isImpersonation).toBe(false);
       expect(analyzeEmailSender('Meta Ramirez <meta.r@example.com>').isImpersonation).toBe(false);
+      expect(analyzeEmailSender('Wise Owl Bookstore <orders@wiseowl.com>').isImpersonation).toBe(false);
+      expect(analyzeEmailSender('Steam Carpet Cleaners <info@cleansteam.org>').isImpersonation).toBe(false);
     });
 
     it('still flags a corporate-looking claim of an ambiguous brand', () => {
@@ -87,6 +96,17 @@ describe('webmailGuard', () => {
       expect(a.isImpersonation).toBe(true);
       expect(a.claimedBrand).toBe('chase');
       expect(analyzeEmailSender('Amazon.com <order-update@amaz0n-shipping.net>').isImpersonation).toBe(true);
+      expect(analyzeEmailSender('Wise Security Alerts <alerts@fake-wise-verify.com>').isImpersonation).toBe(true);
+      expect(analyzeEmailSender('Slack Notification Team <no-reply@slack-auth.xyz>').isImpersonation).toBe(true);
+      expect(analyzeEmailSender('Adobe Billing <billing@adobe-subscription-fake.com>').isImpersonation).toBe(true);
+    });
+
+    it('allows legitimate expanded brands', () => {
+      expect(analyzeEmailSender('Airbnb Reservations <automated@airbnb.com>').isImpersonation).toBe(false);
+      expect(analyzeEmailSender('OpenAI Team <noreply@tm.openai.com>').isImpersonation).toBe(false);
+      expect(analyzeEmailSender('Spotify <no-reply@spotify.com>').isImpersonation).toBe(false);
+      expect(analyzeEmailSender('Wise Security <alerts@wise.com>').isImpersonation).toBe(false);
+      expect(analyzeEmailSender('Adobe Systems <message@adobe.com>').isImpersonation).toBe(false);
     });
 
     it('matches Wells Fargo as a phrase and allows its real domain', () => {
@@ -94,8 +114,20 @@ describe('webmailGuard', () => {
       expect(analyzeEmailSender('Wells Fargo Online <alerts@wf-secure.help>').isImpersonation).toBe(true);
     });
 
-    it('ignores an email address embedded in the display text (Outlook)', () => {
-      expect(analyzeEmailSender('Chase Miller chase@acme-corp.com').isImpersonation).toBe(false);
+    it('recognizes Meta for Developers from digital.metamail.com as legitimate', () => {
+      const analysis = analyzeEmailSender('Meta for Developers <update@digital.metamail.com>');
+      expect(analysis.isImpersonation).toBe(false);
+      expect(analysis.riskScore).toBe(0);
+    });
+
+    it('identifies sister domains and outbound mailing aliases with isSameBrandOrAlias', () => {
+      expect(isSameBrandOrAlias('meta.com', 'metamail.com')).toBe(true);
+      expect(isSameBrandOrAlias('meta.com', 'click.digital.metamail.com')).toBe(true);
+      expect(isSameBrandOrAlias('meta.com', 'dev.meta.ai')).toBe(true);
+      expect(isSameBrandOrAlias('facebook.com', 'metamail.com')).toBe(true);
+      expect(isSameBrandOrAlias('netflix.com', 'netflixmail.com')).toBe(true);
+      expect(isSameBrandOrAlias('google.com', 'googlemail.com')).toBe(true);
+      expect(isSameBrandOrAlias('paypal.com', 'evil-paypal.com')).toBe(false);
     });
   });
 

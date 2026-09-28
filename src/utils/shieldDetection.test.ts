@@ -90,6 +90,23 @@ describe('email guard', () => {
     expect(analyzeEmailLink('github.com', 'https://github.com/')).toBeNull();
     expect(analyzeEmailLink('mail me', 'mailto:a@b.com')).toBeNull();
   });
+  it('does not flag legitimate ESP click-tracking or mail redirector links as deceptive mismatches', () => {
+    // Resend click tracking link with visible text showing sender's project domain
+    expect(
+      analyzeEmailLink('https://rork.com/project/123', 'https://d8c78d2f.us-east-1.resend-links.com/co/d8c78d')
+    ).toBeNull();
+    // SendGrid click tracking link
+    expect(
+      analyzeEmailLink('https://example.com/verify', 'https://u12345.ct.sendgrid.net/ls/click?upn=xyz')
+    ).toBeNull();
+    // Gmail redirector wrapping legitimate booking.com password reset link
+    expect(
+      analyzeEmailLink(
+        'https://account.booking.com/change-password-for-partners?token=5xyz',
+        'https://www.google.com/url?q=https%3A%2F%2Faccount.booking.com%2Fchange-password-for-partners%3Ftoken%3D5xyz&source=gmail'
+      )
+    ).toBeNull();
+  });
   it('flags IP links and javascript links', () => {
     expect(analyzeEmailLink('Click', 'http://192.168.10.5/login')?.level).toBe('danger');
     expect(analyzeEmailLink('Click', 'javascript:alert(1)')?.level).toBe('danger');
