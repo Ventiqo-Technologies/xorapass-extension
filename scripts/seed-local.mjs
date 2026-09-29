@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process';
 const API = process.env.API_BASE_URL || 'http://localhost:8000';
 const EMAIL = process.env.SEED_EMAIL || 'test@local.dev';
 const PASSWORD = process.env.SEED_PASSWORD || 'correct-horse-battery-staple';
-const DB_CONTAINER = process.env.DB_CONTAINER || 'cloudpass-db';
+const DB_CONTAINER = process.env.DB_CONTAINER || 'xorapass-db';
 const KEY_VERSION = 1;
 
 // Entries deliberately span the cases the content script has to distinguish:
@@ -143,7 +143,7 @@ async function main() {
 
   // 4. No SMTP locally, so mark the address verified directly.
   execFileSync('docker', [
-    'exec', DB_CONTAINER, 'psql', '-U', 'cloudpass', '-d', 'cloudpass',
+    'exec', DB_CONTAINER, 'psql', '-U', process.env.DB_USER || 'xorapass', '-d', process.env.DB_NAME || 'xorapass',
     '-c', `update users set email_verified = true where email = '${EMAIL}';`,
   ], { stdio: 'pipe' });
   console.log('✓ Email marked verified');
