@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test-and-build:
@@ -119,4 +119,38 @@ jobs:
             xorapass-extension-opera-*.zip
             xorapass-extension-edge-*.zip
           retention-days: 30
+
+  github-release:
+    name: Publish GitHub Release & Packages
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Extension
+        env:
+          VITE_API_BASE_URL: https://app.xorapass.com
+          VITE_WEB_APP_URL: https://app.xorapass.com
+        run: npm run build
+      - name: Package Extension Zips
+        run: |
+          mkdir -p release-zips
+          VERSION=$(node -p "require('./package.json').version")
+          cd dist
+          zip -r -q ../release-zips/xorapass-extension-firefox-v${VERSION}.zip *
+          node -e 'const fs = require("fs"); const m = JSON.parse(fs.readFileSync("manifest.json")); delete m.key; fs.writeFileSync("manifest.json", JSON.stringify(m, null, 2) + "\n");'
+          zip -r -q ../release-zips/xorapass-extension-chrome-v${VERSION}.zip *
+          cp ../release-zips/xorapass-extension-chrome-v${VERSION}.zip ../release-zips/xorapass-extension-opera-v${VERSION}.zip
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
+        with:
+          files: release-zips/*.zip
+          generate_release_notes: true
 
