@@ -26,6 +26,7 @@ import { registrableDomain } from '../utils/siteTrust';
 
 let rollout: Record<string, boolean> = {};
 let rolloutLoaded = false;
+let currentShieldConfig: any = null;
 
 function readRollout(e: any, cfg: any): Record<string, boolean> {
   const fresh = e && e.active === true && Date.now() - Number(e.checkedAt || 0) < 24 * 60 * 60 * 1000;
@@ -41,6 +42,7 @@ function loadRollout(): void {
       .get(['shieldEntitlement', 'shieldConfig'])
       .then((r: any) => {
         rollout = readRollout(r.shieldEntitlement, r.shieldConfig);
+        currentShieldConfig = r.shieldConfig || null;
       })
       .catch(() => undefined);
   void load().then(rerunGatedChecks);
@@ -137,7 +139,7 @@ const hookedDocs = new WeakSet<Document>();
 
 function scanEmailNow(host: string): void {
   try {
-    updateEmailInsight(host);
+    updateEmailInsight(host, currentShieldConfig);
   } catch {
     /* never break the webmail */
   }
@@ -146,7 +148,13 @@ function scanEmailNow(host: string): void {
     for (const a of links) {
       if (seenLinks.has(a)) continue;
       seenLinks.add(a);
-      const finding = analyzeEmailLink((a.textContent || '').trim(), (a as HTMLAnchorElement).getAttribute('href') || '');
+      const finding = analyzeEmailLink(
+        (a.textContent || '').trim(),
+        (a as HTMLAnchorElement).getAttribute('href') || '',
+        [],
+        undefined,
+        currentShieldConfig
+      );
       if (!finding) continue;
       linkFindings.set(a, finding);
       a.after(badge(finding));

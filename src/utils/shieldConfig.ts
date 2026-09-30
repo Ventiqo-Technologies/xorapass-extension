@@ -44,6 +44,12 @@ export interface ShieldConfig {
   brand_tlds: string[];
   /** Cloud & enterprise infrastructure domains to treat as verified platforms. */
   verified_platforms: string[];
+  /** Email service provider click tracking and redirector domains. */
+  esp_tracking_domains: string[];
+  /** Standard external platforms routinely linked in corporate email footers (reviews, social, app stores). */
+  standard_email_external_domains: string[];
+  /** First-party authentic sender domains whose transactional messages are never flagged. */
+  safe_sender_domains: string[];
 }
 
 export const DEFAULT_REDIRECTOR_RULES: readonly ShieldRedirectorRule[] = Object.freeze([
@@ -75,6 +81,27 @@ export const DEFAULT_VERIFIED_PLATFORMS: readonly string[] = Object.freeze([
   'cloudfront.net', 'awsapps.com',
 ]);
 
+export const DEFAULT_ESP_TRACKING_DOMAINS: readonly string[] = Object.freeze([
+  'brevo.com', 'sendinblue.com', 'sendibt3.com', 'sendibt1.com', 'sendibt2.com',
+  'sendib1.com', 'sendib2.com', 'sendib3.com', 'awstrack.me', 'mjt.lu',
+  'mailjet.com', 'resend-links.com', 'sendgrid.net', 'mailgun.org', 'pstmrk.it',
+  'postmarkapp.com', 'mandrillapp.com', 'mailchimp.com', 'hubspotlinks.com',
+  'klaviyomail.com', 'constantcontact.com', 'campaign-monitor.com', 'customeriomail.com',
+  'sparkpostmail.com', 'intercom-mail.com', 'intercom-clicks.com', 'sailthru.com',
+  'acems1.com', 'activehosted.com',
+]);
+
+export const DEFAULT_STANDARD_EMAIL_EXTERNAL_DOMAINS: readonly string[] = Object.freeze([
+  'facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'linkedin.com',
+  'youtube.com', 'tiktok.com', 'threads.net', 'pinterest.com', 'apple.com',
+  'google.com', 'adobe.com', 'trustpilot.com', 'feefo.com', 'bazaarvoice.com',
+  'yotpo.com', 'google.co.uk',
+]);
+
+export const DEFAULT_SAFE_SENDER_DOMAINS: readonly string[] = Object.freeze([
+  'xorapass.com', 'xorapass.net',
+]);
+
 export const DEFAULT_SHIELD_CONFIG: ShieldConfig = Object.freeze({
   version: 1,
   shield_enabled: true,
@@ -93,6 +120,9 @@ export const DEFAULT_SHIELD_CONFIG: ShieldConfig = Object.freeze({
   redirector_rules: [...DEFAULT_REDIRECTOR_RULES],
   brand_tlds: [...DEFAULT_BRAND_TLDS],
   verified_platforms: [...DEFAULT_VERIFIED_PLATFORMS],
+  esp_tracking_domains: [...DEFAULT_ESP_TRACKING_DOMAINS],
+  standard_email_external_domains: [...DEFAULT_STANDARD_EMAIL_EXTERNAL_DOMAINS],
+  safe_sender_domains: [...DEFAULT_SAFE_SENDER_DOMAINS],
 }) as ShieldConfig;
 
 function obj(v: unknown): Record<string, unknown> {
@@ -220,5 +250,35 @@ export function coerceShieldConfig(input: unknown): ShieldConfig {
           )
         ).slice(0, 300)
       : [...d.verified_platforms],
+    esp_tracking_domains: Array.isArray(o.esp_tracking_domains) && o.esp_tracking_domains.length > 0
+      ? Array.from(
+          new Set(
+            (o.esp_tracking_domains as unknown[])
+              .filter((p): p is string => typeof p === 'string')
+              .map((p) => p.trim().toLowerCase().replace(/^www\./, ''))
+              .filter((p) => HOST_RE.test(p))
+          )
+        ).slice(0, 300)
+      : [...d.esp_tracking_domains],
+    standard_email_external_domains: Array.isArray(o.standard_email_external_domains) && o.standard_email_external_domains.length > 0
+      ? Array.from(
+          new Set(
+            (o.standard_email_external_domains as unknown[])
+              .filter((p): p is string => typeof p === 'string')
+              .map((p) => p.trim().toLowerCase().replace(/^www\./, ''))
+              .filter((p) => HOST_RE.test(p))
+          )
+        ).slice(0, 300)
+      : [...d.standard_email_external_domains],
+    safe_sender_domains: Array.isArray(o.safe_sender_domains) && o.safe_sender_domains.length > 0
+      ? Array.from(
+          new Set(
+            (o.safe_sender_domains as unknown[])
+              .filter((p): p is string => typeof p === 'string')
+              .map((p) => p.trim().toLowerCase().replace(/^www\./, ''))
+              .filter((p) => HOST_RE.test(p))
+          )
+        ).slice(0, 100)
+      : [...d.safe_sender_domains],
   };
 }

@@ -190,7 +190,11 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
 
   const aiBad = ai && (ai.verdict === 'phishing' || ai.verdict === 'scam');
   const aiWarn = ai && ai.verdict === 'suspicious';
-  const level = aiBad || local.danger ? 'danger' : aiWarn || local.cautions > 0 ? 'caution' : 'ok';
+  const aiLegit = ai && ai.verdict === 'legit';
+  const hasSevereFinding = local.findings.some((f) => f.reasons.some((r) => /IP address|runs code|executable/i.test(r)));
+  const effectiveDanger = aiLegit ? hasSevereFinding : local.danger;
+  const effectiveCautions = aiLegit ? 0 : local.cautions;
+  const level = aiBad || effectiveDanger ? 'danger' : aiWarn || effectiveCautions > 0 ? 'caution' : 'ok';
   const card = el('div', `card ${level === 'ok' ? '' : level}`);
   const bar = el('div', 'bar');
   const logo = el('img', 'logo');
@@ -206,9 +210,11 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
           : 'Likely scam email — don\'t reply or pay'
         : aiWarn
           ? 'Suspicious email — check carefully'
-          : n
-            ? `AI found no scam, but ${n} thing${n === 1 ? '' : 's'} to check`
-            : 'AI found no signs of a scam'
+          : aiLegit
+            ? 'AI verified: legitimate email from verified sender'
+            : n
+              ? `AI found no scam, but ${n} thing${n === 1 ? '' : 's'} to check`
+              : 'AI found no signs of a scam'
       : local.danger
         ? `XoraPass found ${n} warning${n === 1 ? '' : 's'} on this email`
         : n
@@ -322,7 +328,7 @@ async function runAi(m: OpenEmail, local: EmailLocalSummary, trigger: 'auto' | '
 }
 
 /** Called (throttled) whenever the webmail DOM changes. */
-export function updateEmailInsight(host: string): void {
+export function updateEmailInsight(host: string, customConfig?: any): void {
   const m = extractOpenEmail(host);
   if (!m) {
     if (current && !current.host.isConnected) current = null;
@@ -342,6 +348,7 @@ export function updateEmailInsight(host: string): void {
     replyTo: m.replyTo,
     links: m.links,
     attachments: m.attachments,
+    customConfig,
   });
   const aiAllowed = featureOn('email_ai');
   render(m, local, null, false, aiAllowed);

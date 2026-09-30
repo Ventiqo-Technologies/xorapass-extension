@@ -7,6 +7,11 @@ import { assessWithCatalog } from './domainRisk';
 import { unwrapLink, isShortenerUrl } from './linkInspect';
 import { analyzeEmailSender, isSameBrandOrAlias } from './webmailGuard';
 
+import {
+  DEFAULT_ESP_TRACKING_DOMAINS,
+  DEFAULT_STANDARD_EMAIL_EXTERNAL_DOMAINS,
+} from './shieldConfig';
+
 export interface EmailFinding {
   level: 'danger' | 'caution';
   reasons: string[];
@@ -24,29 +29,7 @@ export function domainClaimedByText(text: string): string | null {
   return registrableDomain(m[1].toLowerCase()) || null;
 }
 
-export const ESP_TRACKING_DOMAINS: ReadonlySet<string> = new Set([
-  'resend-links.com',
-  'sendgrid.net',
-  'mailgun.org',
-  'pstmrk.it',
-  'postmarkapp.com',
-  'mandrillapp.com',
-  'mailchimp.com',
-  'hubspotlinks.com',
-  'hs-sites.com',
-  'klaviyomail.com',
-  'constantcontact.com',
-  'campaign-monitor.com',
-  'cmail19.com',
-  'cmail20.com',
-  'brevo.com',
-  'sendinblue.com',
-  'customeriomail.com',
-  'sparkpostmail.com',
-  'intercom-mail.com',
-  'intercom-clicks.com',
-  'sailthru.com',
-]);
+export const ESP_TRACKING_DOMAINS: ReadonlySet<string> = new Set(DEFAULT_ESP_TRACKING_DOMAINS);
 
 export const WEBMAIL_REDIRECTOR_DOMAINS: ReadonlySet<string> = new Set([
   'google.com',
@@ -56,26 +39,50 @@ export const WEBMAIL_REDIRECTOR_DOMAINS: ReadonlySet<string> = new Set([
   'office.com',
 ]);
 
-export const STANDARD_EMAIL_EXTERNAL_DOMAINS: ReadonlySet<string> = new Set([
-  'facebook.com',
-  'instagram.com',
-  'twitter.com',
-  'x.com',
-  'linkedin.com',
-  'youtube.com',
-  'tiktok.com',
-  'threads.net',
-  'pinterest.com',
-  'apple.com',
-  'google.com',
-  'adobe.com',
-]);
+export const STANDARD_EMAIL_EXTERNAL_DOMAINS: ReadonlySet<string> = new Set(
+  DEFAULT_STANDARD_EMAIL_EXTERNAL_DOMAINS
+);
+
+export function isEspTrackingHost(host: string, customList?: readonly string[]): boolean {
+  if (!host) return false;
+  const h = host.toLowerCase().trim();
+  const reg = registrableDomain(h) || h;
+  if (customList?.some((d) => reg === d || h === d || h.endsWith('.' + d))) return true;
+  if (ESP_TRACKING_DOMAINS.has(reg) || ESP_TRACKING_DOMAINS.has(h)) return true;
+  // Algorithmic matching for major ESPs
+  if ((reg.startsWith('sendib') || h.startsWith('sendib')) && (reg.endsWith('.com') || h.endsWith('.com'))) return true;
+  if (reg === 'awstrack.me' || h.endsWith('.awstrack.me')) return true;
+  if (reg === 'mjt.lu' || h.endsWith('.mjt.lu')) return true;
+  if (reg.startsWith('acems') && reg.endsWith('.com')) return true;
+  if (reg.startsWith('cmail') && reg.endsWith('.com')) return true;
+  return false;
+}
+
+export function isStandardExternalEmailHost(host: string, customList?: readonly string[]): boolean {
+  if (!host) return false;
+  const h = host.toLowerCase().trim();
+  const reg = registrableDomain(h) || h;
+  if (customList?.some((d) => reg === d || h === d || h.endsWith('.' + d))) return true;
+  if (STANDARD_EMAIL_EXTERNAL_DOMAINS.has(reg) || STANDARD_EMAIL_EXTERNAL_DOMAINS.has(h)) return true;
+  if (reg === 'trustpilot.com' || h.endsWith('.trustpilot.com')) return true;
+  if (reg === 'feefo.com' || reg === 'bazaarvoice.com' || reg === 'yotpo.com') return true;
+  return false;
+}
 
 /**
  * Analyses one link in an email. `knownHosts` are the user's saved sites
  * (when unlocked) — lookalikes of those, or of well-known brands, are flagged.
  */
-export function analyzeEmailLink(text: string, href: string, knownHosts: readonly string[] = []): EmailFinding | null {
+export function analyzeEmailLink(
+  text: string,
+  href: string,
+  knownHosts: readonly string[] = [],
+  senderDomain?: string,
+  customConfig?: {
+    esp_tracking_domains?: readonly string[];
+    standard_email_external_domains?: readonly string[];
+  }
+): EmailFinding | null {
   if (!href || /^(mailto|tel|sms|cid|#)/i.test(href)) return null;
   const { url: finalUrl, hops } = unwrapLink(href);
   if (!/^https?:\/\//i.test(finalUrl)) {
@@ -94,12 +101,16 @@ export function analyzeEmailLink(text: string, href: string, knownHosts: readonl
 
   const claimed = domainClaimedByText(text);
   const actual = registrableDomain(host);
-  const isEsp = actual ? ESP_TRACKING_DOMAINS.has(actual) : false;
+  const isEsp = isEspTrackingHost(host, customConfig?.esp_tracking_domains);
   const isWebmailRedir = actual ? WEBMAIL_REDIRECTOR_DOMAINS.has(actual) : false;
-  const isStandardDest = actual ? STANDARD_EMAIL_EXTERNAL_DOMAINS.has(actual) : false;
+  const isStandardDest = isStandardExternalEmailHost(host, customConfig?.standard_email_external_domains);
 
   if (claimed && actual && claimed !== actual) {
-    if (!isEsp && !isWebmailRedir && !isSameBrandOrAlias(claimed, actual)) {
+    const isSenderAligned = senderDomain ? (claimed === senderDomain || isSameBrandOrAlias(claimed, senderDomain)) : false;
+    const isDestinationRecognized = isEsp || isWebmailRedir || isStandardDest || isSameBrandOrAlias(claimed, actual);
+
+    // If an authentic sender links to their own domain through an ESP tracking redirector, this is standard delivery, not spoofing
+    if (!isDestinationRecognized && !isSenderAligned) {
       raise('danger', `Link text shows ${claimed} but it really goes to ${actual}`);
     }
   }
@@ -197,6 +208,11 @@ export function summarizeEmailLocal(input: {
   replyTo?: string | null;
   links: { text: string; href: string }[];
   attachments: string[];
+  knownHosts?: readonly string[];
+  customConfig?: {
+    esp_tracking_domains?: readonly string[];
+    standard_email_external_domains?: readonly string[];
+  };
 }): EmailLocalSummary {
   const flags = new Set<string>();
   const findings: EmailFinding[] = [];
@@ -214,7 +230,7 @@ export function summarizeEmailLocal(input: {
     }
   }
   for (const l of input.links.slice(0, 50)) {
-    const f = analyzeEmailLink(l.text, l.href);
+    const f = analyzeEmailLink(l.text, l.href, input.knownHosts || [], s.senderDomain, input.customConfig);
     if (!f) continue;
     const joined = f.reasons.join(' ');
     if (/really goes to/i.test(joined)) flags.add('link_mismatch');
