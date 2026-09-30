@@ -14,7 +14,7 @@ export const BRAND_DOMAINS: Record<string, string[]> = {
   uber: ['uber.com'],
 
   // Payments, Banking & Fintech
-  paypal: ['paypal.com'],
+  paypal: ['paypal.com', 'paypal.co.uk', 'paypal-communication.com'],
   stripe: ['stripe.com'],
   chase: ['chase.com'],
   'bank of america': ['bankofamerica.com', 'bofa.com'],
@@ -123,6 +123,9 @@ export function isSameBrandOrAlias(d1: string, d2: string): boolean {
 
   const stem1 = reg1.split('.')[0];
   const stem2 = reg2.split('.')[0];
+  if (stem1 === stem2 && stem1.length >= 3) {
+    return true;
+  }
   if (
     stem2 === stem1 + 'mail' ||
     stem2 === stem1 + 'email' ||
