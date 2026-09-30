@@ -13,6 +13,29 @@
 
 import { extractHostname, registrableDomain } from './siteTrust';
 import type { DomainRiskAssessment } from './domainRisk';
+import { DEFAULT_REDIRECTOR_RULES, type ShieldRedirectorRule } from './shieldConfig';
+
+let activeRedirectorRules: readonly ShieldRedirectorRule[] = DEFAULT_REDIRECTOR_RULES;
+
+export function setActiveRedirectorRules(rules: readonly ShieldRedirectorRule[]): void {
+  if (Array.isArray(rules) && rules.length > 0) {
+    activeRedirectorRules = rules;
+  }
+}
+
+export function getActiveRedirectorRules(): readonly ShieldRedirectorRule[] {
+  return activeRedirectorRules;
+}
+
+export function matchesHostPattern(host: string, pattern: string): boolean {
+  const h = host.toLowerCase().replace(/^www\./, '');
+  const p = pattern.toLowerCase().trim();
+  if (p.startsWith('*.')) {
+    const root = p.slice(2);
+    return h === root || h.endsWith(`.${root}`);
+  }
+  return h === p;
+}
 
 /** Link shorteners whose destination is only knowable by asking them. */
 export const SHORTENER_HOSTS: ReadonlySet<string> = new Set([
@@ -53,16 +76,37 @@ function decodeProofpoint(u: URL): string | null {
 /**
  * If `raw` is a known redirector wrapper, returns the URL it wraps; else null.
  */
-export function unwrapOnce(raw: string): string | null {
+export function unwrapOnce(raw: string, customRules?: readonly ShieldRedirectorRule[]): string | null {
   const u = safeUrl(raw);
   if (!u) return null;
   const host = u.hostname.toLowerCase().replace(/^www\./, '');
   const reg = registrableDomain(host);
   const q = (k: string) => u.searchParams.get(k);
 
+  const rules = customRules && customRules.length > 0 ? customRules : activeRedirectorRules;
+
+  // 1. Check dynamic rules (synced from backend Shield remote config)
+  for (const rule of rules) {
+    if (!matchesHostPattern(host, rule.host_pattern)) continue;
+    if (rule.path_prefix && !u.pathname.toLowerCase().startsWith(rule.path_prefix.toLowerCase())) continue;
+
+    if (rule.type === 'proofpoint') {
+      const decoded = decodeProofpoint(u);
+      if (decoded && safeUrl(decoded)) return decoded;
+    } else if (rule.type === 'raw_query') {
+      const decoded = u.search ? u.search.slice(1) : null;
+      if (decoded && safeUrl(decoded)) return decoded;
+    } else if (rule.query_param) {
+      const val = q(rule.query_param);
+      if (val && safeUrl(val)) return val;
+    }
+  }
+
+  // 2. Built-in hardcoded fallbacks
   let target: string | null = null;
   if (reg.startsWith('google.') && u.pathname === '/url') target = q('q') || q('url');
   else if (host.endsWith('safelinks.protection.outlook.com')) target = q('url');
+  else if (host.includes('.static.microsoft') && u.pathname.includes('/safelinks/')) target = q('url');
   else if (host === 'urldefense.proofpoint.com' || host === 'urldefense.com') target = decodeProofpoint(u);
   else if ((host === 'l.facebook.com' || host === 'lm.facebook.com') && u.pathname === '/l.php') target = q('u');
   else if (host === 'l.instagram.com') target = q('u');
@@ -73,16 +117,29 @@ export function unwrapOnce(raw: string): string | null {
   else if (host === 'steamcommunity.com' && u.pathname.startsWith('/linkfilter')) target = q('url') || q('u');
   else if (host === 'href.li') target = u.search ? u.search.slice(1) : null;
 
-  if (!target) return null;
-  return safeUrl(target) ? target : null;
+  if (target && safeUrl(target)) return target;
+
+  // 3. Generic redirection heuristic for any host carrying an absolute destination URL
+  const COMMON_REDIRECT_PARAMS = ['url', 'target', 'dest', 'destination', 'redirect', 'redirect_url', 'next', 'link'];
+  for (const param of COMMON_REDIRECT_PARAMS) {
+    const val = q(param);
+    if (val && safeUrl(val)) {
+      const valHost = extractHostname(val);
+      if (valHost && valHost !== host) {
+        return val;
+      }
+    }
+  }
+
+  return null;
 }
 
 /** Repeatedly unwraps redirector wrappers (bounded). */
-export function unwrapLink(raw: string, maxDepth = 6): { url: string; hops: string[] } {
+export function unwrapLink(raw: string, maxDepth = 6, customRules?: readonly ShieldRedirectorRule[]): { url: string; hops: string[] } {
   const hops: string[] = [];
   let current = raw;
   for (let i = 0; i < maxDepth; i++) {
-    const next = unwrapOnce(current);
+    const next = unwrapOnce(current, customRules);
     if (!next || next === current) break;
     hops.push(current);
     current = next;

@@ -15,7 +15,7 @@ export interface CatalogBrand {
 
 export const BRAND_CATALOG: readonly CatalogBrand[] = [
   { token: 'paypal', name: 'PayPal', domains: ['paypal.com', 'paypal.me', 'paypalobjects.com'] },
-  { token: 'microsoft', name: 'Microsoft', domains: ['microsoft.com', 'live.com', 'office.com', 'microsoftonline.com', 'outlook.com', 'bing.com', 'azure.com', 'microsoft365.com', 'msauth.net', 'msftauth.net', 'skype.com', 'xbox.com', 'sharepoint.com', 'onedrive.com', 'windows.com'] },
+  { token: 'microsoft', name: 'Microsoft', domains: ['microsoft.com', 'live.com', 'office.com', 'microsoftonline.com', 'outlook.com', 'bing.com', 'azure.com', 'microsoft365.com', 'msauth.net', 'msftauth.net', 'skype.com', 'xbox.com', 'sharepoint.com', 'onedrive.com', 'windows.com', 'static.microsoft', 'office.net'] },
   { token: 'office365', name: 'Microsoft 365', domains: ['office.com', 'microsoft.com', 'microsoftonline.com', 'microsoft365.com', 'live.com', 'sharepoint.com'] },
   { token: 'outlook', name: 'Outlook', domains: ['outlook.com', 'live.com', 'office.com', 'microsoft.com', 'microsoftonline.com'] },
   { token: 'google', name: 'Google', domains: ['google.com', 'gmail.com', 'youtube.com', 'googleusercontent.com', 'gstatic.com', 'google.co.uk', 'google.de', 'google.fr', 'google.co.in', 'google.ca', 'google.com.au'] },
@@ -115,7 +115,15 @@ export function catalogDomains(brands: readonly CatalogBrand[] = BRAND_CATALOG):
 }
 
 /** True when `reg` (a registrable domain or host) belongs to the brand. */
-export function brandOwnsHost(brand: CatalogBrand, host: string): boolean {
-  const h = host.toLowerCase();
-  return brand.domains.some((d) => h === d || h.endsWith(`.${d}`));
+export function brandOwnsHost(brand: CatalogBrand, host: string, brandTlds: readonly string[] = []): boolean {
+  const h = host.toLowerCase().replace(/^www\./, '');
+  // 1. Direct or subdomain match against catalog domains
+  if (brand.domains.some((d) => h === d || h.endsWith(`.${d}`))) return true;
+  // 2. Direct or subdomain match against authentic brand TLD (e.g. *.microsoft where brand token is 'microsoft')
+  if (h === brand.token || h.endsWith(`.${brand.token}`)) return true;
+  // 3. Checked against extra dynamic brand TLDs
+  for (const tld of brandTlds) {
+    if (tld === brand.token && (h === tld || h.endsWith(`.${tld}`))) return true;
+  }
+  return false;
 }

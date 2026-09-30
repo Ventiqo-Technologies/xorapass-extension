@@ -71,10 +71,19 @@ describe('Link Guard', () => {
     const safelink =
       'https://nam02.safelinks.protection.outlook.com/?url=' + encodeURIComponent('https://paypa1.com/x') + '&data=1';
     expect(unwrapLink(safelink).url).toBe('https://paypa1.com/x');
+    // Microsoft Teams SafeLinks unwrapping
+    const teamsSafelink =
+      'https://teams.public.onecdn.static.microsoft/evergreen-assets/safelinks/2/atp-safelinks.html?url=' +
+      encodeURIComponent('https://dev.azure.com/project') +
+      '&data=04%7C01%7Ctest';
+    expect(unwrapLink(teamsSafelink).url).toBe('https://dev.azure.com/project');
     expect(unwrapLink('https://l.facebook.com/l.php?u=' + encodeURIComponent('https://a.example/')).url).toBe('https://a.example/');
     expect(
       unwrapLink('https://urldefense.proofpoint.com/v2/url?u=https-3A__evil.example_path&d=x').url
     ).toBe('https://evil.example/path');
+    // Dynamic rule unwrapping test
+    const customRuleLink = 'https://custom-gateway.internal/redir?target=' + encodeURIComponent('https://clean.example/portal');
+    expect(unwrapLink(customRuleLink).url).toBe('https://clean.example/portal');
     // Nested wrappers
     const inner = 'https://www.google.com/url?q=' + encodeURIComponent('https://evil.example/');
     const r = unwrapLink('https://l.facebook.com/l.php?u=' + encodeURIComponent(inner));
@@ -82,6 +91,13 @@ describe('Link Guard', () => {
     expect(r.hops).toHaveLength(2);
     // Refuses to unwrap to a non-web scheme
     expect(unwrapLink('https://www.google.com/url?q=javascript:alert(1)').url).toContain('google.com');
+  });
+
+  it('recognizes static.microsoft and verified platforms as safe without false positives', () => {
+    const risk = assessDomainRisk('teams.public.onecdn.static.microsoft', ['microsoft.com']);
+    expect(risk.decision).toBe('allow');
+    expect(risk.riskScore).toBe(0);
+    expect(risk.riskLevel).toBe('safe');
   });
 
   it('detects shorteners', () => {

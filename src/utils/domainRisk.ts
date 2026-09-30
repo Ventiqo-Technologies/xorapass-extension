@@ -193,6 +193,10 @@ export const HIGH_RISK_TLDS = new Set([
 export const KNOWN_LEGITIMATE_DOMAINS = new Set([
   // Tech Giants & Cloud Providers
   'microsoft.com',
+  'static.microsoft',
+  'office.net',
+  'sharepoint.com',
+  'microsoft365.com',
   'live.com',
   'office.com',
   'azure.com',
@@ -666,6 +670,10 @@ export interface AssessOptions {
    * only warn and short brand names only count for exact-lookalike rules.
    */
   catalog?: boolean;
+  /** ICANN brand TLDs (e.g. microsoft, google, apple). */
+  brandTlds?: readonly string[];
+  /** Cloud & enterprise infrastructure domains to treat as verified platforms. */
+  verifiedPlatforms?: readonly string[];
 }
 
 /** Catalog brands that are everyday words — weaker evidence when they appear in a host. */
@@ -751,16 +759,34 @@ export function assessDomainRisk(
     }
   }
 
-  // 2b. Check for Legitimate Subdomain of Known Major Platforms
+  // 2b. Check for Legitimate Subdomain of Known Major Platforms or Dynamic Verified Platforms
   // ...but never for a customer-content host on that platform (see
   // USER_CONTENT_HOST_SUFFIXES): a Google Form or an Azure blob page is not
   // Google's or Microsoft's page.
-  if (pageReg && KNOWN_LEGITIMATE_DOMAINS.has(pageReg) && !isUserContentHost(pageHostname)) {
+  const verifiedPlatforms = options.verifiedPlatforms || [];
+  const isPlatform =
+    (pageReg && (KNOWN_LEGITIMATE_DOMAINS.has(pageReg) || verifiedPlatforms.includes(pageReg))) ||
+    verifiedPlatforms.includes(pageHostname);
+
+  if (isPlatform && !isUserContentHost(pageHostname)) {
     assessment.signals.isSameRegistrableDomain = true;
-    assessment.signals.isSubdomainMatch = pageHostname !== pageReg && isSubdomainOf(pageHostname, pageReg);
+    assessment.signals.isSubdomainMatch = pageHostname !== pageReg && isSubdomainOf(pageHostname, pageReg || pageHostname);
     assessment.signals.isExactMatch = pageHostname === pageReg;
-    assessment.matchedTarget = pageReg;
+    assessment.matchedTarget = pageReg || pageHostname;
     return assessment; // Safe legitimate platform domain
+  }
+
+  // 2c. Check for Authentic Brand TLD (e.g. *.microsoft, *.google, *.apple)
+  const tldLabel = pageHostname.split('.').pop() || '';
+  const brandTlds = options.brandTlds && options.brandTlds.length > 0
+    ? options.brandTlds
+    : ['microsoft', 'google', 'apple', 'amazon', 'cisco', 'sony', 'canon', 'barclays', 'kpmg'];
+
+  if (brandTlds.includes(tldLabel) && !isUserContentHost(pageHostname)) {
+    assessment.signals.isSameRegistrableDomain = true;
+    assessment.signals.isSubdomainMatch = true;
+    assessment.matchedTarget = pageReg || pageHostname;
+    return assessment; // Safe authentic brand TLD
   }
 
   // If there are no saved credentials to protect, return safe
@@ -1052,7 +1078,7 @@ export function assessWithCatalog(
   const vault = assessDomainRisk(pageHost, vaultHosts, allowlist, pageUrl, options);
   if (vault.isAllowlisted || vault.signals.isSameRegistrableDomain) return vault;
   const host = normalizeHostname(pageHost);
-  if (!host || brands.some((b) => brandOwnsHost(b, host))) return vault;
+  if (!host || brands.some((b) => brandOwnsHost(b, host, options.brandTlds))) return vault;
   const cat = assessDomainRisk(pageHost, catalogDomains(brands), allowlist, pageUrl, { ...options, catalog: true });
   if (cat.riskScore <= vault.riskScore) return vault;
   return { ...cat, reasons: Array.from(new Set([...cat.reasons, ...vault.reasons])) };

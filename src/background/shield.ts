@@ -23,6 +23,7 @@ import { DEFAULT_SHIELD_CONFIG, coerceShieldConfig, type ShieldConfig } from '..
 import { PrefixSet, prefixHex, loadStoredBlocklist, saveStoredBlocklist } from '../utils/shieldBlocklist';
 import { hashUrlExpressions } from '../utils/urlHashing';
 import type { BlocklistHit } from '../utils/shieldEngine';
+import { setActiveRedirectorRules } from '../utils/linkInspect';
 
 const TOKEN_KEY = 'shieldDeviceToken';
 const ENTITLEMENT_KEY = 'shieldEntitlement';
@@ -108,6 +109,9 @@ export async function getShieldConfig(): Promise<ShieldConfig> {
   if (configMem) return configMem;
   const stored = await localGet<unknown>(CONFIG_KEY);
   configMem = stored ? coerceShieldConfig(stored) : DEFAULT_SHIELD_CONFIG;
+  if (configMem?.redirector_rules?.length) {
+    setActiveRedirectorRules(configMem.redirector_rules);
+  }
   return configMem;
 }
 
@@ -126,6 +130,9 @@ export async function refreshShieldConfig(): Promise<ShieldConfig> {
     if (!res.ok) return before;
     const cfg = coerceShieldConfig(await res.json());
     configMem = cfg;
+    if (cfg?.redirector_rules?.length) {
+      setActiveRedirectorRules(cfg.redirector_rules);
+    }
     await localSet({
       [CONFIG_KEY]: cfg,
       [CONFIG_META_KEY]: { etag: res.headers.get('ETag') || undefined, fetchedAt: Date.now() },
