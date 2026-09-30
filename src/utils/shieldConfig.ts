@@ -14,6 +14,13 @@ export type LocalRule = 'homograph' | 'brand_abuse' | 'tld_change' | 'typosquat'
 
 export const LOCAL_RULES: readonly LocalRule[] = ['homograph', 'brand_abuse', 'tld_change', 'typosquat', 'keyword_tld'];
 
+export interface ShieldRedirectorRule {
+  host_pattern: string;
+  path_prefix?: string;
+  query_param: string;
+  type?: string;
+}
+
 export interface ShieldConfig {
   version: number;
   shield_enabled: boolean;
@@ -31,7 +38,42 @@ export interface ShieldConfig {
   trusted_domains: string[];
   /** Brands added to the built-in catalog without an extension release. */
   extra_brands: { token: string; name: string; domains: string[] }[];
+  /** Dynamic redirector rules for unwrapping links without store releases. */
+  redirector_rules: ShieldRedirectorRule[];
+  /** ICANN brand TLDs (e.g. microsoft, google, apple). */
+  brand_tlds: string[];
+  /** Cloud & enterprise infrastructure domains to treat as verified platforms. */
+  verified_platforms: string[];
 }
+
+export const DEFAULT_REDIRECTOR_RULES: readonly ShieldRedirectorRule[] = Object.freeze([
+  { host_pattern: '*.static.microsoft', path_prefix: '/evergreen-assets/safelinks', query_param: 'url' },
+  { host_pattern: '*.teams.cdn.office.net', query_param: 'url' },
+  { host_pattern: 'teams.microsoft.com', path_prefix: '/l/message', query_param: 'url' },
+  { host_pattern: '*.safelinks.protection.outlook.com', query_param: 'url' },
+  { host_pattern: 'urldefense.proofpoint.com', type: 'proofpoint', query_param: 'u' },
+  { host_pattern: 'urldefense.com', type: 'proofpoint', query_param: 'u' },
+  { host_pattern: 'l.facebook.com', path_prefix: '/l.php', query_param: 'u' },
+  { host_pattern: 'lm.facebook.com', path_prefix: '/l.php', query_param: 'u' },
+  { host_pattern: 'l.instagram.com', query_param: 'u' },
+  { host_pattern: 'out.reddit.com', query_param: 'url' },
+  { host_pattern: 'slack-redir.net', query_param: 'url' },
+  { host_pattern: 'youtube.com', path_prefix: '/redirect', query_param: 'q' },
+  { host_pattern: 'linkedin.com', path_prefix: '/redir/', query_param: 'url' },
+  { host_pattern: 'steamcommunity.com', path_prefix: '/linkfilter', query_param: 'url' },
+  { host_pattern: 'href.li', type: 'raw_query', query_param: '' },
+]);
+
+export const DEFAULT_BRAND_TLDS: readonly string[] = Object.freeze([
+  'microsoft', 'google', 'apple', 'amazon', 'cisco', 'sony', 'canon', 'barclays', 'kpmg',
+]);
+
+export const DEFAULT_VERIFIED_PLATFORMS: readonly string[] = Object.freeze([
+  'static.microsoft', 'office.net', 'azure.com', 'windows.net', 'sharepoint.com',
+  'gstatic.com', 'googleusercontent.com', 'googleapis.com',
+  'apple.com', 'icloud.com', 'cdn-apple.com',
+  'cloudfront.net', 'awsapps.com',
+]);
 
 export const DEFAULT_SHIELD_CONFIG: ShieldConfig = Object.freeze({
   version: 1,
@@ -48,6 +90,9 @@ export const DEFAULT_SHIELD_CONFIG: ShieldConfig = Object.freeze({
   email_scan: { enabled: true },
   trusted_domains: [],
   extra_brands: [],
+  redirector_rules: [...DEFAULT_REDIRECTOR_RULES],
+  brand_tlds: [...DEFAULT_BRAND_TLDS],
+  verified_platforms: [...DEFAULT_VERIFIED_PLATFORMS],
 }) as ShieldConfig;
 
 function obj(v: unknown): Record<string, unknown> {
@@ -142,5 +187,38 @@ export function coerceShieldConfig(input: unknown): ShieldConfig {
           }))
           .filter((b) => b.token.length >= 3 && b.domains.length > 0)
       : [],
+    redirector_rules: Array.isArray(o.redirector_rules) && o.redirector_rules.length > 0
+      ? (o.redirector_rules as unknown[])
+          .map((r) => obj(r))
+          .filter((r) => typeof r.host_pattern === 'string' && typeof r.query_param === 'string')
+          .slice(0, 100)
+          .map((r) => ({
+            host_pattern: String(r.host_pattern).trim().toLowerCase(),
+            path_prefix: typeof r.path_prefix === 'string' ? String(r.path_prefix).trim() : undefined,
+            query_param: String(r.query_param).trim(),
+            type: typeof r.type === 'string' ? String(r.type).trim().toLowerCase() : undefined,
+          }))
+          .filter((r) => r.host_pattern.length > 0)
+      : [...d.redirector_rules],
+    brand_tlds: Array.isArray(o.brand_tlds) && o.brand_tlds.length > 0
+      ? Array.from(
+          new Set(
+            (o.brand_tlds as unknown[])
+              .filter((t): t is string => typeof t === 'string')
+              .map((t) => t.trim().toLowerCase().replace(/^\./, ''))
+              .filter((t) => /^[a-z0-9-]+$/.test(t))
+          )
+        ).slice(0, 100)
+      : [...d.brand_tlds],
+    verified_platforms: Array.isArray(o.verified_platforms) && o.verified_platforms.length > 0
+      ? Array.from(
+          new Set(
+            (o.verified_platforms as unknown[])
+              .filter((p): p is string => typeof p === 'string')
+              .map((p) => p.trim().toLowerCase().replace(/^www\./, ''))
+              .filter((p) => HOST_RE.test(p))
+          )
+        ).slice(0, 300)
+      : [...d.verified_platforms],
   };
 }
