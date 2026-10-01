@@ -8,6 +8,8 @@ import {
   type DomainRiskAssessment,
 } from './domainRisk';
 
+import { BRAND_CATALOG, catalogDomains } from './brandCatalog';
+
 export interface PromptAnalysisResult {
   input: string;
   verdict: 'safe' | 'suspicious' | 'phishing';
@@ -21,34 +23,12 @@ export interface PromptAnalysisResult {
   urlAssessments?: { url: string; hostname: string; risk: DomainRiskAssessment }[];
 }
 
-// Regex to detect web URLs (with or without http/https)
-const URL_REGEX = /(?:https?:\/\/|www\.)[^\s<>"'{}|\\^`\[\]]+|[a-zA-Z0-9][-a-zA-Z0-9]*\.(?:com|org|net|io|ai|co|uk|de|xyz|top|online|site|app|live|info|ru|cn|buzz|link|shop|club|vip|icu|cam|work|rest|fit|tk|ml|ga|cf|gq)(?:\/[^\s<>"'{}|\\^`\[\]]*)?/gi;
-
-// Common high-profile brands targeted by phishers
-const KNOWN_PHISHED_BRANDS = [
-  { name: 'Netflix', domains: ['netflix.com'] },
-  { name: 'PayPal', domains: ['paypal.com'] },
-  { name: 'Amazon', domains: ['amazon.com', 'amazon.co.uk', 'amazon.de'] },
-  { name: 'Apple', domains: ['apple.com', 'icloud.com'] },
-  { name: 'Microsoft', domains: ['microsoft.com', 'live.com', 'office.com', 'outlook.com'] },
-  { name: 'Google', domains: ['google.com', 'gmail.com'] },
-  { name: 'Meta / Facebook', domains: ['facebook.com', 'meta.com', 'instagram.com'] },
-  { name: 'Chase Bank', domains: ['chase.com'] },
-  { name: 'Bank of America', domains: ['bankofamerica.com'] },
-  { name: 'Wells Fargo', domains: ['wellsfargo.com'] },
-  { name: 'UPS / FedEx / DHL', domains: ['ups.com', 'fedex.com', 'dhl.com'] },
-  { name: 'USPS', domains: ['usps.com'] },
-  { name: 'Coinbase', domains: ['coinbase.com'] },
-  { name: 'Binance', domains: ['binance.com'] },
-  { name: 'Steam', domains: ['steampowered.com', 'steamcommunity.com'] },
-  { name: 'GitHub', domains: ['github.com'] },
-  { name: 'Dropbox', domains: ['dropbox.com'] },
-];
+// Regex to detect web URLs (with or without http/https, including subdomains and multi-part TLDs)
+const URL_REGEX =
+  /(?:https?:\/\/|www\.)[^\s<>"'{}|\\^`\[\]]+|(?:[a-zA-Z0-9](?:[-a-zA-Z0-9]*[a-zA-Z0-9])?\.)+(?:com|org|net|io|ai|co|uk|de|xyz|top|online|site|app|live|info|ru|cn|buzz|link|shop|club|vip|icu|cam|work|rest|fit|tk|ml|ga|cf|gq|me|cc|to|is|gg|[a-z]{2,})(?:\/[^\s<>"'{}|\\^`\[\]]*)?/gi;
 
 /** Registrable domains of commonly phished brands (for lookalike checks when the vault is locked). */
-export const KNOWN_BRAND_DOMAINS: readonly string[] = Array.from(
-  new Set(KNOWN_PHISHED_BRANDS.flatMap((b) => b.domains))
-);
+export const KNOWN_BRAND_DOMAINS: readonly string[] = catalogDomains();
 
 // High-urgency scam vocabulary
 const URGENCY_TRIGGERS = [
@@ -88,9 +68,9 @@ export function analyzePromptSafety(
   const rawUrls = input.match(URL_REGEX) || [];
   const extractedUrls = Array.from(new Set(rawUrls.map((u) => u.replace(/[.,;!?)]+$/, ''))));
 
-  // Build full list of legitimate targets: known brands + user's vault domains
+  // Build full list of legitimate targets: catalog brands + user's vault domains
   const legitimateTargets = new Set<string>();
-  for (const b of KNOWN_PHISHED_BRANDS) {
+  for (const b of BRAND_CATALOG) {
     for (const d of b.domains) legitimateTargets.add(d);
   }
   for (const h of knownVaultHosts) {
@@ -134,8 +114,10 @@ export function analyzePromptSafety(
   }
 
   // 3. Brand mention analysis in text
-  for (const b of KNOWN_PHISHED_BRANDS) {
-    const brandRegex = new RegExp(`\\b${b.name.replace('/', '|')}\\b`, 'i');
+  for (const b of BRAND_CATALOG) {
+    // Only check distinct brand names (>= 4 chars or multi-word) to prevent common false positives like "wise", "duo"
+    const escapedName = b.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('/', '|');
+    const brandRegex = new RegExp(`\\b${escapedName}\\b`, 'i');
     if (brandRegex.test(input)) {
       detectedBrands.push(b.name);
 
@@ -144,7 +126,7 @@ export function analyzePromptSafety(
         const hasLegitimateDomain = extractedUrls.some((u) => {
           const host = extractHostname(u);
           const reg = registrableDomain(host);
-          return b.domains.some((d) => reg === d || host === d);
+          return b.domains.some((d) => reg === d || host === d || host.endsWith(`.${d}`));
         });
 
         if (!hasLegitimateDomain) {
@@ -168,13 +150,13 @@ export function analyzePromptSafety(
   let totalScore = 0;
 
   if (extractedUrls.length > 0) {
-    totalScore += highestUrlRisk * 0.7;
+    totalScore = Math.max(totalScore, highestUrlRisk);
   } else {
     // Plain text without URL (e.g. phone scam or crypto solicitation)
     totalScore += Math.min(threatSignals.length * 20, 70);
   }
 
-  // Add weight for urgency triggers (each adds 10, max 30)
+  // Add weight for urgency triggers (each adds 12, max 30)
   const urgencyCount = URGENCY_TRIGGERS.filter((t) => t.pattern.test(input)).length;
   totalScore += Math.min(urgencyCount * 12, 30);
 

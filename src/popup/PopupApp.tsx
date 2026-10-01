@@ -809,14 +809,43 @@ export const PopupApp: React.FC = () => {
       // A server "block" outranks a softer local verdict.
       const worst = intel.reduce((m, i) => Math.max(m, i.score), 0);
       if (intel.some((i) => i.decision === 'block')) {
+        const threatSignals = [...local.threatSignals];
+        const blockReason = intel.find((i) => i.decision === 'block')?.reason;
+        if (!threatSignals.some((s) => s.toLowerCase().includes('threat intelligence') || s.toLowerCase().includes('threat-intelligence'))) {
+          threatSignals.push(blockReason ? `Threat intelligence hit: ${blockReason}` : 'Confirmed malicious by security threat-intelligence feeds');
+        }
+        const recommendations = [
+          'Do NOT click the link or follow instructions in this message.',
+          'Do NOT enter your password, payment information, or 2FA codes.',
+          ...local.recommendations.filter(
+            (r) => !r.includes('official HTTPS lock') && !r.includes('Do NOT click') && !r.includes('Do NOT enter')
+          ),
+        ];
         setPromptResult({
           ...local,
           verdict: 'phishing',
-          riskScore: Math.max(local.riskScore, worst),
+          riskScore: Math.max(local.riskScore, worst, 85),
           title: local.verdict === 'phishing' ? local.title : 'Dangerous link',
+          summary: 'A link in this message was flagged as a confirmed phishing or malware threat by threat-intelligence feeds.',
+          threatSignals,
+          recommendations,
         });
       } else if (local.verdict === 'safe' && intel.some((i) => i.decision === 'warn' || i.decision === 'require_approval')) {
-        setPromptResult({ ...local, verdict: 'suspicious', riskScore: Math.max(local.riskScore, worst), title: 'Suspicious link' });
+        const threatSignals = [...local.threatSignals];
+        threatSignals.push('Destination link flagged with elevated risk by threat intelligence');
+        const recommendations = [
+          'Verify the destination and sender before proceeding.',
+          'Do not submit sensitive credentials unless you have verified the official domain.',
+        ];
+        setPromptResult({
+          ...local,
+          verdict: 'suspicious',
+          riskScore: Math.max(local.riskScore, worst, 50),
+          title: 'Suspicious link',
+          summary: 'A link in this message exhibits suspicious characteristics or unknown reputation.',
+          threatSignals,
+          recommendations,
+        });
       }
     } catch (err) {
       console.error('Failed to analyze prompt safety', err);

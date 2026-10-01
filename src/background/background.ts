@@ -1302,6 +1302,16 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
       (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)
     );
 
+    // Query page signals from the content script so brand impersonation,
+    // suspicious forms, and phishing cues are evaluated proactively on navigation.
+    let pageSignals: PageSignals | undefined;
+    try {
+      const r: any = await browser.tabs.sendMessage(tabId, { type: 'GET_PAGE_SIGNALS' }, { frameId: 0 });
+      pageSignals = r?.pageSignals;
+    } catch {
+      /* content script might still be initializing or unavailable */
+    }
+
     const risk = await evaluateDomainRisk({
       hostname,
       currentUrl: url,
@@ -1309,7 +1319,8 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
       allowlist,
       savedDomain: matching[0]?.url ? extractHostname(matching[0].url) : '',
       sensitivity: sensitivityForItems(matching),
-      remoteGate: listingRemoteGate(hostname, knownHosts, undefined, undefined),
+      pageSignals,
+      remoteGate: listingRemoteGate(hostname, knownHosts, undefined, pageSignals),
     });
 
     if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
