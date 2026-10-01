@@ -1799,7 +1799,7 @@ export const PopupApp: React.FC = () => {
               className="cursor-pointer hover:opacity-85 transition flex items-center"
               title="Open XoraPass Web Vault"
             >
-              <LogoHorizontal className="h-6 w-auto" />
+              <LogoHorizontal className="h-6 w-auto" isDark={isDarkEffective} />
             </button>
             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-900/5 border border-slate-900/8 text-[9px] font-semibold text-slate-600">
               <span className={`w-1.5 h-1.5 rounded-full ${offline ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />

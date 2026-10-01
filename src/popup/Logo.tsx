@@ -8,8 +8,8 @@ import React from 'react';
  * so a root-relative src resolves to chrome-extension://<id>/<file>.
  *
  * - LogoIcon: square X-shield mark, transparent background — safe on any theme.
- * - LogoHorizontal: mark + wordmark; the wordmark is dark teal, so it needs a
- *   light surface behind it.
+ * - LogoHorizontal: mark + wordmark; automatically displays the light (teal wordmark)
+ *   or dark (crisp white wordmark) logo variant depending on theme or isDark prop.
  */
 export const LogoIcon: React.FC<{ className?: string }> = ({ className = 'w-8 h-8' }) => (
   <img
@@ -20,11 +20,35 @@ export const LogoIcon: React.FC<{ className?: string }> = ({ className = 'w-8 h-
   />
 );
 
-export const LogoHorizontal: React.FC<{ className?: string }> = ({ className = 'h-10 w-auto' }) => (
-  <img
-    src="/xorapass_logo_horizontal.png"
-    alt="XoraPass"
-    className={`${className} object-contain select-none`}
-    draggable={false}
-  />
-);
+export const LogoHorizontal: React.FC<{ className?: string; isDark?: boolean }> = ({
+  className = 'h-10 w-auto',
+  isDark,
+}) => {
+  if (isDark !== undefined) {
+    return (
+      <img
+        src={isDark ? '/xorapass_logo_horizontal_dark.png' : '/xorapass_logo_horizontal.png'}
+        alt="XoraPass"
+        className={`${className} object-contain select-none`}
+        draggable={false}
+      />
+    );
+  }
+
+  return (
+    <>
+      <img
+        src="/xorapass_logo_horizontal.png"
+        alt="XoraPass"
+        className={`${className} object-contain select-none dark:hidden`}
+        draggable={false}
+      />
+      <img
+        src="/xorapass_logo_horizontal_dark.png"
+        alt="XoraPass"
+        className={`${className} object-contain select-none hidden dark:block`}
+        draggable={false}
+      />
+    </>
+  );
+};
