@@ -525,7 +525,12 @@ async function apiJwt(
   // redeemed, expired) just returns the original 401 unchanged, so this can
   // only help and never turn a working call into a failing one.
   const renewed = await apiRefresh();
-  if (!renewed) return first;
+  if (!renewed) {
+    void clearAiHeartbeat();
+    void clearTokenRefresh();
+    void clearClipboard().finally(() => browser.storage.session.clear());
+    return first;
+  }
   return callApiJwt(method, path, body, renewed);
 }
 
@@ -614,6 +619,12 @@ async function doTokenRefresh(): Promise<string> {
     }
     if (!resp.ok) {
       console.debug('[XoraPass] token refresh failed:', resp.status);
+      if (resp.status === 401 || resp.status === 403) {
+        console.warn('[XoraPass] server session ended (401/403) -> clearing session');
+        void clearAiHeartbeat();
+        void clearTokenRefresh();
+        void clearClipboard().finally(() => browser.storage.session.clear());
+      }
       return '';
     }
     const data = await resp.json();

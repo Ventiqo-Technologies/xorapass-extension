@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
-
-const SESSION_EXPIRED = 'Your server session ended. Enter your master password to keep syncing.';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import { GOOGLE_NO_GUARANTEE_NOTICE, webRiskAdvisoryFromSignals, type ThreatAdvisory } from '../utils/webRiskAttribution';
 import {
@@ -426,9 +424,6 @@ export const PopupApp: React.FC = () => {
   // Report / request-review actions for the current site (Site Scanner card).
   const [siteReportState, setSiteReportState] = useState<'idle' | 'busy' | 'done' | 'already_blocked' | 'error'>('idle');
   const [siteRequestState, setSiteRequestState] = useState<'idle' | 'busy' | 'done' | 'error' | 'login'>('idle');
-  const [reauthPassword, setReauthPassword] = useState('');
-  const [reauthBusy, setReauthBusy] = useState(false);
-  const [reauthError, setReauthError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
 
   // Add Item Modal state
@@ -1200,51 +1195,6 @@ export const PopupApp: React.FC = () => {
     setVaultItems(decrypted);
   };
 
-  // "Sign in again": the server session ended (token expired, revoked or
-  // rotated away) but the vault is still unlocked here. Re-authenticate with
-  // the master password and keep the vault open.
-  const handleReauth = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!reauthPassword) return;
-    setReauthBusy(true);
-    setReauthError(null);
-    try {
-      const session = await browser.storage.session.get(['email', 'encKey']);
-      const accountEmail = (session.email as string) || email;
-      const cache = await readVaultCache(accountEmail);
-      const salt = cache
-        ? cache.masterSalt
-        : (await axios.post(`${API_BASE_URL}/api/auth/discover`, { email: accountEmail })).data.master_salt;
-      const derived = await splitMasterKey(await deriveMasterKey(reauthPassword, salt));
-      if (session.encKey && bytesToHex(derived.encKey) !== session.encKey) {
-        setReauthError('Incorrect master password.');
-        return;
-      }
-      const res = await axios.post(`${API_BASE_URL}/api/auth/login`, {
-        email: accountEmail,
-        client_auth_hash: derived.clientAuthHash,
-      });
-      if (res.data.mfa_required) {
-        setReauthError('Your account uses 2-step verification — lock and unlock to sign in again.');
-        return;
-      }
-      const vaultRes = await axios.get(`${API_BASE_URL}/api/vault`, {
-        headers: { Authorization: `Bearer ${res.data.access_token}` },
-      });
-      const decrypted = decryptEntries(vaultRes.data, derived.encKey);
-      await storeSession(decrypted, res.data.access_token, derived.encKey, accountEmail, false, res.data.refresh_token);
-      await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
-      setVaultItems(decrypted);
-      setOffline(false);
-      setSyncError(null);
-      setReauthPassword('');
-    } catch (err: any) {
-      setReauthError(isAuthError(err) ? 'Incorrect master password.' : "Couldn't reach the server.");
-    } finally {
-      setReauthBusy(false);
-    }
-  };
-
   const refreshVault = async (manual = false) => {
     const session = await browser.storage.session.get(['token', 'encKey', 'email', 'offline']);
     let token = session.token as string | undefined;
@@ -1281,7 +1231,16 @@ export const PopupApp: React.FC = () => {
           /* renewal or the retried fetch failed -- fall through below */
         }
         if (!renewed) {
-          setSyncError(SESSION_EXPIRED);
+          // The server session ended and renewal failed.
+          // Lock out completely so the user can cleanly sign in again with MFA.
+          await browser.runtime.sendMessage({ type: 'LOCK_VAULT' });
+          setUnlocked(false);
+          setOffline(false);
+          setVaultItems([]);
+          setSelectedItem(null);
+          setSearchTerm('');
+          setError('Your server session ended. Please unlock or sign in again.');
+          return;
         }
       } else if (manual) {
         setSyncError("Couldn't reach the server.");
@@ -2187,31 +2146,9 @@ export const PopupApp: React.FC = () => {
             )}
 
             {syncError && (
-              <div className="p-2.5 bg-amber-50 border border-amber-200/80 text-amber-800 rounded-xl text-[10px] leading-snug shrink-0 shadow-xs space-y-2">
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                  <span>{syncError}</span>
-                </div>
-                {syncError === SESSION_EXPIRED && (
-                  <form onSubmit={handleReauth} className="flex items-center gap-1.5">
-                    <input
-                      type="password"
-                      autoComplete="current-password"
-                      value={reauthPassword}
-                      onChange={(e) => setReauthPassword(e.target.value)}
-                      placeholder="Master password"
-                      className="flex-1 min-w-0 px-2 py-1 text-xs bg-white border border-amber-200 rounded-lg focus:outline-none focus:border-brand-cyan text-slate-800"
-                    />
-                    <button
-                      type="submit"
-                      disabled={reauthBusy || !reauthPassword}
-                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-[11px] font-bold disabled:opacity-40 cursor-pointer shrink-0"
-                    >
-                      {reauthBusy ? 'Signing in…' : 'Sign in again'}
-                    </button>
-                  </form>
-                )}
-                {syncError === SESSION_EXPIRED && reauthError && <p className="text-rose-700">{reauthError}</p>}
+              <div className="p-2.5 bg-amber-50 border border-amber-200/80 text-amber-800 rounded-xl text-[10px] leading-snug shrink-0 shadow-xs flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                <span>{syncError}</span>
               </div>
             )}
 

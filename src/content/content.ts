@@ -246,13 +246,18 @@ function collectFormContext(): {
 
   // Resolved against the document so a relative action is compared as the
   // absolute URL the browser would actually POST to.
+  // We ONLY extract actionUrl if this form handles credentials (passwords or MFA).
+  // Non-credential forms (search bars, marketing/HubSpot forms, newsletters) pointing externally
+  // are completely normal and should never trigger cross-origin form action hijacking alarms.
   let actionUrl: string | undefined;
-  const rawAction = form?.getAttribute('action');
-  if (rawAction) {
-    try {
-      actionUrl = new URL(rawAction, window.location.href).href;
-    } catch {
-      /* unparseable action - send nothing rather than something misleading */
+  if (passwords.length > 0 || hasMfaField) {
+    const rawAction = form?.getAttribute('action');
+    if (rawAction) {
+      try {
+        actionUrl = new URL(rawAction, window.location.href).href;
+      } catch {
+        /* unparseable action - send nothing rather than something misleading */
+      }
     }
   }
 
