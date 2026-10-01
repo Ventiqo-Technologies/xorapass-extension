@@ -44,6 +44,7 @@ export interface SiteSafetyReport {
   };
   threatIntel: {
     clean: boolean;
+    status: 'clean' | 'alert' | 'inactive';
     label: string;
     detail: string;
     signals: string[];
@@ -221,8 +222,15 @@ export function buildSiteSafetyReport(params: {
     hasThreatIntelSignals &&
     threatIntelSignals.every((s) => s.includes('clean'));
 
+  const threatIntelStatus: 'clean' | 'alert' | 'inactive' = hasThreatIntelHit
+    ? 'alert'
+    : isThreatIntelClean
+    ? 'clean'
+    : 'inactive';
+
   const threatIntel = {
     clean: isThreatIntelClean,
+    status: threatIntelStatus,
     label: hasThreatIntelHit
       ? 'Threat Intelligence Alert'
       : allSignalsUnavailable || !hasThreatIntelSignals

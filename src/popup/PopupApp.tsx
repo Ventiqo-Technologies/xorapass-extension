@@ -3667,9 +3667,17 @@ export const PopupApp: React.FC = () => {
                             )}
                           </div>
                           <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase shrink-0 ${
-                            siteReport.threatIntel.clean ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                            siteReport.threatIntel.status === 'alert'
+                              ? 'bg-rose-100 text-rose-700'
+                              : siteReport.threatIntel.status === 'clean'
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-slate-200 text-slate-700'
                           }`}>
-                            {siteReport.threatIntel.clean ? 'CLEAN' : 'ALERT'}
+                            {siteReport.threatIntel.status === 'alert'
+                              ? 'ALERT'
+                              : siteReport.threatIntel.status === 'clean'
+                              ? 'CLEAN'
+                              : 'INACTIVE'}
                           </span>
                         </div>
 
