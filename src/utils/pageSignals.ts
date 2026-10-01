@@ -60,7 +60,7 @@ export const BRAND_LEXICON: ReadonlySet<string> = new Set([
   'paypal', 'microsoft', 'office365', 'outlook',
   'google', 'gmail', 'apple', 'icloud',
   'amazon', 'aws', 'netflix', 'facebook', 'meta',
-  'instagram', 'whatsapp', 'linkedin', 'twitter',
+  'instagram', 'whatsapp', 'telegram', 'linkedin', 'twitter',
   'github', 'gitlab', 'dropbox', 'slack',
   'zoom', 'docusign', 'adobe', 'stripe',
   'coinbase', 'binance', 'metamask', 'kraken',

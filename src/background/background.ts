@@ -2234,8 +2234,17 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // actually matches this page, else the site it most resembles — never
       // just whichever vault item happens to be first.
       let risk = null;
+      const cfg = await getShieldConfig();
+      const brands = mergeExtraBrands(cfg.extra_brands);
       if (domainRiskOn) {
-        const local = assessWithCatalog(extractHostname(targetUrl), savedDomains, allowlist, targetUrl);
+        const local = assessWithCatalog(
+          extractHostname(targetUrl),
+          savedDomains,
+          allowlist,
+          targetUrl,
+          shieldAssessOptions(cfg),
+          brands
+        );
         const savedDomain = matching[0]?.url
           ? extractHostname(matching[0].url)
           : local.matchedTarget || findLookalikeTarget(extractHostname(targetUrl), savedDomains, allowlist)?.target || '';
@@ -2260,6 +2269,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         allowlist,
         domainRiskEnabled: domainRiskOn,
         pageSignals,
+        extraBrands: brands,
       });
 
       // If the scan produced a risk assessment that warrants warning/blocking,

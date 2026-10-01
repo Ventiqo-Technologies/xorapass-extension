@@ -29,6 +29,7 @@ export const BRAND_CATALOG: readonly CatalogBrand[] = [
   { token: 'meta', name: 'Meta', domains: ['meta.com', 'facebook.com', 'instagram.com', 'whatsapp.com', 'fb.com', 'messenger.com'] },
   { token: 'instagram', name: 'Instagram', domains: ['instagram.com'] },
   { token: 'whatsapp', name: 'WhatsApp', domains: ['whatsapp.com'] },
+  { token: 'telegram', name: 'Telegram', domains: ['telegram.org', 't.me', 'telegram.me'] },
   { token: 'linkedin', name: 'LinkedIn', domains: ['linkedin.com'] },
   { token: 'twitter', name: 'X (Twitter)', domains: ['x.com', 'twitter.com'] },
   { token: 'github', name: 'GitHub', domains: ['github.com'] },
