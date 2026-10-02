@@ -1860,6 +1860,59 @@ function autofillField(el: HTMLInputElement, value: string): void {
 // Guards against re-capturing the same values when a page fires both a click
 // and a submit for one login attempt.
 let lastCaptured = '';
+let lastEnteredUsername = '';
+let lastReported = '';
+
+// Helper to extract a username/email that is displayed in the DOM on multi-step login pages
+// (e.g. Google, Microsoft, Yahoo) where the Step 1 username input is no longer present or fillable.
+function extractDisplayedUsername(scope: ParentNode = document): string {
+  // 1. Google-specific profile identifier elements and standard SPA account chips
+  const profileSelectors = [
+    '#profileIdentifier',
+    '[data-email]',
+    '[data-profile-identifier]',
+    '.w1I7fb',
+    'div[jsname="w1I7fb"]',
+    'div[aria-label*="@"]',
+    'button[aria-label*="@"]',
+  ];
+  for (const sel of profileSelectors) {
+    const el = scope.querySelector?.(sel) || document.querySelector(sel);
+    if (el) {
+      const dataEmail = el.getAttribute('data-email') || el.getAttribute('data-profile-identifier');
+      if (dataEmail && dataEmail.includes('@')) return dataEmail.trim();
+
+      const ariaLabel = el.getAttribute('aria-label');
+      if (ariaLabel) {
+        const match = ariaLabel.match(/[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}/);
+        if (match) return match[0];
+      }
+
+      const text = el.textContent?.trim();
+      if (text) {
+        const match = text.match(/[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}/);
+        if (match) return match[0];
+      }
+    }
+  }
+
+  // 2. Hidden or read-only identifier/email inputs in the form
+  const hiddenInput = (scope.querySelector?.(
+    'input[name="identifier"], input[name="Email"], input[name="email"], input[name="username"], input[name="login_email"]'
+  ) || document.querySelector(
+    'input[name="identifier"], input[name="Email"], input[name="email"], input[name="username"], input[name="login_email"]'
+  )) as HTMLInputElement | null;
+  if (hiddenInput && hiddenInput.value && hiddenInput.value.trim()) {
+    return hiddenInput.value.trim();
+  }
+
+  // 3. Fallback to in-memory username tracked from Step 1
+  if (lastEnteredUsername) {
+    return lastEnteredUsername;
+  }
+
+  return '';
+}
 
 // Reads the credential out of a scope that contains a filled password field.
 function readCredential(scope: ParentNode): { username: string; password: string } | null {
@@ -1868,12 +1921,15 @@ function readCredential(scope: ParentNode): { username: string; password: string
     'input[type="password"]'
   );
 
-  const filled = passwords.find((p) => p.value && isFillable(p));
-  if (!filled) return null;
+  // During form submission / SPA transition, pages often set disabled=true
+  // or hide the container while authenticating. Prioritize fillable password
+  // fields with a value, but fall back to any password field that holds a value.
+  const filled = passwords.find((p) => p.value && isFillable(p)) || passwords.find((p) => p.value);
+  if (!filled || !filled.value) return null;
 
   // Several filled password boxes are fine when they all hold the same value —
   // that is a sign-up form's "password + confirm", and it is a credential worth offering to save.
-  const filledPasswords = passwords.filter((p) => p.value && isFillable(p));
+  const filledPasswords = passwords.filter((p) => p.value);
   const filledValues = new Set(filledPasswords.map((p) => p.value));
 
   if (filledValues.size > 1) {
@@ -1893,31 +1949,44 @@ function readCredential(scope: ParentNode): { username: string; password: string
     );
     if (newPassField && newPassField.value) {
       const usernameEl = findUsernameField(newPassField);
-      return { username: usernameEl?.value || '', password: newPassField.value };
+      let username = usernameEl?.value ? usernameEl.value.trim() : extractDisplayedUsername(scope);
+      return { username, password: newPassField.value };
     }
     return null;
   }
 
   const usernameEl = findUsernameField(filled);
-  return { username: usernameEl?.value || '', password: filled.value };
+  let username = usernameEl?.value ? usernameEl.value.trim() : '';
+  if (!username) {
+    username = extractDisplayedUsername(scope);
+  }
+
+  return { username, password: filled.value };
 }
 
 function captureFrom(scope: ParentNode): void {
   const cred = readCredential(scope);
   if (!cred) return;
 
-  const fingerprint = `${cred.username} ${cred.password}`;
+  const fingerprint = `${cred.username} ${cred.password}`;
   if (fingerprint === lastCaptured) return;
   lastCaptured = fingerprint;
 
   browser.runtime
-    .sendMessage({ type: 'CAPTURE_CREDENTIAL', payload: cred })
+    .sendMessage({
+      type: 'CAPTURE_CREDENTIAL',
+      payload: {
+        username: cred.username,
+        password: cred.password,
+        hostname: window.location.hostname,
+      },
+    })
     .then((res: any) => {
       // The worker decides whether this is new, changed, or already stored.
       // A full page navigation usually kills this script before the timer
       // fires; the prompt is then raised by checkPendingSave on the next load.
       if (res && res.prompt) {
-        setTimeout(checkPendingSave, 1200);
+        setTimeout(checkPendingSave, 1000);
       }
     })
     .catch(() => {
@@ -1930,7 +1999,10 @@ function checkPendingSave(): void {
   if (isSavePromptOpen()) return;
 
   browser.runtime
-    .sendMessage({ type: 'GET_PENDING_SAVE' })
+    .sendMessage({
+      type: 'GET_PENDING_SAVE',
+      payload: { hostname: window.location.hostname },
+    })
     .then((res: any) => {
       const pending = res && res.pending;
       if (!pending) return;
@@ -1963,39 +2035,91 @@ function checkPendingSave(): void {
     });
 }
 
-// Reports a username as it is entered so it survives into the next step of a
-// two-step login, where the field itself is gone by the time the password is
-// submitted. Only fires on change, and only for fields the heuristic accepts.
-let lastReported = '';
+function recordUsername(value: string): void {
+  const trimmed = value.trim();
+  if (!trimmed) return;
+  lastEnteredUsername = trimmed;
+
+  if (trimmed === lastReported) return;
+  lastReported = trimmed;
+
+  void browser.runtime
+    .sendMessage({ type: 'REMEMBER_USERNAME', payload: { username: trimmed } })
+    .catch(() => {
+      /* worker unavailable */
+    });
+}
 
 function watchForUsernameEntry(): void {
+  const checkElementForUsername = (el: EventTarget | null) => {
+    if (!(el instanceof HTMLInputElement)) return;
+    const value = el.value.trim();
+    if (!value) return;
+
+    const matches = looksLikeUsername({
+      type: el.type,
+      autocomplete: el.getAttribute('autocomplete'),
+      name: el.name,
+      id: el.id,
+      placeholder: el.getAttribute('placeholder'),
+      ariaLabel: el.getAttribute('aria-label'),
+      role: el.getAttribute('role'),
+      className: el.className,
+    });
+    if (matches) {
+      recordUsername(value);
+    }
+  };
+
+  // 1. Real-time typing & field changes
+  document.addEventListener('input', (e) => checkElementForUsername(e.target), true);
+  document.addEventListener('change', (e) => checkElementForUsername(e.target), true);
+  document.addEventListener('blur', (e) => checkElementForUsername(e.target), true);
+
+  // 2. Enter key inside username input (crucial for Google Step 1 where Google stops form submit)
   document.addEventListener(
-    'change',
+    'keydown',
     (e) => {
-      const el = e.target;
-      if (!(el instanceof HTMLInputElement)) return;
-      const value = el.value.trim();
-      if (!value || value === lastReported) return;
-
-      const matches = looksLikeUsername({
-        type: el.type,
-        autocomplete: el.getAttribute('autocomplete'),
-        name: el.name,
-        id: el.id,
-        placeholder: el.getAttribute('placeholder'),
-        ariaLabel: el.getAttribute('aria-label'),
-      });
-      if (!matches) return;
-
-      lastReported = value;
-      void browser.runtime
-        .sendMessage({ type: 'REMEMBER_USERNAME', payload: { username: value } })
-        .catch(() => {
-          /* worker unavailable */
-        });
+      if (e.key === 'Enter') {
+        checkElementForUsername(e.target);
+      }
     },
     true
   );
+
+  // 3. Pointerdown / click on Next or Submit buttons: capture any active or visible username input
+  const onButtonAction = (e: Event) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const btn = target.closest('button, [type="submit"], [role="button"], #identifierNext, #passwordNext');
+    if (!btn) return;
+
+    if (document.activeElement instanceof HTMLInputElement) {
+      checkElementForUsername(document.activeElement);
+    }
+
+    // Also scan container for fillable username inputs
+    const container: ParentNode = btn.closest('form') || document;
+    const inputs = querySelectorAllDeep<HTMLInputElement>(container, 'input');
+    for (const input of inputs) {
+      if (input.value && looksLikeUsername({
+        type: input.type,
+        autocomplete: input.getAttribute('autocomplete'),
+        name: input.name,
+        id: input.id,
+        placeholder: input.getAttribute('placeholder'),
+        ariaLabel: input.getAttribute('aria-label'),
+        role: input.getAttribute('role'),
+        className: input.className,
+      })) {
+        recordUsername(input.value);
+        break;
+      }
+    }
+  };
+
+  document.addEventListener('pointerdown', onButtonAction, true);
+  document.addEventListener('click', onButtonAction, true);
 }
 
 function watchForSubmission(): void {
@@ -2009,16 +2133,28 @@ function watchForSubmission(): void {
     true
   );
 
-  // Single-page logins that never fire submit: a click on anything
-  // button-shaped, with the whole document as scope.
+  // Single-page logins: pointerdown / mousedown so we capture before frameworks mutate or disable fields
+  document.addEventListener(
+    'pointerdown',
+    (e) => {
+      const el = e.target as HTMLElement | null;
+      if (!el) return;
+      const btn = el.closest('button, [type="submit"], [role="button"], #passwordNext, #identifierNext');
+      if (!btn) return;
+      captureFrom(btn.closest('form') || document);
+    },
+    true
+  );
+
+  // Single-page logins on click
   document.addEventListener(
     'click',
     (e) => {
       const el = e.target as HTMLElement | null;
       if (!el) return;
-      const btn = el.closest('button, [type="submit"], [role="button"]');
+      const btn = el.closest('button, [type="submit"], [role="button"], #passwordNext, #identifierNext');
       if (!btn) return;
-      captureFrom(document);
+      captureFrom(btn.closest('form') || document);
     },
     true
   );
@@ -2616,6 +2752,12 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   // A login that navigated lands here: the capture was stored by the previous
   // page's script, and this one raises the prompt.
   checkPendingSave();
+  setTimeout(checkPendingSave, 600);
+  setTimeout(checkPendingSave, 1500);
+
+  window.addEventListener('popstate', () => {
+    setTimeout(checkPendingSave, 400);
+  });
 
   // React to DOM changes instead of polling. SPAs swap login forms in without a
   // navigation, so a mutation-driven rescan is both faster to appear and far

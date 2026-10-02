@@ -1814,10 +1814,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'CAPTURE_CREDENTIAL') {
     const tabId = sender.tab?.id;
-    const hostname = extractHostname(sender.tab?.url || sender.url || '');
+    const hostname = extractHostname(msg.payload?.hostname || sender.tab?.url || sender.url || '');
     if (!tabId || !hostname) return Promise.resolve({ prompt: false });
 
-    const captured = msg.payload as { username: string; password: string };
+    const captured = msg.payload as { username: string; password: string; hostname?: string };
     const password = captured.password;
 
     return Promise.all([
@@ -1879,15 +1879,21 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'GET_PENDING_SAVE') {
     const tabId = sender.tab?.id;
-    const hostname = extractHostname(sender.tab?.url || sender.url || '');
+    const hostname = extractHostname(msg.payload?.hostname || sender.tab?.url || sender.url || '');
     if (!tabId || !hostname) return Promise.resolve({ pending: null });
 
     return getPendingSaves().then((all) => {
       const pending = all[String(tabId)];
+      if (!pending) return { pending: null };
+
       // The capture must belong to the page currently asking. After a login
-      // redirect the host is usually the same; if it is not, the prompt would
-      // be about a different site.
-      if (!pending || !isDomainMatch(hostname, pending.hostname)) return { pending: null };
+      // redirect the host is usually the same or within the same registrable domain (e.g. accounts.google.com -> myaccount.google.com).
+      const isMatch =
+        isDomainMatch(hostname, pending.hostname) ||
+        (registrableDomain(hostname) && registrableDomain(hostname) === registrableDomain(pending.hostname));
+
+      if (!isMatch) return { pending: null };
+
       return {
         pending: { username: pending.username, mode: pending.mode, hostname: pending.hostname },
       };

@@ -60,6 +60,9 @@ describe('isDomainMatch — legitimate matches', () => {
     expect(isDomainMatch('app.example.com', 'https://example.com')).toBe(true);
     expect(isDomainMatch('example.com', 'https://login.example.com')).toBe(true);
     expect(isDomainMatch('mail.google.com', 'https://accounts.google.com')).toBe(true);
+    expect(isDomainMatch('myaccount.google.com', 'https://accounts.google.com')).toBe(true);
+    expect(isDomainMatch('accounts.google.com', 'https://myaccount.google.com')).toBe(true);
+    expect(isDomainMatch('google.com', 'https://accounts.google.com')).toBe(true);
   });
   it('ignores www and scheme differences', () => {
     expect(isDomainMatch('www.example.com', 'example.com')).toBe(true);
