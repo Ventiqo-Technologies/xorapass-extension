@@ -6,3 +6,4 @@ dist/
 *.zip
 web-ext-artifacts/
 release-artifacts/
+release-zips/
