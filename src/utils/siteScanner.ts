@@ -217,10 +217,12 @@ export function buildSiteSafetyReport(params: {
   );
   const hasThreatIntelSignals = threatIntelSignals.length > 0;
   const allSignalsUnavailable = hasThreatIntelSignals && threatIntelSignals.every((s) => s.includes('unavailable'));
+  const hasCleanSignal = hasThreatIntelSignals && threatIntelSignals.some((s) => s.includes('clean'));
   const isThreatIntelClean =
     !hasThreatIntelHit &&
     hasThreatIntelSignals &&
-    threatIntelSignals.every((s) => s.includes('clean'));
+    hasCleanSignal &&
+    !allSignalsUnavailable;
 
   const threatIntelStatus: 'clean' | 'alert' | 'inactive' = hasThreatIntelHit
     ? 'alert'

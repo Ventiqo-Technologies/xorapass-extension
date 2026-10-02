@@ -2223,7 +2223,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
 
       const allowlist = await getDomainAllowlist();
-      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
 
       // Page shape, straight from the tab's own content script. The popup
       // can't collect it, and without it the backend's page classifier (and
@@ -2266,7 +2266,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
           undefined,
           sensitivityForItems(matching),
           globalThis.fetch,
-          getJwt,
+          getShieldCredential,
           pageSignals
         );
       }
@@ -2970,7 +2970,7 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
 
     // 4. Threat intel for the destination (query-stripped; plan-gated).
     if (!isCustomScheme && destHost && !unresolvedShortener) {
-      const enabled = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+      const enabled = await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
       if (enabled) {
         const remote = await checkDomainRiskRemote(
           finalUrl,
@@ -2979,7 +2979,7 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
           undefined,
           'standard',
           globalThis.fetch,
-          getJwt
+          getShieldCredential
         );
         risk = mergeLocalAndRemoteRisk(risk, remote);
       }

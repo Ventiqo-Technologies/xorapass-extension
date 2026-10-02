@@ -99,4 +99,48 @@ describe('siteScanner', () => {
     expect(report.threatIntel.clean).toBe(false);
     expect(report.threatIntel.label).toBe('Threat Intelligence Alert');
   });
+
+  it('marks threatIntel status as clean when one provider is clean even if another is unavailable', () => {
+    const report = buildSiteSafetyReport({
+      url: 'https://example.com',
+      title: 'Example',
+      savedDomains: [],
+      riskAssessment: {
+        domain: 'example.com',
+        threat_intel_signals: {
+          google_web_risk: 'clean',
+          cloudflare_radar: 'provider_unavailable',
+        },
+        risk_score: 0,
+        risk_level: 'safe',
+        reasons: [],
+      },
+    });
+
+    expect(report.threatIntel.status).toBe('clean');
+    expect(report.threatIntel.clean).toBe(true);
+    expect(report.threatIntel.label).toBe('Threat Feeds Clean');
+  });
+
+  it('marks threatIntel status as inactive when all configured providers are unavailable', () => {
+    const report = buildSiteSafetyReport({
+      url: 'https://example.com',
+      title: 'Example',
+      savedDomains: [],
+      riskAssessment: {
+        domain: 'example.com',
+        threat_intel_signals: {
+          google_web_risk: 'provider_unavailable',
+          cloudflare_radar: 'provider_unavailable',
+        },
+        risk_score: 0,
+        risk_level: 'safe',
+        reasons: [],
+      },
+    });
+
+    expect(report.threatIntel.status).toBe('inactive');
+    expect(report.threatIntel.clean).toBe(false);
+    expect(report.threatIntel.label).toBe('Threat Feeds Inactive');
+  });
 });

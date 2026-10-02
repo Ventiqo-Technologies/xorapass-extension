@@ -64,10 +64,12 @@ describe('analyzePromptSafety', () => {
     expect(res.riskScore).toBe(0);
   });
 
-  it('does not flag benign product recommendation mentioning a brand as brand mismatch', () => {
-    const text = 'Check out this Apple MacBook laptop: https://celltronics.lk/product-category/laptops/apple-laptops/';
+  it('flags fake shop brand impersonation link (https://amazongroceryhq.shop/) as phishing', () => {
+    const text = 'Check out our special discounts here: https://amazongroceryhq.shop/';
     const res = analyzePromptSafety(text);
-    expect(res.threatSignals.some((s) => s.includes('Brand mismatch'))).toBe(false);
-    expect(res.verdict).toBe('safe');
+    expect(res.verdict).toBe('phishing');
+    expect(res.riskScore).toBeGreaterThanOrEqual(85);
+    expect(res.threatSignals.some((s) => s.includes('impersonates "amazon"'))).toBe(true);
   });
 });
+
