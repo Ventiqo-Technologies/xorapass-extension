@@ -51,7 +51,7 @@ const CUE_PATTERNS: ReadonlyArray<[string, RegExp]> = [
   ['investment_scam', /\b(guaranteed (returns?|profits?)|(\d{2,3})% (daily|weekly) (returns?|profits?)|risk[- ]free (investment|trading)|earn \$?\d[\d,]* (per|a) (day|hour) (trading|from home))\b/i],
   ['fake_shop', /\b((9\d|8\d)% off (everything|all items|today only)|closing down sale.{0,40}(9\d|8\d)%|payment (only )?(via|by) (gift ?cards?|bitcoin|crypto|western union|wire transfer))\b/i],
   ['notification_bait', /\b(click|press|tap) ["“']?allow["”']? (to|if) (verify|confirm|prove|continue|watch|download|access|you('re| are) not a robot|you are (a )?human)/i],
-  ['urgency', /\b(your account (will be|has been) (suspended|closed|locked)|act (now|immediately)|within 24 hours|final (warning|notice)|su cuenta (ha sido|ser[aá]) (suspendida|bloqueada)|act[uú]e (de inmediato|ahora))\b/i],
+  ['urgency', /\b(your account (will be|has been) (suspended|closed|locked)|(act|verify|confirm|pay|respond) (now|immediately)|within 24 hours to (avoid|prevent|keep|verify|confirm|unlock)|final (warning|notice)|su cuenta (ha sido|ser[aá]) (suspendida|bloqueada)|act[uú]e (de inmediato|ahora))\b/i],
 ];
 
 /** Scam cue categories found in the given text (on-device). */
@@ -74,7 +74,7 @@ const INFECTION_WORDS = /\b(virus|infected|infection|malware|trojan|spyware|rans
  * (a lone "urgency" cue isn't enough), or local/server checks already scored
  * it as risky.
  */
-export function shouldAiScan(cues: string[], localRiskScore: number, minRisk = 25): boolean {
+export function shouldAiScan(cues: string[], localRiskScore: number, minRisk = 50): boolean {
   const specific = cues.filter((c) => c !== 'urgency');
   return specific.length > 0 || (cues.includes('urgency') && localRiskScore >= 10) || localRiskScore >= minRisk;
 }

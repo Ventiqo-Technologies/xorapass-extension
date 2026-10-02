@@ -60,7 +60,7 @@ export const BRAND_LEXICON: ReadonlySet<string> = new Set([
   'paypal', 'microsoft', 'office365', 'outlook',
   'google', 'gmail', 'apple', 'icloud',
   'amazon', 'aws', 'netflix', 'facebook', 'meta',
-  'instagram', 'whatsapp', 'linkedin', 'twitter',
+  'instagram', 'whatsapp', 'telegram', 'linkedin', 'twitter',
   'github', 'gitlab', 'dropbox', 'slack',
   'zoom', 'docusign', 'adobe', 'stripe',
   'coinbase', 'binance', 'metamask', 'kraken',
@@ -70,6 +70,7 @@ export const BRAND_LEXICON: ReadonlySet<string> = new Set([
   'maxis', 'celcom', 'digi', 'unifi', 'singtel',
   'dinersclub', 'clubmiles', 'pichincha', 'bancoguayaquil',
   'produbanco', 'mercadopago', 'mercadolibre', 'bbva', 'santander',
+  'fiverr', 'upwork',
 ]);
 
 /** Multi-word brand spellings folded to their lexicon token. */
@@ -149,18 +150,48 @@ function decodeSafely(s: string): string {
 }
 
 /**
- * Official OAuth / OIDC / Federated Identity SDK and asset hosts. Loading SDK scripts
- * or official sign-in button icons from these hosts on a third-party site is standard
- * web practice and should NOT be flagged as asset hotlinking or impersonation.
+ * Official OAuth / OIDC / Federated Identity SDK, analytics, CAPTCHA, font and asset hosts.
+ * Loading SDK scripts, reCAPTCHA, Cloudflare Turnstile, Stripe, or web fonts from these hosts
+ * on a third-party site is standard web practice and should NOT be flagged as asset hotlinking or impersonation.
  */
-export const FEDERATED_SSO_ASSET_HOSTS: ReadonlySet<string> = new Set([
+export const DEV_UTILITY_AND_SSO_HOSTS: ReadonlySet<string> = new Set([
   'accounts.google.com',
   'apis.google.com',
+  'www.google.com',
+  'recaptcha.net',
+  'www.recaptcha.net',
+  'gstatic.com',
+  'www.gstatic.com',
+  'fonts.gstatic.com',
+  'fonts.googleapis.com',
+  'ajax.googleapis.com',
+  'googletagmanager.com',
+  'www.googletagmanager.com',
+  'google-analytics.com',
+  'www.google-analytics.com',
   'appleid.apple.com',
   'appleid.cdn-apple.com',
   'login.microsoftonline.com',
   'connect.facebook.net',
+  'facebook.com',
+  'www.facebook.com',
+  'web.facebook.com',
+  'm.facebook.com',
+  'js.stripe.com',
+  'm.stripe.com',
+  'm.stripe.network',
+  'checkout.stripe.com',
+  'challenges.cloudflare.com',
+  'hcaptcha.com',
+  'js.hcaptcha.com',
+  'googleusercontent.com',
+  'lh3.googleusercontent.com',
+  'lh4.googleusercontent.com',
+  'lh5.googleusercontent.com',
+  'lh6.googleusercontent.com',
 ]);
+
+export const FEDERATED_SSO_ASSET_HOSTS = DEV_UTILITY_AND_SSO_HOSTS;
 
 /**
  * Lexicon brands whose OWN domains serve subresources to this page. A page
@@ -173,9 +204,46 @@ export function brandsFromResourceOrigins(urls: string[], pageHost: string): str
   for (const raw of urls) {
     const host = extractHostname(raw);
     if (!host) continue;
-    if (FEDERATED_SSO_ASSET_HOSTS.has(host)) continue;
+    if (DEV_UTILITY_AND_SSO_HOSTS.has(host)) continue;
     const reg = registrableDomain(host);
     if (!reg || reg === pageReg) continue;
+    // Don't treat common developer utilities / analytics / CDNs as brand impersonation
+    if (
+      reg === 'google.com' ||
+      reg === 'gstatic.com' ||
+      reg === 'googleapis.com' ||
+      reg === 'googletagmanager.com' ||
+      reg === 'google-analytics.com' ||
+      reg === 'googleusercontent.com' ||
+      reg === 'recaptcha.net'
+    ) {
+      const lower = raw.toLowerCase();
+      if (
+        lower.includes('recaptcha') ||
+        lower.includes('font') ||
+        lower.includes('map') ||
+        lower.includes('tagmanager') ||
+        lower.includes('analytics') ||
+        lower.includes('gtag') ||
+        lower.includes('api.js')
+      ) {
+        continue;
+      }
+    }
+    if (reg === 'facebook.com') {
+      const lower = raw.toLowerCase();
+      if (
+        lower.includes('/tr') ||
+        lower.includes('pixel') ||
+        lower.includes('sdk') ||
+        lower.includes('plugin') ||
+        lower.includes('embed') ||
+        lower.includes('fbevents') ||
+        lower.includes('connect')
+      ) {
+        continue;
+      }
+    }
     const brand = reg.split('.')[0];
     if (BRAND_LEXICON.has(brand)) found.add(brand);
     if (found.size >= MAX_TOKENS) break;
@@ -230,8 +298,11 @@ export function looksLikeFakeBrowserChrome(candidates: ChromeCandidate[]): boole
 export function isWorthAssessing(signals: PageSignals): boolean {
   return (
     (signals.password_field_count || 0) > 0 ||
+    (signals.offscreen_input_count || 0) > 0 ||
     (signals.title_brand_tokens || []).length > 0 ||
     (signals.visible_brand_tokens || []).length > 0 ||
+    (signals.external_brand_origins || []).length > 0 ||
+    !!signals.favicon_brand ||
     !!signals.fake_browser_chrome
   );
 }
@@ -283,17 +354,73 @@ export function collectPageSignals(): PageSignals {
     const signals: PageSignals = { ...analyzeUrl(loc.href) };
 
     // ── Brand claims ──
-    signals.title_brand_tokens = brandTokensIn(document.title || '');
+    const pageTitle = document.title || '';
+    const rawTitleTokens = brandTokensIn(pageTitle);
+    const hostReg = registrableDomain(extractHostname(loc.hostname));
+    const hostBrand = hostReg.split('.')[0];
+    const isFreeHost = /^(pages\.dev|firebaseapp\.com|web\.app|github\.io|gitlab\.io|weebly\.com|wixsite\.com|vercel\.app|netlify\.app)$/i.test(hostReg);
+    // If the title contains the site's own host brand on a standalone domain (e.g. "Apple | Celltronics.lk"),
+    // the title asserts the site's own identity; other brand mentions are catalog/category names.
+    if (!isFreeHost && hostBrand && hostBrand.length >= 3 && pageTitle.toLowerCase().includes(hostBrand.toLowerCase())) {
+      signals.title_brand_tokens = rawTitleTokens.filter((t) => t.toLowerCase() === hostBrand.toLowerCase());
+    } else {
+      signals.title_brand_tokens = rawTitleTokens;
+    }
 
-    // Headings, link text and image alt text - the places a page announces
-    // whose login it claims to be. Bounded so a huge DOM can't stall the page.
+    // ── Form shape ──
+    const allInputs = Array.from(document.querySelectorAll('input'));
+    const isVisibleInput = (el: HTMLInputElement): boolean => {
+      if (el.type === 'hidden' || el.hasAttribute('hidden')) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return false;
+      try {
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+      } catch {}
+      return true;
+    };
+    const passwords = allInputs.filter((el) => el.type === 'password');
+    signals.password_field_count = passwords.filter(isVisibleInput).length;
+    signals.hidden_input_count = allInputs.filter((el) => el.type === 'hidden').length;
+    signals.offscreen_input_count = allInputs.filter((el) => {
+      if (el.type === 'hidden') return false; // legitimately invisible by design
+      const r = el.getBoundingClientRect();
+      return r.width === 0 || r.height === 0 || r.right < 0 || r.bottom < 0 || r.left > window.innerWidth * 2;
+    }).length;
+    signals.autocomplete_disabled = passwords.some(
+      (el) => (el.getAttribute('autocomplete') || '').toLowerCase() === 'off'
+    );
+
+    const form = passwords[0]?.closest('form') || document.querySelector('form');
+    const rawAction = form?.getAttribute('action');
+    if (rawAction) {
+      try {
+        const action = new URL(rawAction, loc.href);
+        signals.form_action_insecure = action.protocol === 'http:' && action.hostname !== 'localhost';
+        signals.form_action_cross_origin =
+          registrableDomain(action.hostname) !== registrableDomain(extractHostname(loc.hostname));
+      } catch {
+        /* unparseable action - report nothing rather than something wrong */
+      }
+    }
+
+    // Headings, images, and form labels/buttons — the places a page or form
+    // announces whose login it claims to be.
     const visibleParts: string[] = [];
     const headings = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"]')).slice(0, 20);
     for (const el of headings) visibleParts.push(el.textContent || '');
     const imgs = Array.from(document.querySelectorAll('img[alt]')).slice(0, 30);
     for (const el of imgs) visibleParts.push(el.getAttribute('alt') || '');
-    const labels = Array.from(document.querySelectorAll('label, button, a')).slice(0, 60);
-    for (const el of labels) visibleParts.push(el.textContent || '');
+
+    if (form) {
+      // When a credential/input form is present, inspect elements inside or directly associated with it
+      const formLabels = Array.from(form.querySelectorAll('label, button, a, [role="button"]')).slice(0, 30);
+      for (const el of formLabels) visibleParts.push(el.textContent || '');
+    } else {
+      // General buttons and form labels across the page
+      const labels = Array.from(document.querySelectorAll('label, button, [role="button"]')).slice(0, 40);
+      for (const el of labels) visibleParts.push(el.textContent || '');
+    }
     signals.visible_brand_tokens = brandTokensIn(visibleParts.join(' '));
 
     // ── Resource origins ──
@@ -318,33 +445,6 @@ export function collectPageSignals(): PageSignals {
     if (icon) {
       const iconHost = extractHostname(icon.getAttribute('href') || '');
       signals.favicon_cross_origin = !!iconHost && iconHost !== extractHostname(loc.hostname);
-    }
-
-    // ── Form shape ──
-    const allInputs = Array.from(document.querySelectorAll('input'));
-    const passwords = allInputs.filter((el) => el.type === 'password');
-    signals.password_field_count = passwords.length;
-    signals.hidden_input_count = allInputs.filter((el) => el.type === 'hidden').length;
-    signals.offscreen_input_count = allInputs.filter((el) => {
-      if (el.type === 'hidden') return false; // legitimately invisible by design
-      const r = el.getBoundingClientRect();
-      return r.width === 0 || r.height === 0 || r.right < 0 || r.bottom < 0 || r.left > window.innerWidth * 2;
-    }).length;
-    signals.autocomplete_disabled = passwords.some(
-      (el) => (el.getAttribute('autocomplete') || '').toLowerCase() === 'off'
-    );
-
-    const form = passwords[0]?.closest('form') || document.querySelector('form');
-    const rawAction = form?.getAttribute('action');
-    if (rawAction) {
-      try {
-        const action = new URL(rawAction, loc.href);
-        signals.form_action_insecure = action.protocol === 'http:' && action.hostname !== 'localhost';
-        signals.form_action_cross_origin =
-          registrableDomain(action.hostname) !== registrableDomain(extractHostname(loc.hostname));
-      } catch {
-        /* unparseable action - report nothing rather than something wrong */
-      }
     }
 
     // ── Provenance and evasion ──

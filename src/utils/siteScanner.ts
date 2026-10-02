@@ -14,6 +14,7 @@ import { assessWithCatalog, disabledDomainRiskAssessment } from './domainRisk';
 import { scorePageSignals, applyPageRisk } from './pageRisk';
 import type { PageSignals } from './pageSignals';
 import type { RemoteDomainRiskResponse } from './domainRiskService';
+import type { CatalogBrand } from './brandCatalog';
 
 export interface SiteSafetyReport {
   url: string;
@@ -43,6 +44,7 @@ export interface SiteSafetyReport {
   };
   threatIntel: {
     clean: boolean;
+    status: 'clean' | 'alert' | 'inactive';
     label: string;
     detail: string;
     signals: string[];
@@ -86,6 +88,8 @@ export function buildSiteSafetyReport(params: {
   domainRiskEnabled?: boolean;
   /** Structural page features from the content script (pageSignals.ts). */
   pageSignals?: PageSignals;
+  /** Extra dynamic brands from remote config. */
+  extraBrands?: readonly CatalogBrand[];
 }): SiteSafetyReport {
   const {
     url,
@@ -96,6 +100,7 @@ export function buildSiteSafetyReport(params: {
     allowlist = [],
     domainRiskEnabled = true,
     pageSignals,
+    extraBrands,
   } = params;
   const externalOriginsCount = params.externalOriginsCount ?? pageSignals?.external_script_origins ?? 0;
   const hasCrossDomainForm = params.hasCrossDomainForm ?? !!pageSignals?.form_action_cross_origin;
@@ -106,7 +111,10 @@ export function buildSiteSafetyReport(params: {
   // 1. Vault domain matching & lookalike detection
   const hasSavedCredential = savedDomains.some((d) => isDomainMatch(hostname, d));
   const localRisk = domainRiskEnabled
-    ? applyPageRisk(assessWithCatalog(hostname, savedDomains, allowlist, url), scorePageSignals(pageSignals, hostname))
+    ? applyPageRisk(
+        assessWithCatalog(hostname, savedDomains, allowlist, url, {}, extraBrands),
+        scorePageSignals(pageSignals, hostname, extraBrands)
+      )
     : disabledDomainRiskAssessment(hostname);
   const lookalike =
     domainRiskEnabled && !hasSavedCredential ? findLookalikeTarget(hostname, savedDomains, allowlist) : null;
@@ -207,17 +215,34 @@ export function buildSiteSafetyReport(params: {
   const threatIntelSignals = Object.entries(riskAssessment?.threat_intel_signals || {}).map(
     ([k, v]) => `${k}: ${v}`
   );
+  const hasThreatIntelSignals = threatIntelSignals.length > 0;
+  const allSignalsUnavailable = hasThreatIntelSignals && threatIntelSignals.every((s) => s.includes('unavailable'));
+  const hasCleanSignal = hasThreatIntelSignals && threatIntelSignals.some((s) => s.includes('clean'));
   const isThreatIntelClean =
     !hasThreatIntelHit &&
-    (threatIntelSignals.length === 0 ||
-      threatIntelSignals.every((s) => s.includes('clean') || s.includes('unavailable')));
+    hasThreatIntelSignals &&
+    hasCleanSignal &&
+    !allSignalsUnavailable;
+
+  const threatIntelStatus: 'clean' | 'alert' | 'inactive' = hasThreatIntelHit
+    ? 'alert'
+    : isThreatIntelClean
+    ? 'clean'
+    : 'inactive';
 
   const threatIntel = {
     clean: isThreatIntelClean,
-    label: isThreatIntelClean ? 'Threat Feeds Clean' : 'Threat Intelligence Alert',
-    detail: isThreatIntelClean
-      ? 'No known phishing, malware, or abuse reports found on global security databases.'
-      : 'Flagged as suspected phishing, malware or abuse on security intelligence feeds.',
+    status: threatIntelStatus,
+    label: hasThreatIntelHit
+      ? 'Threat Intelligence Alert'
+      : allSignalsUnavailable || !hasThreatIntelSignals
+      ? 'Threat Feeds Inactive'
+      : 'Threat Feeds Clean',
+    detail: hasThreatIntelHit
+      ? 'Flagged as suspected phishing, malware or abuse on security intelligence feeds.'
+      : allSignalsUnavailable || !hasThreatIntelSignals
+      ? 'Threat intelligence feeds are not configured or temporarily unreachable.'
+      : 'No known phishing, malware, or abuse reports found on global security databases.',
     signals: threatIntelSignals,
     advisory: webRiskAdvisoryFromSignals(riskAssessment?.threat_intel_signals),
   };

@@ -133,6 +133,24 @@ export const SUSPICIOUS_KEYWORDS = new Set([
   'clubmiles',
 ]);
 
+/**
+ * Commercial, transactional, support, and account keywords commonly concatenated
+ * with brand names to create deceptive fake stores, phishing hubs, or support portals
+ * (e.g. amazongroceryhq, applestore, netflixsupport, chasetransfer).
+ */
+export const COMPOUND_SUSPICIOUS_MODIFIERS = [
+  'grocery', 'groceries', 'shop', 'shopping', 'store', 'stores', 'deal', 'deals',
+  'sale', 'sales', 'outlet', 'market', 'mart', 'mall', 'goods', 'price', 'pricing',
+  'discount', 'discounts', 'promo', 'promotion', 'voucher', 'coupon', 'coupons',
+  'offer', 'offers', 'order', 'orders', 'buy', 'cart', 'checkout', 'pay', 'payment',
+  'paybill', 'bill', 'billing', 'invoice',
+  'hq', 'corp', 'center', 'centre', 'desk', 'service', 'services', 'support', 'help',
+  'care', 'express', 'official', 'team', 'assist', 'agent', 'supply', 'hub', 'direct',
+  'account', 'portal', 'secure', 'security', 'login', 'signin', 'verify', 'verification',
+  'auth', 'recover', 'recovery', 'update', 'confirm', 'confirmation', 'access', 'wallet',
+  'reward', 'rewards', 'gift', 'gifts', 'claim', 'bonus', 'club', 'points', 'vip', 'win', 'winner', 'prize',
+];
+
 /** High-risk and frequently abused phishing/disposable TLDs. */
 export const HIGH_RISK_TLDS = new Set([
   'top',
@@ -888,6 +906,33 @@ export function assessDomainRisk(
       const brandRegex = new RegExp(`(^|[-._])${brand}([-._]|$)`, 'i');
       const isTokenMatch = brandRegex.test(pageHostname) || brandRegex.test(pageSld) || brandRegex.test(decodedPageHost);
 
+      // Check for compound brand abuse (unhyphenated brand + deceptive modifier concatenation, e.g. amazongroceryhq, applestore)
+      let isCompoundMatch = false;
+      let compoundModifier = '';
+      if (!isTokenMatch && brand.length >= 4 && !isExactBrandSld) {
+        if (pageSldClean.startsWith(brand)) {
+          compoundModifier = pageSldClean.slice(brand.length).replace(/^[-_0-9]+|[-_0-9]+$/g, '');
+        } else if (pageSldClean.endsWith(brand)) {
+          compoundModifier = pageSldClean.slice(0, pageSldClean.length - brand.length).replace(/^[-_0-9]+|[-_0-9]+$/g, '');
+        }
+
+        if (compoundModifier.length >= 2) {
+          const hasModifier = COMPOUND_SUSPICIOUS_MODIFIERS.some((mod) => compoundModifier.includes(mod));
+          const isHighTld = assessment.signals.isHighRiskTld;
+          const isCommonBrand = CATALOG_COMMON_WORDS.has(brand);
+
+          if (hasModifier) {
+            // Strong match: high-risk TLD, security keywords present, or non-ambiguous brand
+            if (isHighTld || hasSuspiciousKeyword || !isCommonBrand || brand === 'amazon') {
+              isCompoundMatch = true;
+            }
+          } else if (isHighTld && !isCommonBrand && compoundModifier.length >= 3) {
+            // Distinctive brand + unknown modifier on high-risk TLD (e.g. netflixxyz.shop)
+            isCompoundMatch = true;
+          }
+        }
+      }
+
       if (isTokenMatch && hasSuspiciousKeyword) {
         const score = catalog && CATALOG_COMMON_WORDS.has(brand) ? 70 : 90;
         if (score > highestScore) {
@@ -902,6 +947,23 @@ export function assessDomainRisk(
         };
         detectedReasons.push(
           `Brand keyword abuse: Brand "${brand}" (for "${target}") combined with security keywords [${kwList}] on unauthorized domain "${pageReg}"`
+        );
+      } else if (isCompoundMatch) {
+        const isHighTld = assessment.signals.isHighRiskTld;
+        const score = isHighTld || hasSuspiciousKeyword ? 85 : 80;
+        if (score > highestScore) {
+          highestScore = score;
+          assessment.matchedTarget = target;
+        }
+        assessment.signals.brandAbuse = {
+          brand,
+          pattern: `${brand} compound (${compoundModifier})`,
+          matchedTarget: target,
+        };
+        detectedReasons.push(
+          `Deceptive brand compound: Brand "${brand}" combined with "${compoundModifier}" on unauthorized ${
+            isHighTld ? 'high-risk ' : ''
+          }domain "${pageReg}"`
         );
       } else if (isTokenMatch && !isExactBrandSld && !(catalog && CATALOG_COMMON_WORDS.has(brand))) {
         // Brand name used as a prefix/suffix or token on an unrelated domain

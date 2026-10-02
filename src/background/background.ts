@@ -1302,6 +1302,16 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
       (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)
     );
 
+    // Query page signals from the content script so brand impersonation,
+    // suspicious forms, and phishing cues are evaluated proactively on navigation.
+    let pageSignals: PageSignals | undefined;
+    try {
+      const r: any = await browser.tabs.sendMessage(tabId, { type: 'GET_PAGE_SIGNALS' }, { frameId: 0 });
+      pageSignals = r?.pageSignals;
+    } catch {
+      /* content script might still be initializing or unavailable */
+    }
+
     const risk = await evaluateDomainRisk({
       hostname,
       currentUrl: url,
@@ -1309,7 +1319,8 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
       allowlist,
       savedDomain: matching[0]?.url ? extractHostname(matching[0].url) : '',
       sensitivity: sensitivityForItems(matching),
-      remoteGate: listingRemoteGate(hostname, knownHosts, undefined, undefined),
+      pageSignals,
+      remoteGate: listingRemoteGate(hostname, knownHosts, undefined, pageSignals),
     });
 
     if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
@@ -1803,10 +1814,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'CAPTURE_CREDENTIAL') {
     const tabId = sender.tab?.id;
-    const hostname = extractHostname(sender.tab?.url || sender.url || '');
+    const hostname = extractHostname(msg.payload?.hostname || sender.tab?.url || sender.url || '');
     if (!tabId || !hostname) return Promise.resolve({ prompt: false });
 
-    const captured = msg.payload as { username: string; password: string };
+    const captured = msg.payload as { username: string; password: string; hostname?: string };
     const password = captured.password;
 
     return Promise.all([
@@ -1868,15 +1879,21 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'GET_PENDING_SAVE') {
     const tabId = sender.tab?.id;
-    const hostname = extractHostname(sender.tab?.url || sender.url || '');
+    const hostname = extractHostname(msg.payload?.hostname || sender.tab?.url || sender.url || '');
     if (!tabId || !hostname) return Promise.resolve({ pending: null });
 
     return getPendingSaves().then((all) => {
       const pending = all[String(tabId)];
+      if (!pending) return { pending: null };
+
       // The capture must belong to the page currently asking. After a login
-      // redirect the host is usually the same; if it is not, the prompt would
-      // be about a different site.
-      if (!pending || !isDomainMatch(hostname, pending.hostname)) return { pending: null };
+      // redirect the host is usually the same or within the same registrable domain (e.g. accounts.google.com -> myaccount.google.com).
+      const isMatch =
+        isDomainMatch(hostname, pending.hostname) ||
+        (registrableDomain(hostname) && registrableDomain(hostname) === registrableDomain(pending.hostname));
+
+      if (!isMatch) return { pending: null };
+
       return {
         pending: { username: pending.username, mode: pending.mode, hostname: pending.hostname },
       };
@@ -2212,7 +2229,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
 
       const allowlist = await getDomainAllowlist();
-      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+      const domainRiskOn = await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
 
       // Page shape, straight from the tab's own content script. The popup
       // can't collect it, and without it the backend's page classifier (and
@@ -2234,8 +2251,17 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // actually matches this page, else the site it most resembles — never
       // just whichever vault item happens to be first.
       let risk = null;
+      const cfg = await getShieldConfig();
+      const brands = mergeExtraBrands(cfg.extra_brands);
       if (domainRiskOn) {
-        const local = assessWithCatalog(extractHostname(targetUrl), savedDomains, allowlist, targetUrl);
+        const local = assessWithCatalog(
+          extractHostname(targetUrl),
+          savedDomains,
+          allowlist,
+          targetUrl,
+          shieldAssessOptions(cfg),
+          brands
+        );
         const savedDomain = matching[0]?.url
           ? extractHostname(matching[0].url)
           : local.matchedTarget || findLookalikeTarget(extractHostname(targetUrl), savedDomains, allowlist)?.target || '';
@@ -2246,7 +2272,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
           undefined,
           sensitivityForItems(matching),
           globalThis.fetch,
-          getJwt,
+          getShieldCredential,
           pageSignals
         );
       }
@@ -2260,6 +2286,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         allowlist,
         domainRiskEnabled: domainRiskOn,
         pageSignals,
+        extraBrands: brands,
       });
 
       // If the scan produced a risk assessment that warrants warning/blocking,
@@ -2949,7 +2976,7 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
 
     // 4. Threat intel for the destination (query-stripped; plan-gated).
     if (!isCustomScheme && destHost && !unresolvedShortener) {
-      const enabled = await checkDomainRiskEnabled(globalThis.fetch, getJwt);
+      const enabled = await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
       if (enabled) {
         const remote = await checkDomainRiskRemote(
           finalUrl,
@@ -2958,7 +2985,7 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
           undefined,
           'standard',
           globalThis.fetch,
-          getJwt
+          getShieldCredential
         );
         risk = mergeLocalAndRemoteRisk(risk, remote);
       }

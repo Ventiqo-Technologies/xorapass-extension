@@ -29,6 +29,7 @@ export const BRAND_CATALOG: readonly CatalogBrand[] = [
   { token: 'meta', name: 'Meta', domains: ['meta.com', 'facebook.com', 'instagram.com', 'whatsapp.com', 'fb.com', 'messenger.com'] },
   { token: 'instagram', name: 'Instagram', domains: ['instagram.com'] },
   { token: 'whatsapp', name: 'WhatsApp', domains: ['whatsapp.com'] },
+  { token: 'telegram', name: 'Telegram', domains: ['telegram.org', 't.me', 'telegram.me'] },
   { token: 'linkedin', name: 'LinkedIn', domains: ['linkedin.com'] },
   { token: 'twitter', name: 'X (Twitter)', domains: ['x.com', 'twitter.com'] },
   { token: 'github', name: 'GitHub', domains: ['github.com'] },
@@ -59,6 +60,8 @@ export const BRAND_CATALOG: readonly CatalogBrand[] = [
   { token: 'ups', name: 'UPS', domains: ['ups.com'] },
   { token: 'usps', name: 'USPS', domains: ['usps.com'] },
   { token: 'royalmail', name: 'Royal Mail', domains: ['royalmail.com'] },
+  { token: 'fiverr', name: 'Fiverr', domains: ['fiverr.com'] },
+  { token: 'upwork', name: 'Upwork', domains: ['upwork.com'] },
   // Commonly phished, not (yet) in the page-signal lexicon.
   { token: 'bankofamerica', name: 'Bank of America', domains: ['bankofamerica.com'] },
   { token: 'steam', name: 'Steam', domains: ['steampowered.com', 'steamcommunity.com'] },

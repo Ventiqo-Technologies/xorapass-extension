@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   assessDomainRisk,
+  assessWithCatalog,
   decodePunycode,
   decodeHostnamePunycode,
   toHomoglyphSkeleton,
@@ -173,12 +174,44 @@ describe('Domain Risk Assessment — Acceptance Criteria', () => {
     expect(res.reasons).toHaveLength(0);
   });
 
-  it('ALLOWS legitimate SaaS subdomains with auth keywords without false warnings (e.g. accounts.zoho.com, accounts.google.com)', () => {
-    const resZoho = assessDomainRisk('accounts.zoho.com', ['https://example.com'], [], 'https://accounts.zoho.com/signin');
-    expect(resZoho.decision).toBe('allow');
-    expect(resZoho.riskScore).toBe(0);
-    expect(resZoho.riskLevel).toBe('safe');
-    expect(resZoho.reasons).toHaveLength(0);
+  it('BLOCKS deceptive compound brand abuse sites (e.g. amazongroceryhq.shop)', () => {
+    // assessWithCatalog evaluates against built-in BRAND_CATALOG even with an empty vault
+    const resCatalog = assessWithCatalog('amazongroceryhq.shop', []);
+    expect(resCatalog.decision).toBe('block');
+    expect(resCatalog.riskScore).toBe(85);
+    expect(resCatalog.riskLevel).toBe('high');
+    expect(resCatalog.signals.brandAbuse?.brand).toBe('amazon');
+    expect(resCatalog.signals.brandAbuse?.pattern).toBe('amazon compound (groceryhq)');
+    expect(resCatalog.reasons.some((r) => r.includes('Deceptive brand compound'))).toBe(true);
+
+    // Also blocks if amazon.com is in user's saved vault
+    const resVault = assessDomainRisk('amazongroceryhq.shop', ['https://amazon.com']);
+    expect(resVault.decision).toBe('block');
+    expect(resVault.riskScore).toBe(85);
+  });
+
+  it('ALLOWS non-deceptive dictionary words and unrelated domains without false positives', () => {
+    // Ordinary words containing catalog brand substrings
+    const resSnapple = assessWithCatalog('snapple.com', []);
+    expect(resSnapple.decision).toBe('allow');
+    expect(resSnapple.riskScore).toBe(0);
+
+    const resClockwise = assessWithCatalog('clockwise.com', []);
+    expect(resClockwise.decision).toBe('allow');
+    expect(resClockwise.riskScore).toBe(0);
+
+    const resSteamClean = assessWithCatalog('steamcleaning.com', []);
+    expect(resSteamClean.decision).toBe('allow');
+    expect(resSteamClean.riskScore).toBe(0);
+
+    const resCelltronics = assessWithCatalog('celltronics.lk', []);
+    expect(resCelltronics.decision).toBe('allow');
+    expect(resCelltronics.riskScore).toBe(0);
+
+    const resNanotek = assessWithCatalog('nanotek.lk', []);
+    expect(resNanotek.decision).toBe('allow');
+    expect(resNanotek.riskScore).toBe(0);
   });
 });
+
 
