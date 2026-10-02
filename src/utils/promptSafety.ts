@@ -34,7 +34,7 @@ export const KNOWN_BRAND_DOMAINS: readonly string[] = catalogDomains();
 const URGENCY_TRIGGERS = [
   { pattern: /\b(suspended|disabled|deactivated|locked|terminated|closed)\b/i, signal: 'Account suspension threat' },
   { pattern: /\b(unauthorized|suspicious activity|fraudulent|compromised|breached)\b/i, signal: 'Unverified security alert' },
-  { pattern: /\b(immediate|urgent|within 24 hours|action required|limited time|expires today)\b/i, signal: 'Artificial urgency / deadline' },
+  { pattern: /\b(immediate(ly)?|urgent(ly)?|within 24 hours to (avoid|prevent|keep|verify|confirm)|(act|pay|verify|confirm|respond) within 24 hours|action required|limited time|expires today)\b/i, signal: 'Artificial urgency / deadline' },
   { pattern: /\b(verify your identity|confirm your password|update your payment|billing error)\b/i, signal: 'Credential or payment verification request' },
   { pattern: /\b(refund|wire transfer|inheritance|lottery|winner|won|crypto payout)\b/i, signal: 'Financial payout / windfall lure' },
   { pattern: /\b(gift card|bitcoin|ethereum|seed phrase|private key)\b/i, signal: 'Irreversible payment / crypto solicitation' },
@@ -113,36 +113,55 @@ export function analyzePromptSafety(
     }
   }
 
+  // Extract text outside URLs for message-level brand & lure analysis
+  let nonUrlText = input;
+  for (const u of extractedUrls) {
+    nonUrlText = nonUrlText.replace(u, ' ');
+  }
+  nonUrlText = nonUrlText.replace(/\s+/g, ' ').trim();
+
   // 3. Brand mention analysis in text
-  for (const b of BRAND_CATALOG) {
-    // Only check distinct brand names (>= 4 chars or multi-word) to prevent common false positives like "wise", "duo"
-    const escapedName = b.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('/', '|');
-    const brandRegex = new RegExp(`\\b${escapedName}\\b`, 'i');
-    if (brandRegex.test(input)) {
-      detectedBrands.push(b.name);
+  // Only evaluate brand mentions in actual surrounding message text, not inside URL strings
+  if (nonUrlText.length >= 3) {
+    const hasUrgencyOrLure = URGENCY_TRIGGERS.some((t) => t.pattern.test(nonUrlText));
+    const hasAuthOrAlertLure = /\b(account|verify|confirm|login|signin|sign-in|log-in|password|passcode|security|alert|suspend(ed)?|locked|flagged|billing|update|action required|authorized|authenticate|access|refund|claim|winner|won)\b/i.test(nonUrlText);
 
-      // Check if text mentions brand but links to an unrelated domain
-      if (extractedUrls.length > 0) {
-        const hasLegitimateDomain = extractedUrls.some((u) => {
-          const host = extractHostname(u);
-          const reg = registrableDomain(host);
-          return b.domains.some((d) => reg === d || host === d || host.endsWith(`.${d}`));
-        });
+    for (const b of BRAND_CATALOG) {
+      // Only check distinct brand names (>= 4 chars or multi-word) to prevent common false positives like "wise", "duo"
+      const escapedName = b.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('/', '|');
+      const brandRegex = new RegExp(`\\b${escapedName}\\b`, 'i');
+      if (brandRegex.test(nonUrlText)) {
+        detectedBrands.push(b.name);
 
-        if (!hasLegitimateDomain) {
-          threatSignals.push(
-            `Brand mismatch: Message mentions ${b.name}, but link points to an external, unrelated destination.`
-          );
-          highestUrlRisk = Math.max(highestUrlRisk, 85);
+        // Check if text mentions brand but links to an unrelated domain
+        if (extractedUrls.length > 0) {
+          const hasLegitimateDomain = extractedUrls.some((u) => {
+            const host = extractHostname(u);
+            const reg = registrableDomain(host);
+            return b.domains.some((d) => reg === d || host === d || host.endsWith(`.${d}`));
+          });
+
+          if (!hasLegitimateDomain) {
+            // A brand mismatch in text is a high-risk phishing indicator when accompanied by account/security/urgency lures
+            if (hasUrgencyOrLure || hasAuthOrAlertLure) {
+              threatSignals.push(
+                `Brand mismatch: Message mentions ${b.name}, but link points to an external, unrelated destination.`
+              );
+              highestUrlRisk = Math.max(highestUrlRisk, 85);
+            }
+          }
         }
       }
     }
   }
 
   // 4. Urgency and lure analysis
-  for (const trigger of URGENCY_TRIGGERS) {
-    if (trigger.pattern.test(input)) {
-      threatSignals.push(trigger.signal);
+  const textToScanForLures = nonUrlText.length > 0 ? nonUrlText : (extractedUrls.length > 0 ? '' : input);
+  if (textToScanForLures) {
+    for (const trigger of URGENCY_TRIGGERS) {
+      if (trigger.pattern.test(textToScanForLures)) {
+        threatSignals.push(trigger.signal);
+      }
     }
   }
 
@@ -157,7 +176,9 @@ export function analyzePromptSafety(
   }
 
   // Add weight for urgency triggers (each adds 12, max 30)
-  const urgencyCount = URGENCY_TRIGGERS.filter((t) => t.pattern.test(input)).length;
+  const urgencyCount = textToScanForLures
+    ? URGENCY_TRIGGERS.filter((t) => t.pattern.test(textToScanForLures)).length
+    : 0;
   totalScore += Math.min(urgencyCount * 12, 30);
 
   // Shortlink detector

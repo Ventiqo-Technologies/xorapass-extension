@@ -55,4 +55,19 @@ describe('analyzePromptSafety', () => {
     expect(res.threatSignals.some((s) => s.includes('shortlink'))).toBe(true);
     expect(res.verdict).toBe('suspicious');
   });
+
+  it('does not flag legitimate retailer product URLs with brand in path as brand mismatch', () => {
+    const url = 'https://celltronics.lk/product-category/laptops/apple-laptops/';
+    const res = analyzePromptSafety(url);
+    expect(res.threatSignals.some((s) => s.includes('Brand mismatch'))).toBe(false);
+    expect(res.verdict).toBe('safe');
+    expect(res.riskScore).toBe(0);
+  });
+
+  it('does not flag benign product recommendation mentioning a brand as brand mismatch', () => {
+    const text = 'Check out this Apple MacBook laptop: https://celltronics.lk/product-category/laptops/apple-laptops/';
+    const res = analyzePromptSafety(text);
+    expect(res.threatSignals.some((s) => s.includes('Brand mismatch'))).toBe(false);
+    expect(res.verdict).toBe('safe');
+  });
 });

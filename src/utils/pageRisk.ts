@@ -11,7 +11,7 @@
 
 import type { PageSignals } from './pageSignals';
 import { BRAND_CATALOG, brandOwnsHost, type CatalogBrand } from './brandCatalog';
-import { isFreeHostingHost, isUserContentHost, normalizeHostname } from './siteTrust';
+import { isFreeHostingHost, isUserContentHost, normalizeHostname, registrableDomain } from './siteTrust';
 
 export const PAGE_RISK_CAP = 70;
 const FAKE_WINDOW_SCORE = 85;
@@ -72,16 +72,58 @@ export function scorePageSignals(
   };
 
   let claimed: CatalogBrand | null = null;
-  for (const t of strong) claimed = claimed || mismatch(t);
-  if (claimed && pw) {
+
+  // ── Retailer & E-commerce guard ───────────────────────────────────────
+  // A phishing page impersonates a brand to steal credentials.
+  // 1. If 2+ mismatched brands appear across title/assets, it's a multi-brand retailer.
+  // 2. On a regular standalone domain with its own brand (e.g. celltronics.lk, nanotek.lk),
+  //    where the host is not free hosting / user content / raw IP / auth lure, has no cross-origin
+  //    form, and did NOT copy the brand's favicon (sig.favicon_brand !== token):
+  //    listing products from a single brand (e.g. Apple category page) is e-commerce, not phishing.
+  const hostReg = registrableDomain(host);
+  const hostBrand = hostReg.split('.')[0];
+  const hasAuthKeywordsInHost = /\b(login|signin|sign-in|log-in|secure|security|verify|verification|auth|portal|recover)\b/i.test(
+    host.replace(/[.-]/g, ' ')
+  );
+  const isStandaloneRetailer =
+    !freeHost &&
+    !userContent &&
+    !sig.has_ip_host &&
+    !sig.form_action_cross_origin &&
+    !sig.fake_browser_chrome &&
+    !hasAuthKeywordsInHost &&
+    !!hostBrand &&
+    hostBrand.length >= 3;
+
+  const mismatchedStrong: string[] = [];
+  for (const t of strong) {
+    if (mismatch(t)) mismatchedStrong.push(t);
+  }
+  const isMultiBrandRetailer = mismatchedStrong.length >= 2;
+
+  if (!isMultiBrandRetailer) {
+    for (const t of strong) {
+      const m = mismatch(t);
+      if (!m) continue;
+      // On a standalone retailer, only a matching favicon (visual brand spoofing) counts as strong claim
+      if (isStandaloneRetailer && sig.favicon_brand !== t) continue;
+      claimed = claimed || m;
+    }
+  }
+
+  // On standalone retailers, only an active on-screen password field counts (not an offscreen WooCommerce modal)
+  const activePw = (sig.password_field_count || 0) > (sig.offscreen_input_count || 0);
+  const effectivePw = isStandaloneRetailer ? activePw : pw;
+
+  if (claimed && effectivePw) {
     add(55, `This page presents itself as ${claimed.name} but is not on ${claimed.domains[0]}`);
   } else if (claimed && (freeHost || userContent)) {
     add(50, `This free-hosted page presents itself as ${claimed.name} but is not on ${claimed.domains[0]}`);
-  } else {
+  } else if (!isMultiBrandRetailer && !isStandaloneRetailer) {
     let weakClaim: CatalogBrand | null = null;
     for (const t of weak) weakClaim = weakClaim || mismatch(t);
     const hasSuspiciousContext = freeHost || userContent || sig.has_ip_host || sig.form_action_cross_origin;
-    if (weakClaim && pw && hasSuspiciousContext) {
+    if (weakClaim && effectivePw && hasSuspiciousContext) {
       claimed = weakClaim;
       add(25, `This login page mentions ${weakClaim.name} but is not on ${weakClaim.domains[0]}`);
     } else if (weakClaim && (freeHost || userContent)) {

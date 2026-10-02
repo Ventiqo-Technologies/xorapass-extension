@@ -46,7 +46,9 @@ describe('local scam cues', () => {
     expect(shouldAiScan(['urgency'], 0)).toBe(false);
     expect(shouldAiScan(['urgency'], 15)).toBe(true);
     expect(shouldAiScan(['tech_support'], 0)).toBe(true);
-    expect(shouldAiScan([], 30)).toBe(true);
+    // minRisk raised to 50: score 30 is no longer enough on its own
+    expect(shouldAiScan([], 30)).toBe(false);
+    expect(shouldAiScan([], 55)).toBe(true);
   });
 });
 

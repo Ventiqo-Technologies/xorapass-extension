@@ -94,6 +94,37 @@ describe('page-structure scoring', () => {
     expect(r.score).toBe(0);
     expect(r.impersonated).toBeUndefined();
   });
+  it('multi-brand retailer (title + strong) selling Apple, Amazon, etc. is not phishing', () => {
+    // celltronics.lk/product-category/pads-and-tablets — page title mentions
+    // "Apple" and nav/assets reference "Amazon"; 2+ mismatched brands → retailer.
+    const r = scorePageSignals({
+      title_brand_tokens: ['apple', 'amazon'],
+      password_field_count: 1,
+      offscreen_input_count: 2,
+    }, 'celltronics.lk');
+    expect(r.score).toBe(0);
+    expect(r.impersonated).toBeUndefined();
+  });
+  it('single-brand category page on retailer (e.g. Apple on celltronics.lk) is not phishing', () => {
+    // celltronics.lk/product-category/apple — page title only mentions "Apple",
+    // WooCommerce customer login drawer has 1 password field in hidden modal.
+    const r = scorePageSignals({
+      title_brand_tokens: ['apple'],
+      password_field_count: 1,
+      offscreen_input_count: 2,
+    }, 'celltronics.lk');
+    expect(r.score).toBe(0);
+    expect(r.impersonated).toBeUndefined();
+  });
+  it('single-brand category page on retailer with visible login is not phishing if no brand favicon', () => {
+    const r = scorePageSignals({
+      title_brand_tokens: ['apple'],
+      password_field_count: 1,
+      offscreen_input_count: 0,
+    }, 'celltronics.lk');
+    expect(r.score).toBe(0);
+    expect(r.impersonated).toBeUndefined();
+  });
   it('brand claim without a password field is ignored', () => {
     expect(scorePageSignals({ title_brand_tokens: ['paypal'] }, 'news.example.com').score).toBe(0);
   });
