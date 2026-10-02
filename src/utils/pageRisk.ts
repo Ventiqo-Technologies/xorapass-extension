@@ -16,8 +16,11 @@ import { isFreeHostingHost, isUserContentHost, normalizeHostname } from './siteT
 export const PAGE_RISK_CAP = 70;
 const FAKE_WINDOW_SCORE = 85;
 
-/** Sign-in-with buttons name these without impersonating them. */
-const IDENTITY_PROVIDERS = new Set(['google', 'apple', 'microsoft', 'github', 'facebook', 'twitter', 'linkedin']);
+/** Sign-in-with buttons, chat widgets, and social links name these without impersonating them. */
+const IDENTITY_PROVIDERS = new Set([
+  'google', 'apple', 'microsoft', 'github', 'facebook', 'twitter', 'linkedin',
+  'whatsapp', 'telegram', 'instagram', 'stripe'
+]);
 
 export interface PageRisk {
   score: number;

@@ -60,6 +60,8 @@ export const BRAND_CATALOG: readonly CatalogBrand[] = [
   { token: 'ups', name: 'UPS', domains: ['ups.com'] },
   { token: 'usps', name: 'USPS', domains: ['usps.com'] },
   { token: 'royalmail', name: 'Royal Mail', domains: ['royalmail.com'] },
+  { token: 'fiverr', name: 'Fiverr', domains: ['fiverr.com'] },
+  { token: 'upwork', name: 'Upwork', domains: ['upwork.com'] },
   // Commonly phished, not (yet) in the page-signal lexicon.
   { token: 'bankofamerica', name: 'Bank of America', domains: ['bankofamerica.com'] },
   { token: 'steam', name: 'Steam', domains: ['steampowered.com', 'steamcommunity.com'] },

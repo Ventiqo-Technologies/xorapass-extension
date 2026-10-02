@@ -152,10 +152,12 @@ export function shouldEscalateRemote(input: {
   // Brand lookalike, brand abuse, or non-allow local decision: always verify with threat intel
   if (local.matchedTarget || local.signals?.brandAbuse || local.decision === 'warn' || local.decision === 'block') return true;
 
-  // Unverified page naming a known brand in its title, path or favicon: escalate to threat intel
+  // Unverified page naming a known brand in its title, visible elements, path or favicon: escalate to threat intel
   const hasBrandTokens =
     (input.pageSignals?.title_brand_tokens?.length ?? 0) > 0 ||
+    (input.pageSignals?.visible_brand_tokens?.length ?? 0) > 0 ||
     (input.pageSignals?.path_brand_tokens?.length ?? 0) > 0 ||
+    (input.pageSignals?.external_brand_origins?.length ?? 0) > 0 ||
     !!input.pageSignals?.favicon_brand;
   if (hasBrandTokens) return true;
 
@@ -163,6 +165,7 @@ export function shouldEscalateRemote(input: {
     !!input.hasCredentialForm ||
     !!input.hasLeadCaptureForm ||
     (input.pageSignals?.password_field_count ?? 0) > 0 ||
+    (input.pageSignals?.offscreen_input_count ?? 0) > 0 ||
     !!input.pageSignals?.form_action_cross_origin;
   return config.remote.on_credential_forms && credentialPage;
 }

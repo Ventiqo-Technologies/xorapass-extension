@@ -712,6 +712,8 @@ browser.runtime.onMessage.addListener((message: any) => {
     setPopupSuppressed(Boolean(message.payload?.open ?? message.payload?.isOpen));
   } else if (message.type === 'GET_ACTIVE_TAB_WARNING') {
     return Promise.resolve(getActiveRiskWarning());
+  } else if (message.type === 'GET_PAGE_SIGNALS') {
+    return Promise.resolve({ pageSignals: worthAssessingSignals() || collectPageSignals() });
   } else if (message.type === 'DISMISS_TAB_RISK_WARNING') {
     closeRiskWarning();
   }

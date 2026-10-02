@@ -70,6 +70,7 @@ export const BRAND_LEXICON: ReadonlySet<string> = new Set([
   'maxis', 'celcom', 'digi', 'unifi', 'singtel',
   'dinersclub', 'clubmiles', 'pichincha', 'bancoguayaquil',
   'produbanco', 'mercadopago', 'mercadolibre', 'bbva', 'santander',
+  'fiverr', 'upwork',
 ]);
 
 /** Multi-word brand spellings folded to their lexicon token. */
@@ -230,8 +231,11 @@ export function looksLikeFakeBrowserChrome(candidates: ChromeCandidate[]): boole
 export function isWorthAssessing(signals: PageSignals): boolean {
   return (
     (signals.password_field_count || 0) > 0 ||
+    (signals.offscreen_input_count || 0) > 0 ||
     (signals.title_brand_tokens || []).length > 0 ||
     (signals.visible_brand_tokens || []).length > 0 ||
+    (signals.external_brand_origins || []).length > 0 ||
+    !!signals.favicon_brand ||
     !!signals.fake_browser_chrome
   );
 }
