@@ -89,6 +89,11 @@ describe('page-structure scoring', () => {
   it('"Sign in with Google" buttons are not impersonation', () => {
     expect(scorePageSignals({ visible_brand_tokens: ['google', 'apple'], password_field_count: 1 }, 'example.com').score).toBe(0);
   });
+  it('mentioning brands in catalog/links on a regular site with a login form is not impersonation', () => {
+    const r = scorePageSignals({ visible_brand_tokens: ['amazon', 'apple'], password_field_count: 1 }, 'celltronics.lk');
+    expect(r.score).toBe(0);
+    expect(r.impersonated).toBeUndefined();
+  });
   it('brand claim without a password field is ignored', () => {
     expect(scorePageSignals({ title_brand_tokens: ['paypal'] }, 'news.example.com').score).toBe(0);
   });

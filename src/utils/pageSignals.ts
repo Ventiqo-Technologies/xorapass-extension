@@ -289,41 +289,6 @@ export function collectPageSignals(): PageSignals {
     // ── Brand claims ──
     signals.title_brand_tokens = brandTokensIn(document.title || '');
 
-    // Headings, link text and image alt text - the places a page announces
-    // whose login it claims to be. Bounded so a huge DOM can't stall the page.
-    const visibleParts: string[] = [];
-    const headings = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"]')).slice(0, 20);
-    for (const el of headings) visibleParts.push(el.textContent || '');
-    const imgs = Array.from(document.querySelectorAll('img[alt]')).slice(0, 30);
-    for (const el of imgs) visibleParts.push(el.getAttribute('alt') || '');
-    const labels = Array.from(document.querySelectorAll('label, button, a')).slice(0, 60);
-    for (const el of labels) visibleParts.push(el.textContent || '');
-    signals.visible_brand_tokens = brandTokensIn(visibleParts.join(' '));
-
-    // ── Resource origins ──
-    const resourceUrls: string[] = [];
-    const scripts = Array.from(document.querySelectorAll('script[src]')).slice(0, 60);
-    for (const el of scripts) resourceUrls.push(el.getAttribute('src') || '');
-    const images = Array.from(document.querySelectorAll('img[src]')).slice(0, 60);
-    for (const el of images) resourceUrls.push(el.getAttribute('src') || '');
-    signals.external_brand_origins = brandsFromResourceOrigins(resourceUrls, loc.hostname);
-
-    const externalOrigins = new Set<string>();
-    for (const raw of resourceUrls) {
-      const host = extractHostname(raw);
-      if (host && host !== extractHostname(loc.hostname)) externalOrigins.add(host);
-    }
-    signals.external_script_origins = externalOrigins.size;
-
-    // ── Favicon ──
-    if (faviconBrandMatch) signals.favicon_brand = faviconBrandMatch;
-    const icon = document.querySelector('link[rel~="icon"]');
-    signals.has_favicon = !!icon;
-    if (icon) {
-      const iconHost = extractHostname(icon.getAttribute('href') || '');
-      signals.favicon_cross_origin = !!iconHost && iconHost !== extractHostname(loc.hostname);
-    }
-
     // ── Form shape ──
     const allInputs = Array.from(document.querySelectorAll('input'));
     const passwords = allInputs.filter((el) => el.type === 'password');
@@ -349,6 +314,49 @@ export function collectPageSignals(): PageSignals {
       } catch {
         /* unparseable action - report nothing rather than something wrong */
       }
+    }
+
+    // Headings, images, and form labels/buttons — the places a page or form
+    // announces whose login it claims to be.
+    const visibleParts: string[] = [];
+    const headings = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"]')).slice(0, 20);
+    for (const el of headings) visibleParts.push(el.textContent || '');
+    const imgs = Array.from(document.querySelectorAll('img[alt]')).slice(0, 30);
+    for (const el of imgs) visibleParts.push(el.getAttribute('alt') || '');
+
+    if (form) {
+      // When a credential/input form is present, inspect elements inside or directly associated with it
+      const formLabels = Array.from(form.querySelectorAll('label, button, a, [role="button"]')).slice(0, 30);
+      for (const el of formLabels) visibleParts.push(el.textContent || '');
+    } else {
+      // General buttons and form labels across the page
+      const labels = Array.from(document.querySelectorAll('label, button, [role="button"]')).slice(0, 40);
+      for (const el of labels) visibleParts.push(el.textContent || '');
+    }
+    signals.visible_brand_tokens = brandTokensIn(visibleParts.join(' '));
+
+    // ── Resource origins ──
+    const resourceUrls: string[] = [];
+    const scripts = Array.from(document.querySelectorAll('script[src]')).slice(0, 60);
+    for (const el of scripts) resourceUrls.push(el.getAttribute('src') || '');
+    const images = Array.from(document.querySelectorAll('img[src]')).slice(0, 60);
+    for (const el of images) resourceUrls.push(el.getAttribute('src') || '');
+    signals.external_brand_origins = brandsFromResourceOrigins(resourceUrls, loc.hostname);
+
+    const externalOrigins = new Set<string>();
+    for (const raw of resourceUrls) {
+      const host = extractHostname(raw);
+      if (host && host !== extractHostname(loc.hostname)) externalOrigins.add(host);
+    }
+    signals.external_script_origins = externalOrigins.size;
+
+    // ── Favicon ──
+    if (faviconBrandMatch) signals.favicon_brand = faviconBrandMatch;
+    const icon = document.querySelector('link[rel~="icon"]');
+    signals.has_favicon = !!icon;
+    if (icon) {
+      const iconHost = extractHostname(icon.getAttribute('href') || '');
+      signals.favicon_cross_origin = !!iconHost && iconHost !== extractHostname(loc.hostname);
     }
 
     // ── Provenance and evasion ──

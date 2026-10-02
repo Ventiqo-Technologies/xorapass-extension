@@ -52,6 +52,7 @@ export function scorePageSignals(
   // is weaker and ignores "Sign in with Google"-style buttons).
   const strong = new Set<string>([...(sig.title_brand_tokens || [])]);
   if (sig.favicon_brand) strong.add(sig.favicon_brand);
+  for (const b of sig.external_brand_origins || []) strong.add(b);
   const weak = new Set<string>((sig.visible_brand_tokens || []).filter((t) => !strong.has(t) && !IDENTITY_PROVIDERS.has(t)));
 
   const mismatch = (token: string): CatalogBrand | null => {
@@ -79,7 +80,8 @@ export function scorePageSignals(
   } else {
     let weakClaim: CatalogBrand | null = null;
     for (const t of weak) weakClaim = weakClaim || mismatch(t);
-    if (weakClaim && pw) {
+    const hasSuspiciousContext = freeHost || userContent || sig.has_ip_host || sig.form_action_cross_origin;
+    if (weakClaim && pw && hasSuspiciousContext) {
       claimed = weakClaim;
       add(25, `This login page mentions ${weakClaim.name} but is not on ${weakClaim.domains[0]}`);
     } else if (weakClaim && (freeHost || userContent)) {
