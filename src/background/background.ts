@@ -1224,15 +1224,7 @@ async function evaluateDomainRisk(opts: {
   aiContext?: { isAISession?: boolean; agentId?: string; toolName?: string };
   sensitivity: 'standard' | 'high' | 'critical';
   pageSignals?: PageSignals;
-  /**
-   * Vault locked: the plan gate is the always-on Shield entitlement (the
-   * session JWT is gone), and calls authenticate with the Shield device token.
-   */
   locked?: boolean;
-  /**
-   * L3 gate (see shouldEscalateRemote). Omitted → always ask the server,
-   * which is what the credential-RELEASE paths want.
-   */
   remoteGate?: (local: DomainRiskAssessment, cfg: ShieldConfig) => boolean;
 }): Promise<DomainRiskAssessment> {
   const cfg = await getShieldConfig();
@@ -1241,8 +1233,35 @@ async function evaluateDomainRisk(opts: {
     : await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
   if (!domainRiskOn || isLocalOrPrivateHost(opts.hostname)) return disabledDomainRiskAssessment(opts.hostname);
 
+  // Layer-0 Global Trusted Domains (admin panel) & user allowlist integration:
+  // Trusted platforms & admin-allowlisted hosts must not be flagged by local lookalike heuristics.
+  const effectiveAllowlist = Array.from(new Set([...opts.allowlist, ...(cfg.trusted_domains || [])]));
+  if (isTrustedHost(opts.hostname, opts.knownHosts, cfg.trusted_domains || [])) {
+    return {
+      pageHostname: opts.hostname,
+      registrableDomain: registrableDomain(opts.hostname),
+      riskScore: 0,
+      riskLevel: 'safe',
+      decision: 'allow',
+      reasons: ['Domain is verified as a trusted platform or globally allowlisted'],
+      matchedTarget: null,
+      isAllowlisted: true,
+      signals: {
+        isExactMatch: false,
+        isSubdomainMatch: false,
+        isSameRegistrableDomain: true,
+        hasPunycode: false,
+        isHomograph: false,
+        suspiciousKeywords: [],
+        isInsecureTransport: false,
+        isHighRiskTld: false,
+        subdomainCount: opts.hostname.split('.').length,
+      },
+    };
+  }
+
   const brands = mergeExtraBrands(cfg.extra_brands);
-  let risk = assessWithCatalog(opts.hostname, opts.knownHosts, opts.allowlist, opts.currentUrl, shieldAssessOptions(cfg), brands);
+  let risk = assessWithCatalog(opts.hostname, opts.knownHosts, effectiveAllowlist, opts.currentUrl, shieldAssessOptions(cfg), brands);
   // Page structure (brand shown vs. real domain, password field, hosting,
   // fake windows), scored locally — works offline and without the server.
   risk = applyPageRisk(risk, scorePageSignals(opts.pageSignals, opts.hostname, brands), shieldAssessOptions(cfg));
@@ -1280,10 +1299,11 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
   if (!hostname || isLocalOrPrivateHost(hostname)) return;
 
   try {
-    const [disabled, allowlist, isShieldOn] = await Promise.all([
+    const [disabled, allowlist, isShieldOn, cfg] = await Promise.all([
       isSiteDisabled(hostname),
       getDomainAllowlist(),
       isShieldActive(),
+      getShieldConfig(),
     ]);
 
     if (disabled || !isShieldOn) return;
@@ -1297,6 +1317,11 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
       .filter((i) => !!i.url)
       .map((i) => extractHostname(i.url!))
       .filter(Boolean);
+
+    // Layer-0 Global Trusted Domains or user allowlist: bypass proactive tab warnings
+    if (isAllowlistedHost(hostname, allowlist) || isTrustedHost(hostname, knownHosts, cfg.trusted_domains || [])) {
+      return;
+    }
 
     const matching = (items || []).filter(
       (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)

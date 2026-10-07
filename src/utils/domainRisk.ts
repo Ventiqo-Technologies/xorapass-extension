@@ -204,6 +204,21 @@ export const HIGH_RISK_TLDS = new Set([
 ]);
 
 /**
+ * Recognized ICANN Brand Top-Level Domains (e.g. *.microsoft, *.google, *.apple).
+ */
+export const DEFAULT_BRAND_TLDS: readonly string[] = [
+  'microsoft',
+  'google',
+  'apple',
+  'amazon',
+  'cisco',
+  'sony',
+  'canon',
+  'barclays',
+  'kpmg',
+];
+
+/**
  * Verified primary registrable domains for major platforms and cloud ecosystems.
  * Subdomains of these roots (e.g. learn.microsoft.com, docs.github.com) are recognized
  * as legitimate unless hosted on shared-tenant suffixes or hijacking actions.
@@ -308,6 +323,10 @@ export const KNOWN_LEGITIMATE_DOMAINS = new Set([
   'facebookmail.com',
   'instagrammail.com',
   'meta.ai',
+  'claude.ai',
+  'anthropic.com',
+  'openai.com',
+  'chatgpt.com',
   'instagram.com',
   'reddit.com',
   'discord.com',
@@ -609,7 +628,10 @@ export interface BrandProfile {
 /**
  * Builds normalized brand profiles from saved credential hosts or vault items.
  */
-export function extractBrandProfiles(knownHosts: string[]): BrandProfile[] {
+export function extractBrandProfiles(
+  knownHosts: string[],
+  brandTlds: readonly string[] = DEFAULT_BRAND_TLDS
+): BrandProfile[] {
   const profiles: BrandProfile[] = [];
   const seen = new Set<string>();
 
@@ -620,8 +642,15 @@ export function extractBrandProfiles(knownHosts: string[]): BrandProfile[] {
     seen.add(reg);
 
     const parts = reg.split('.');
-    const brand = parts[0];
     const tld = parts.slice(1).join('.');
+    const lastLabel = parts[parts.length - 1]?.toLowerCase() || '';
+
+    // If the saved host uses an authentic ICANN Brand TLD (e.g. cloud.microsoft, login.apple),
+    // the brand is the Brand TLD itself, NOT the service/host prefix!
+    let brand = parts[0];
+    if (brandTlds.includes(lastLabel)) {
+      brand = lastLabel;
+    }
 
     if (brand && brand.length >= 3) {
       profiles.push({
@@ -798,7 +827,7 @@ export function assessDomainRisk(
   const tldLabel = pageHostname.split('.').pop() || '';
   const brandTlds = options.brandTlds && options.brandTlds.length > 0
     ? options.brandTlds
-    : ['microsoft', 'google', 'apple', 'amazon', 'cisco', 'sony', 'canon', 'barclays', 'kpmg'];
+    : DEFAULT_BRAND_TLDS;
 
   if (brandTlds.includes(tldLabel) && !isUserContentHost(pageHostname)) {
     assessment.signals.isSameRegistrableDomain = true;
@@ -812,7 +841,7 @@ export function assessDomainRisk(
     return assessment;
   }
 
-  const brandProfiles = extractBrandProfiles(knownHosts);
+  const brandProfiles = extractBrandProfiles(knownHosts, brandTlds);
   const pageParts = pageHostname.split('.');
   const pageTld = pageParts.slice(pageParts.length > 2 ? -2 : -1).join('.');
   const pageBaseTld = pageParts[pageParts.length - 1] || '';
@@ -1019,10 +1048,17 @@ export function assessDomainRisk(
     const distSld = damerauLevenshtein(pageSldClean, brand);
     const minLen = Math.min(pageSldClean.length, brand.length);
 
+    // Cross-TLD edit-distance guard:
+    // If the page and target have different TLDs (and neither is a high-risk TLD or brand abuse),
+    // edit distance 2 on short words (<=6 chars) without matching TLD context causes false positives
+    // across distinct words/brands (e.g. claude vs cloud, chase vs chose).
+    const sameTld = pageTld === profile.tld;
     const typoHit = catalog
       ? // Catalog: one edit on a brand of 6+ letters, never a known real word.
         distSld === 1 && brand.length >= 6 && !CATALOG_TYPO_COLLISIONS.has(pageSldClean)
-      : (distSld > 0 && distSld <= 2 && minLen >= 4 && Math.abs(pageSldClean.length - brand.length) <= 2) ||
+      : (sameTld && distSld > 0 && distSld <= 2 && minLen >= 4 && Math.abs(pageSldClean.length - brand.length) <= 2) ||
+        (!sameTld && distSld === 1 && minLen >= 5 && Math.abs(pageSldClean.length - brand.length) <= 1) ||
+        (!sameTld && distSld === 2 && minLen >= 7 && Math.abs(pageSldClean.length - brand.length) <= 1) ||
         (distReg > 0 && distReg <= 2 && target.length >= 6 && Math.abs(pageReg.length - target.length) <= 2);
     if (ruleOn('typosquat') && distReg !== 0 && pageReg !== target) {
       // 1-2 char typosquats on brand name or registrable domain
