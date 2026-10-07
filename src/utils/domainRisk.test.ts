@@ -212,6 +212,27 @@ describe('Domain Risk Assessment — Acceptance Criteria', () => {
     expect(resNanotek.decision).toBe('allow');
     expect(resNanotek.riskScore).toBe(0);
   });
+
+  it('ALLOWS claude.ai and anthropic.com without false-positive typosquatting flags against cloud.microsoft', () => {
+    // Brand extraction on Brand TLD resolves brand to "microsoft" rather than "cloud"
+    const profiles = extractBrandProfiles(['https://cloud.microsoft']);
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0].brand).toBe('microsoft');
+
+    // claude.ai must NOT be blocked as typosquatting on cloud.microsoft
+    const resClaude = assessDomainRisk('claude.ai', ['https://cloud.microsoft']);
+    expect(resClaude.decision).toBe('allow');
+    expect(resClaude.riskScore).toBe(0);
+
+    const resAnthropic = assessDomainRisk('anthropic.com', ['https://cloud.microsoft']);
+    expect(resAnthropic.decision).toBe('allow');
+    expect(resAnthropic.riskScore).toBe(0);
+
+    // Full catalog assessment also permits claude.ai
+    const resCatalog = assessWithCatalog('claude.ai', ['https://cloud.microsoft']);
+    expect(resCatalog.decision).toBe('allow');
+    expect(resCatalog.riskScore).toBe(0);
+  });
 });
 
 
