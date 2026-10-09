@@ -37,6 +37,17 @@ const MAX_GUARD_MS = 1500;
 (() => {
   if (window !== window.top) return;
   if (!/^https?:$/.test(location.protocol)) return;
+  // These are first-party applications with highly timing-sensitive boot
+  // sequences (AWS CloudScape and WhatsApp's QR renderer). They are already
+  // trusted by the domain-risk engine, so do not install document_start
+  // navigation/input guards that can interfere with their initialization.
+  const host = location.hostname.toLowerCase();
+  if (
+    host === 'web.whatsapp.com' || host.endsWith('.whatsapp.com') ||
+    host === 'aws.amazon.com' || host.endsWith('.aws.amazon.com') ||
+    host === 'signin.aws' || host.endsWith('.signin.aws') ||
+    host === 'awsapps.com' || host.endsWith('.awsapps.com')
+  ) return;
 
   const state: { host: string; action: string; shown: boolean } = {
     host: location.hostname,
