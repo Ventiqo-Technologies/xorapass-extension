@@ -20,6 +20,8 @@ export const KNOWN_MESSAGE_TYPES = [
   // it reads and rewrites the stored bearer credentials.
   'REFRESH_TOKEN',
   'GET_MATCHING_CREDENTIALS',
+  'GET_EMAIL_ALIASES',
+  'GENERATE_EMAIL_ALIAS',
   'GET_CREDENTIAL_SECRET',
   'REMEMBER_USERNAME',
   'CAPTURE_CREDENTIAL',
@@ -345,6 +347,18 @@ export function validateMessage(
         return { ok: false, reason: 'bad-payload' };
       }
       break;
+    case 'GET_EMAIL_ALIASES':
+      // The background derives the page hostname from the sender tab.
+      break;
+    case 'GENERATE_EMAIL_ALIAS':
+      if (
+        payload &&
+        (payload.label !== undefined && (typeof payload.label !== 'string' || payload.label.length > 120) ||
+          payload.format !== undefined && (payload.format !== 'brand_prefix' && payload.format !== 'random_uuid'))
+      ) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
     case 'REMEMBER_USERNAME':
       if (!payload || typeof payload.username !== 'string' || !payload.username) {
         return { ok: false, reason: 'bad-payload' };
@@ -357,7 +371,9 @@ export function validateMessage(
         !payload ||
         typeof payload.username !== 'string' ||
         typeof payload.password !== 'string' ||
-        !payload.password
+        !payload.password ||
+        (payload.aliasId !== undefined && (typeof payload.aliasId !== 'string' || payload.aliasId.length > 100)) ||
+        (payload.aliasEmail !== undefined && (typeof payload.aliasEmail !== 'string' || payload.aliasEmail.length > 254))
       ) {
         return { ok: false, reason: 'bad-payload' };
       }

@@ -371,6 +371,15 @@ interface VaultItem {
   organization?: string;
   accountId?: string;
   totpSecret?: string;
+  customFields?: Record<string, string>;
+}
+
+interface EmailAliasSummary {
+  id: string;
+  alias_email: string;
+  domain_tag: string;
+  label: string;
+  is_active: boolean;
 }
 
 // A credential submitted on a page, awaiting the user's decision. Keyed by tab
@@ -383,6 +392,8 @@ interface PendingSave {
   password: string;
   mode: 'new' | 'update';
   entryId?: string;
+  aliasId?: string;
+  aliasEmail?: string;
 }
 
 const PENDING_KEY = 'pendingSaves';
@@ -532,6 +543,43 @@ async function apiJwt(
     return first;
   }
   return callApiJwt(method, path, body, renewed);
+}
+
+async function listEmailAliases(): Promise<{ aliases: EmailAliasSummary[]; primaryEmail: string; unlocked: boolean }> {
+  const [aliasesRes, session] = await Promise.all([
+    apiJwt('GET', '/aliases'),
+    browser.storage.session.get(['email', 'unlocked']),
+  ]);
+  const primaryEmail = String((session as any).email || '');
+  if (!aliasesRes.ok) return { aliases: [], primaryEmail, unlocked: !!(session as any).unlocked };
+  const aliases = Array.isArray(aliasesRes.data?.aliases)
+    ? aliasesRes.data.aliases.filter((a: any) => a && typeof a.id === 'string' && typeof a.alias_email === 'string')
+    : [];
+  return { aliases, primaryEmail, unlocked: !!(session as any).unlocked };
+}
+
+async function generateEmailAlias(
+  sender: browser.Runtime.MessageSender,
+  payload: { label?: string; format?: 'brand_prefix' | 'random_uuid' }
+): Promise<{ alias?: EmailAliasSummary; error?: string }> {
+  const hostname = extractHostname(sender.tab?.url || sender.url || '');
+  if (!hostname) return { error: 'unknown_origin' };
+
+  const session = await browser.storage.session.get(['email']);
+  const destinationEmail = typeof (session as any).email === 'string' ? (session as any).email : '';
+  if (!destinationEmail) return { error: 'locked' };
+
+  const res = await apiJwt('POST', '/aliases/generate', {
+    // The hostname is derived from the sender tab, never trusted from page data.
+    domain: hostname,
+    label: (payload?.label || '').slice(0, 120),
+    destination_email: destinationEmail,
+    format: payload?.format || 'brand_prefix',
+  });
+  if (!res.ok || !res.data?.id || !res.data?.alias_email) {
+    return { error: res.data?.detail || `HTTP ${res.status}` };
+  }
+  return { alias: res.data as EmailAliasSummary };
 }
 
 // A proactive alarm tick and a reactive 401 retry can land at nearly the same
@@ -1742,6 +1790,14 @@ browser.runtime.onMessage.addListener((message, sender) => {
     })();
   }
 
+  if (type === 'GET_EMAIL_ALIASES') {
+    return listEmailAliases();
+  }
+
+  if (type === 'GENERATE_EMAIL_ALIAS') {
+    return generateEmailAlias(sender, (msg.payload || {}) as { label?: string; format?: 'brand_prefix' | 'random_uuid' });
+  }
+
   if (type === 'GET_CREDENTIAL_SECRET') {
     const id: string = msg.payload.id;
 
@@ -1842,7 +1898,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const hostname = extractHostname(msg.payload?.hostname || sender.tab?.url || sender.url || '');
     if (!tabId || !hostname) return Promise.resolve({ prompt: false });
 
-    const captured = msg.payload as { username: string; password: string; hostname?: string };
+    const captured = msg.payload as { username: string; password: string; hostname?: string; aliasId?: string; aliasEmail?: string };
     const password = captured.password;
 
     return Promise.all([
@@ -1890,8 +1946,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
 
       const pending: PendingSave & { accountId?: string } = existing
-        ? { hostname, username: existing.username || username, password, mode: 'update', entryId: existing.id }
-        : { hostname, username, password, mode: 'new' };
+        ? { hostname, username: existing.username || username, password, mode: 'update', entryId: existing.id, aliasId: captured.aliasId, aliasEmail: captured.aliasEmail }
+        : { hostname, username, password, mode: 'new', aliasId: captured.aliasId, aliasEmail: captured.aliasEmail };
 
       if (isAws) {
         pending.accountId = accountId || existing?.accountId || '';
@@ -2491,6 +2547,14 @@ async function savePendingCredential(
     url: existing?.url || `https://${pending.hostname}`,
     accountId: existing?.accountId || accountIdVal
   };
+  if (pending.aliasId) {
+    (entry as any).customFields = {
+      ...(existing?.customFields || {}),
+      is_masked_email: 'true',
+      alias_id: pending.aliasId,
+      alias_email: pending.aliasEmail || pending.username,
+    };
+  }
 
   // encryptPayload bundles the nonce, but the API stores it in its own column.
   const { nonce, ...encrypted_payload } = encryptPayload(JSON.stringify(entry), encKey);

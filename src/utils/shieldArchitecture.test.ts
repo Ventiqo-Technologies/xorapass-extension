@@ -190,6 +190,8 @@ describe('Shield decision pipeline', () => {
     expect(isTrustedHost('learn.microsoft.com', [], [])).toBe(true);
     expect(isTrustedHost('evil.blob.core.windows.net', [], [])).toBe(false);
     expect(isTrustedHost('portal.acme.io', [], ['acme.io'])).toBe(true);
+    expect(isTrustedHost('web.whatsapp.com', [], [])).toBe(true);
+    expect(isTrustedHost('console.aws.amazon.com', [], [])).toBe(true);
   });
 
   it('only escalates to the server when there is something to ask about', () => {

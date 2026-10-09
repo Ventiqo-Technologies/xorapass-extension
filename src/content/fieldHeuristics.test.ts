@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   looksLikeUsername,
+  looksLikeEmailField,
   looksLikeNewPassword,
   looksLikeCurrentPassword,
   looksLikeAwsAccountId,
@@ -11,6 +12,19 @@ import {
   computeDropdownPosition,
   isRectVisible,
 } from './fieldHeuristics';
+
+describe('looksLikeEmailField', () => {
+  it('accepts email inputs and explicit email autocomplete', () => {
+    expect(looksLikeEmailField({ type: 'email' })).toBe(true);
+    expect(looksLikeEmailField({ type: 'text', autocomplete: 'email' })).toBe(true);
+    expect(looksLikeEmailField({ type: 'text', name: 'contact_email' })).toBe(true);
+  });
+
+  it('rejects search and filter fields', () => {
+    expect(looksLikeEmailField({ type: 'email', name: 'search_email', placeholder: 'Search' })).toBe(false);
+    expect(looksLikeEmailField({ type: 'text', role: 'searchbox', name: 'email' })).toBe(false);
+  });
+});
 
 describe('looksLikeUsername', () => {
   it('accepts an explicit autocomplete token regardless of name', () => {
@@ -47,6 +61,11 @@ describe('looksLikeUsername', () => {
     expect(looksLikeUsername({ type: 'text', className: 'zgh-search-field' })).toBe(false);
     expect(looksLikeUsername({ type: 'text', id: 'login-otp' })).toBe(false);
     expect(looksLikeUsername({ type: 'text', name: 'account', placeholder: 'Promo code' })).toBe(false);
+  });
+
+  it('rejects AWS CloudScape search and filter inputs despite the awsui id prefix', () => {
+    expect(looksLikeUsername({ type: 'text', id: 'awsui-input-123', placeholder: 'Search services' })).toBe(false);
+    expect(looksLikeUsername({ type: 'text', id: 'awsui-input-456', ariaLabel: 'Filter resources' })).toBe(false);
   });
 
   it('treats autocomplete=off as allowed, but new-password as disqualifying', () => {
