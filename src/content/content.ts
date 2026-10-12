@@ -353,8 +353,16 @@ function emailFieldAttrs(el: HTMLInputElement) {
 }
 
 async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
+  if (domainRisk?.decision === 'block') {
+    showToast('Masked email', 'Email fill is blocked on this site for security.');
+    return;
+  }
+  const warning = getRiskWarningMessage();
+  if (warning && !(await showConfirmDialog({ title: 'Confirm email fill', body: [warning], confirmLabel: 'Continue', cancelLabel: 'Cancel' }))) return;
   const response = await browser.runtime.sendMessage({ type: 'GET_EMAIL_ALIASES' }).catch(() => null) as any;
-  if (!response?.unlocked) return;
+  if (!response?.unlocked) { showToast('Masked email', 'Unlock XoraPass to use masked email.'); return; }
+  if (response.error) { showToast('Masked email', response.error); return; }
+  if (!input.isConnected) return;
   const options: OverlayCredential[] = [{
     id: '__generate_masked_email__', label: 'Generate masked email',
     username: `Create an alias for ${window.location.hostname}`, category: 'email_alias', hasTotp: false,
@@ -370,6 +378,7 @@ async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
     });
   }
   openDropdown(input, {
+    title: 'XoraPass Email Masking',
     credentials: options,
     warning: null,
     onPick: async (id) => {
@@ -381,6 +390,7 @@ async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
           showToast('Masked email', generated?.error || 'Could not generate a masked email');
           return;
         }
+        if (!input.isConnected) { showToast('Masked email', 'Alias created. Open Email Masking in your vault to copy it.'); return; }
         autofillField(input, generated.alias.alias_email);
         maskedAliasByInput.set(input, { id: generated.alias.id, email: generated.alias.alias_email });
         showToast('Masked email', 'Masked email generated');
@@ -1042,6 +1052,7 @@ function scanForLoginFields(): void {
       attachIcon(userInput, () => {
         openDropdown(userInput, {
           credentials: activeCredentials,
+          emailAction: looksLikeEmailField(emailFieldAttrs(userInput)) ? () => { void openEmailAliasDropdown(userInput); } : undefined,
           warning: getRiskWarningMessage(),
           onPick: async (id) => {
             const cred = activeCredentials.find((c) => c.id === id);
@@ -1445,6 +1456,12 @@ let preferredSuggestionLength = 20;
 // the user actually clicked or focused, so the menu appears where they are
 // looking. On a sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
+  // The email field shares the signup icon with its password pair. Route this
+  // activation to email masking, leaving password generation on the password.
+  if (anchor !== passInput && newPasswordFields.get(passInput) === true && looksLikeEmailField(emailFieldAttrs(anchor))) {
+    void openEmailAliasDropdown(anchor);
+    return;
+  }
   const warning = getRiskWarningMessage();
 
   // Inspect website password field constraints if present
@@ -1478,6 +1495,7 @@ function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
 
   openDropdown(anchor, {
     credentials: activeCredentials,
+    emailAction: looksLikeEmailField(emailFieldAttrs(anchor)) ? () => { void openEmailAliasDropdown(anchor); } : undefined,
     warning,
     isNew,
     onPick: (id) => void handlePick(id, passInput),

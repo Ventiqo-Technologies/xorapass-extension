@@ -17,6 +17,7 @@ import {
   type FormThreatContext,
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
+import { aliasesForHost, maskedEmailFields } from '../utils/emailAliases';
 import type { PageSignals } from '../utils/pageSignals';
 import { buildSiteSafetyReport } from '../utils/siteScanner';
 import {
@@ -545,29 +546,38 @@ async function apiJwt(
   return callApiJwt(method, path, body, renewed);
 }
 
-async function listEmailAliases(): Promise<{ aliases: EmailAliasSummary[]; primaryEmail: string; unlocked: boolean }> {
+async function listEmailAliases(sender: browser.Runtime.MessageSender): Promise<{ aliases: EmailAliasSummary[]; primaryEmail: string; unlocked: boolean; error?: string }> {
+  const url = sender.url || sender.tab?.url || '';
+  const hostname = extractHostname(url);
+  const empty = { aliases: [], primaryEmail: '', unlocked: false };
+  if (sender.frameId !== 0 || !url.startsWith('https://') || !hostname || await isSiteDisabled(hostname)) return empty;
+  const auth = await browser.storage.session.get(['unlocked']);
+  if (!auth.unlocked) return empty;
   const [aliasesRes, session] = await Promise.all([
     apiJwt('GET', '/aliases'),
     browser.storage.session.get(['email', 'unlocked']),
   ]);
   const primaryEmail = String((session as any).email || '');
-  if (!aliasesRes.ok) return { aliases: [], primaryEmail, unlocked: !!(session as any).unlocked };
+  if (!aliasesRes.ok) return { aliases: [], primaryEmail, unlocked: true, error: aliasesRes.data?.detail || 'Could not load masked emails. Check your connection.' };
   const aliases = Array.isArray(aliasesRes.data?.aliases)
     ? aliasesRes.data.aliases.filter((a: any) => a && typeof a.id === 'string' && typeof a.alias_email === 'string')
     : [];
-  return { aliases, primaryEmail, unlocked: !!(session as any).unlocked };
+  return { aliases: aliasesForHost(aliases, hostname), primaryEmail, unlocked: true };
 }
 
 async function generateEmailAlias(
   sender: browser.Runtime.MessageSender,
   payload: { label?: string; format?: 'brand_prefix' | 'random_uuid' }
 ): Promise<{ alias?: EmailAliasSummary; error?: string }> {
-  const hostname = extractHostname(sender.tab?.url || sender.url || '');
+  const url = sender.url || sender.tab?.url || '';
+  const hostname = extractHostname(url);
+  if (sender.frameId !== 0 || !url.startsWith('https://')) return { error: 'Masked emails are only available in secure top-level pages.' };
   if (!hostname) return { error: 'unknown_origin' };
+  if (await isSiteDisabled(hostname)) return { error: 'disabled' };
 
-  const session = await browser.storage.session.get(['email']);
+  const session = await browser.storage.session.get(['email', 'unlocked']);
   const destinationEmail = typeof (session as any).email === 'string' ? (session as any).email : '';
-  if (!destinationEmail) return { error: 'locked' };
+  if (!session.unlocked || !destinationEmail) return { error: 'locked' };
 
   const res = await apiJwt('POST', '/aliases/generate', {
     // The hostname is derived from the sender tab, never trusted from page data.
@@ -1791,7 +1801,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'GET_EMAIL_ALIASES') {
-    return listEmailAliases();
+    return listEmailAliases(sender);
   }
 
   if (type === 'GENERATE_EMAIL_ALIAS') {
@@ -1948,6 +1958,16 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const pending: PendingSave & { accountId?: string } = existing
         ? { hostname, username: existing.username || username, password, mode: 'update', entryId: existing.id, aliasId: captured.aliasId, aliasEmail: captured.aliasEmail }
         : { hostname, username, password, mode: 'new', aliasId: captured.aliasId, aliasEmail: captured.aliasEmail };
+
+      // Resolve alias metadata from the authenticated API, including multi-step
+      // signups where the email input disappeared before password submission.
+      pending.aliasId = undefined;
+      pending.aliasEmail = undefined;
+      if (username.toLowerCase().endsWith('@mask.xorapass.com')) {
+        const response = await listEmailAliases(sender);
+        const alias = response.aliases.find((a) => a.alias_email.toLowerCase() === username.toLowerCase());
+        if (alias) { pending.aliasId = alias.id; pending.aliasEmail = alias.alias_email; }
+      }
 
       if (isAws) {
         pending.accountId = accountId || existing?.accountId || '';
@@ -2545,16 +2565,9 @@ async function savePendingCredential(
     category: existing?.category || defaultCategory,
     organization: existing?.organization || '',
     url: existing?.url || `https://${pending.hostname}`,
-    accountId: existing?.accountId || accountIdVal
+    accountId: existing?.accountId || accountIdVal,
+    customFields: maskedEmailFields(existing?.customFields, pending.aliasId ? { id: pending.aliasId, email: pending.aliasEmail || pending.username } : undefined),
   };
-  if (pending.aliasId) {
-    (entry as any).customFields = {
-      ...(existing?.customFields || {}),
-      is_masked_email: 'true',
-      alias_id: pending.aliasId,
-      alias_email: pending.aliasEmail || pending.username,
-    };
-  }
 
   // encryptPayload bundles the nonce, but the API stores it in its own column.
   const { nonce, ...encrypted_payload } = encryptPayload(JSON.stringify(entry), encKey);
@@ -2664,6 +2677,7 @@ async function applyBridgedSession(
         publicKey: parsed.publicKey || '',
         passphrase: parsed.passphrase || '',
         accountId: parsed.accountId || '',
+        customFields: parsed.customFields || {},
       };
     } catch {
       return { id: entry.id, label: "Couldn't decrypt", username: '', value: '', category: 'login', url: '' };

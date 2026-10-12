@@ -1140,7 +1140,8 @@ export const PopupApp: React.FC = () => {
           publicKey: parsed.publicKey || "",
           passphrase: parsed.passphrase || "",
           accountId: parsed.accountId || "",
-          totpSecret: parsed.totpSecret || parsed.totp || parsed.twoFactorSecret || ""
+          totpSecret: parsed.totpSecret || parsed.totp || parsed.twoFactorSecret || "",
+          customFields: parsed.customFields || {},
         };
       } catch (e) {
         console.error("Failed to decrypt entry:", entry.id, e);

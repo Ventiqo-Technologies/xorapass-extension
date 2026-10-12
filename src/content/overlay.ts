@@ -34,6 +34,8 @@ export interface OverlayCredential {
 }
 
 export interface DropdownOptions {
+  title?: string;
+  emailAction?: () => void;
   credentials: OverlayCredential[];
   /** Optional phishing/lookalike banner shown above the credential list. */
   warning?: string | null;
@@ -1770,8 +1772,18 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
 
   const header = document.createElement('div');
   header.className = 'menu-header';
-  header.textContent = 'XoraPass Autofill';
+  header.textContent = opts.title || 'XoraPass Autofill';
   menu.appendChild(header);
+
+  if (opts.emailAction) {
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'menu-action-item';
+    action.textContent = 'Use a masked email';
+    action.addEventListener('mousedown', (event) => event.preventDefault());
+    action.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); closeDropdown(); opts.emailAction?.(); });
+    menu.appendChild(action);
+  }
 
   if (opts.warning) {
     const banner = document.createElement('div');
