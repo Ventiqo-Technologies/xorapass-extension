@@ -17,7 +17,7 @@ import {
   type FormThreatContext,
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
-import { aliasesForHost, maskedEmailFields } from '../utils/emailAliases';
+import { aliasesForHost, maskedEmailFields, isMaskedEmail } from '../utils/emailAliases';
 import type { PageSignals } from '../utils/pageSignals';
 import { buildSiteSafetyReport } from '../utils/siteScanner';
 import {
@@ -1963,7 +1963,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // signups where the email input disappeared before password submission.
       pending.aliasId = undefined;
       pending.aliasEmail = undefined;
-      if (username.toLowerCase().endsWith('@mask.xorapass.com')) {
+      if (isMaskedEmail(username)) {
         const response = await listEmailAliases(sender);
         const alias = response.aliases.find((a) => a.alias_email.toLowerCase() === username.toLowerCase());
         if (alias) { pending.aliasId = alias.id; pending.aliasEmail = alias.alias_email; }

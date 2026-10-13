@@ -1,9 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { aliasesForHost, maskedEmailFields, type EmailAlias } from './emailAliases';
+import { aliasesForHost, maskedEmailFields, isMaskedEmail, type EmailAlias } from './emailAliases';
 
 const alias = (domain: string, active = true): EmailAlias => ({ id: domain, alias_email: 'shop-123@mask.xorapass.com', domain_tag: domain, label: '', is_active: active });
 
 describe('masked email privacy', () => {
+  it('recognizes production and isolated dev aliases without matching lookalike domains', () => {
+    expect(isMaskedEmail('shop@mask.xorapass.com')).toBe(true);
+    expect(isMaskedEmail('shop@DEV.mask.xorapass.com')).toBe(true);
+    expect(isMaskedEmail('shop@mask.xorapass.com.evil.test')).toBe(false);
+    expect(isMaskedEmail('private@example.com')).toBe(false);
+  });
   it('only returns active aliases for the current website', () => {
     const items = [alias('shop.example.com'), alias('unrelated.com'), alias('example.com', false)];
     expect(aliasesForHost(items, 'accounts.example.com')).toEqual([items[0]]);

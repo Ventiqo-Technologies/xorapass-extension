@@ -8,6 +8,11 @@ export interface EmailAlias {
   is_active: boolean;
 }
 
+export function isMaskedEmail(address: string): boolean {
+  const normalized = address.toLowerCase();
+  return normalized.endsWith('@mask.xorapass.com') || normalized.endsWith('@dev.mask.xorapass.com');
+}
+
 /** Do not expose aliases belonging to unrelated sites to a content script. */
 export function aliasesForHost(aliases: EmailAlias[], hostname: string): EmailAlias[] {
   return aliases.filter((a) => a.is_active && typeof a.id === 'string' &&
