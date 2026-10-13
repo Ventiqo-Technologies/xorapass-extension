@@ -10,7 +10,8 @@
     "package:firefox": "npm run build && npx web-ext build --source-dir dist --artifacts-dir web-ext-artifacts --overwrite-dest",
     "deploy:firefox": "npx web-ext sign --source-dir dist --channel listed --api-key $AMO_JWT_ISSUER --api-secret $AMO_JWT_SECRET",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
     "@stablelib/hkdf": "^1.0.1",
