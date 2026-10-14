@@ -17,6 +17,7 @@ import {
   type FormThreatContext,
 } from '../utils/domainRiskService';
 import { isFillableCategory } from '../utils/fillPolicy';
+import { aliasesForHost, maskedEmailFields, isMaskedEmail } from '../utils/emailAliases';
 import type { PageSignals } from '../utils/pageSignals';
 import { buildSiteSafetyReport } from '../utils/siteScanner';
 import {
@@ -371,6 +372,15 @@ interface VaultItem {
   organization?: string;
   accountId?: string;
   totpSecret?: string;
+  customFields?: Record<string, string>;
+}
+
+interface EmailAliasSummary {
+  id: string;
+  alias_email: string;
+  domain_tag: string;
+  label: string;
+  is_active: boolean;
 }
 
 // A credential submitted on a page, awaiting the user's decision. Keyed by tab
@@ -383,6 +393,8 @@ interface PendingSave {
   password: string;
   mode: 'new' | 'update';
   entryId?: string;
+  aliasId?: string;
+  aliasEmail?: string;
 }
 
 const PENDING_KEY = 'pendingSaves';
@@ -532,6 +544,52 @@ async function apiJwt(
     return first;
   }
   return callApiJwt(method, path, body, renewed);
+}
+
+async function listEmailAliases(sender: browser.Runtime.MessageSender): Promise<{ aliases: EmailAliasSummary[]; primaryEmail: string; unlocked: boolean; error?: string }> {
+  const url = sender.url || sender.tab?.url || '';
+  const hostname = extractHostname(url);
+  const empty = { aliases: [], primaryEmail: '', unlocked: false };
+  if (sender.frameId !== 0 || !url.startsWith('https://') || !hostname || await isSiteDisabled(hostname)) return empty;
+  const auth = await browser.storage.session.get(['unlocked']);
+  if (!auth.unlocked) return empty;
+  const [aliasesRes, session] = await Promise.all([
+    apiJwt('GET', '/aliases'),
+    browser.storage.session.get(['email', 'unlocked']),
+  ]);
+  const primaryEmail = String((session as any).email || '');
+  if (!aliasesRes.ok) return { aliases: [], primaryEmail, unlocked: true, error: aliasesRes.data?.detail || 'Could not load masked emails. Check your connection.' };
+  const aliases = Array.isArray(aliasesRes.data?.aliases)
+    ? aliasesRes.data.aliases.filter((a: any) => a && typeof a.id === 'string' && typeof a.alias_email === 'string')
+    : [];
+  return { aliases: aliasesForHost(aliases, hostname), primaryEmail, unlocked: true };
+}
+
+async function generateEmailAlias(
+  sender: browser.Runtime.MessageSender,
+  payload: { label?: string; format?: 'brand_prefix' | 'random_uuid' }
+): Promise<{ alias?: EmailAliasSummary; error?: string }> {
+  const url = sender.url || sender.tab?.url || '';
+  const hostname = extractHostname(url);
+  if (sender.frameId !== 0 || !url.startsWith('https://')) return { error: 'Masked emails are only available in secure top-level pages.' };
+  if (!hostname) return { error: 'unknown_origin' };
+  if (await isSiteDisabled(hostname)) return { error: 'disabled' };
+
+  const session = await browser.storage.session.get(['email', 'unlocked']);
+  const destinationEmail = typeof (session as any).email === 'string' ? (session as any).email : '';
+  if (!session.unlocked || !destinationEmail) return { error: 'locked' };
+
+  const res = await apiJwt('POST', '/aliases/generate', {
+    // The hostname is derived from the sender tab, never trusted from page data.
+    domain: hostname,
+    label: (payload?.label || '').slice(0, 120),
+    destination_email: destinationEmail,
+    format: payload?.format || 'brand_prefix',
+  });
+  if (!res.ok || !res.data?.id || !res.data?.alias_email) {
+    return { error: res.data?.detail || `HTTP ${res.status}` };
+  }
+  return { alias: res.data as EmailAliasSummary };
 }
 
 // A proactive alarm tick and a reactive 401 retry can land at nearly the same
@@ -1742,6 +1800,14 @@ browser.runtime.onMessage.addListener((message, sender) => {
     })();
   }
 
+  if (type === 'GET_EMAIL_ALIASES') {
+    return listEmailAliases(sender);
+  }
+
+  if (type === 'GENERATE_EMAIL_ALIAS') {
+    return generateEmailAlias(sender, (msg.payload || {}) as { label?: string; format?: 'brand_prefix' | 'random_uuid' });
+  }
+
   if (type === 'GET_CREDENTIAL_SECRET') {
     const id: string = msg.payload.id;
 
@@ -1842,7 +1908,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const hostname = extractHostname(msg.payload?.hostname || sender.tab?.url || sender.url || '');
     if (!tabId || !hostname) return Promise.resolve({ prompt: false });
 
-    const captured = msg.payload as { username: string; password: string; hostname?: string };
+    const captured = msg.payload as { username: string; password: string; hostname?: string; aliasId?: string; aliasEmail?: string };
     const password = captured.password;
 
     return Promise.all([
@@ -1890,8 +1956,18 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
 
       const pending: PendingSave & { accountId?: string } = existing
-        ? { hostname, username: existing.username || username, password, mode: 'update', entryId: existing.id }
-        : { hostname, username, password, mode: 'new' };
+        ? { hostname, username: existing.username || username, password, mode: 'update', entryId: existing.id, aliasId: captured.aliasId, aliasEmail: captured.aliasEmail }
+        : { hostname, username, password, mode: 'new', aliasId: captured.aliasId, aliasEmail: captured.aliasEmail };
+
+      // Resolve alias metadata from the authenticated API, including multi-step
+      // signups where the email input disappeared before password submission.
+      pending.aliasId = undefined;
+      pending.aliasEmail = undefined;
+      if (isMaskedEmail(username)) {
+        const response = await listEmailAliases(sender);
+        const alias = response.aliases.find((a) => a.alias_email.toLowerCase() === username.toLowerCase());
+        if (alias) { pending.aliasId = alias.id; pending.aliasEmail = alias.alias_email; }
+      }
 
       if (isAws) {
         pending.accountId = accountId || existing?.accountId || '';
@@ -2489,7 +2565,8 @@ async function savePendingCredential(
     category: existing?.category || defaultCategory,
     organization: existing?.organization || '',
     url: existing?.url || `https://${pending.hostname}`,
-    accountId: existing?.accountId || accountIdVal
+    accountId: existing?.accountId || accountIdVal,
+    customFields: maskedEmailFields(existing?.customFields, pending.aliasId ? { id: pending.aliasId, email: pending.aliasEmail || pending.username } : undefined),
   };
 
   // encryptPayload bundles the nonce, but the API stores it in its own column.
@@ -2600,6 +2677,7 @@ async function applyBridgedSession(
         publicKey: parsed.publicKey || '',
         passphrase: parsed.passphrase || '',
         accountId: parsed.accountId || '',
+        customFields: parsed.customFields || {},
       };
     } catch {
       return { id: entry.id, label: "Couldn't decrypt", username: '', value: '', category: 'login', url: '' };

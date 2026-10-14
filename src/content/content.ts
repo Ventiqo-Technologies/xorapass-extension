@@ -17,6 +17,7 @@
 import browser from 'webextension-polyfill';
 import {
   looksLikeUsername,
+  looksLikeEmailField,
   looksLikeNewPassword,
   looksLikeCurrentPassword,
   looksLikeAwsAccountId,
@@ -102,6 +103,7 @@ const newPasswordFields = new WeakMap<HTMLInputElement, boolean>();
  * user find and click a small icon.
  */
 const focusActivators = new WeakMap<HTMLInputElement, HTMLInputElement>();
+const maskedAliasByInput = new WeakMap<HTMLInputElement, { id: string; email: string }>();
 
 let pastePolicy: PastePolicy = DEFAULT_POLICY;
 let pasteGuardInitialized = false;
@@ -327,6 +329,7 @@ function loadCredentials(): void {
       // sign-up field still gets an icon so a password can be generated.
       clearAll();
       scanForLoginFields();
+      scanForEmailFields();
       scanForPaymentFields();
       scanWebmailMessages();
       scheduleAiScan();
@@ -334,6 +337,86 @@ function loadCredentials(): void {
     .catch((err) => {
       console.warn('[XoraPass Content] Error requesting credentials:', err);
     });
+}
+
+function emailFieldAttrs(el: HTMLInputElement) {
+  return {
+    type: el.type,
+    autocomplete: el.getAttribute('autocomplete'),
+    name: el.name,
+    id: el.id,
+    placeholder: el.getAttribute('placeholder'),
+    ariaLabel: el.getAttribute('aria-label'),
+    role: el.getAttribute('role'),
+    className: el.className,
+  };
+}
+
+async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
+  if (domainRisk?.decision === 'block') {
+    showToast('Masked email', 'Email fill is blocked on this site for security.');
+    return;
+  }
+  const warning = getRiskWarningMessage();
+  if (warning && !(await showConfirmDialog({ title: 'Confirm email fill', body: [warning], confirmLabel: 'Continue', cancelLabel: 'Cancel' }))) return;
+  const response = await browser.runtime.sendMessage({ type: 'GET_EMAIL_ALIASES' }).catch(() => null) as any;
+  if (!response?.unlocked) { showToast('Masked email', 'Unlock XoraPass to use masked email.'); return; }
+  if (response.error) { showToast('Masked email', response.error); return; }
+  if (!input.isConnected) return;
+  const options: OverlayCredential[] = [{
+    id: '__generate_masked_email__', label: 'Generate masked email',
+    username: `Create an alias for ${window.location.hostname}`, category: 'email_alias', hasTotp: false,
+  }];
+  if (response.primaryEmail) options.push({
+    id: '__primary_email__', label: 'Use primary email', username: response.primaryEmail,
+    category: 'email_alias', hasTotp: false,
+  });
+  for (const alias of (response.aliases || []).filter((a: any) => a.is_active)) {
+    options.push({
+      id: alias.id, label: alias.label || alias.domain_tag || 'Masked email', username: alias.alias_email,
+      category: 'email_alias', hasTotp: false,
+    });
+  }
+  openDropdown(input, {
+    title: 'XoraPass Email Masking',
+    credentials: options,
+    warning: null,
+    onPick: async (id) => {
+      if (id === '__generate_masked_email__') {
+        const generated = await browser.runtime.sendMessage({
+          type: 'GENERATE_EMAIL_ALIAS', payload: { label: window.location.hostname, format: 'brand_prefix' },
+        }).catch(() => null) as any;
+        if (!generated?.alias?.alias_email) {
+          showToast('Masked email', generated?.error || 'Could not generate a masked email');
+          return;
+        }
+        if (!input.isConnected) { showToast('Masked email', 'Alias created. Open Email Masking in your vault to copy it.'); return; }
+        autofillField(input, generated.alias.alias_email);
+        maskedAliasByInput.set(input, { id: generated.alias.id, email: generated.alias.alias_email });
+        showToast('Masked email', 'Masked email generated');
+        return;
+      }
+      if (id === '__primary_email__') {
+        autofillField(input, response.primaryEmail);
+        maskedAliasByInput.delete(input);
+        return;
+      }
+      const alias = (response.aliases || []).find((a: any) => a.id === id);
+      if (alias?.alias_email) {
+        autofillField(input, alias.alias_email);
+        maskedAliasByInput.set(input, { id: alias.id, email: alias.alias_email });
+      }
+    },
+  });
+}
+
+function scanForEmailFields(): void {
+  if (window !== window.top) return;
+  const inputs = querySelectorAllDeep<HTMLInputElement>(document, 'input')
+    .filter((el) => isFillable(el) && looksLikeEmailField(emailFieldAttrs(el)) && !hasIcon(el));
+  for (const input of inputs) {
+    attachIcon(input, () => { void openEmailAliasDropdown(input); });
+  }
 }
 
 /**
@@ -969,6 +1052,7 @@ function scanForLoginFields(): void {
       attachIcon(userInput, () => {
         openDropdown(userInput, {
           credentials: activeCredentials,
+          emailAction: looksLikeEmailField(emailFieldAttrs(userInput)) ? () => { void openEmailAliasDropdown(userInput); } : undefined,
           warning: getRiskWarningMessage(),
           onPick: async (id) => {
             const cred = activeCredentials.find((c) => c.id === id);
@@ -1372,6 +1456,12 @@ let preferredSuggestionLength = 20;
 // the user actually clicked or focused, so the menu appears where they are
 // looking. On a sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
+  // The email field shares the signup icon with its password pair. Route this
+  // activation to email masking, leaving password generation on the password.
+  if (anchor !== passInput && newPasswordFields.get(passInput) === true && looksLikeEmailField(emailFieldAttrs(anchor))) {
+    void openEmailAliasDropdown(anchor);
+    return;
+  }
   const warning = getRiskWarningMessage();
 
   // Inspect website password field constraints if present
@@ -1405,6 +1495,7 @@ function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
 
   openDropdown(anchor, {
     credentials: activeCredentials,
+    emailAction: looksLikeEmailField(emailFieldAttrs(anchor)) ? () => { void openEmailAliasDropdown(anchor); } : undefined,
     warning,
     isNew,
     onPick: (id) => void handlePick(id, passInput),
@@ -1979,6 +2070,12 @@ function captureFrom(scope: ParentNode): void {
         username: cred.username,
         password: cred.password,
         hostname: window.location.hostname,
+        ...(() => {
+          const aliasInput = querySelectorAllDeep<HTMLInputElement>(scope, 'input')
+            .map((el) => maskedAliasByInput.get(el))
+            .find(Boolean);
+          return aliasInput ? { aliasId: aliasInput.id, aliasEmail: aliasInput.email } : {};
+        })(),
       },
     })
     .then((res: any) => {
@@ -2759,33 +2856,50 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     setTimeout(checkPendingSave, 400);
   });
 
-  // React to DOM changes instead of polling. SPAs swap login forms in without a
-  // navigation, so a mutation-driven rescan is both faster to appear and far
-  // cheaper than the previous 2.5s interval running on every open tab.
-  const observer = new MutationObserver((records) => {
-    let structural = false;
-    for (const r of records) {
-      if (r.type === 'childList' && (r.addedNodes.length || r.removedNodes.length)) {
-        structural = true;
-        break;
-      }
-      if (r.type === 'attributes') {
-        structural = true;
-        break;
-      }
+  // React to relevant DOM changes instead of rescanning on every page mutation.
+  // Highly dynamic SPAs such as WhatsApp Web update QR canvases, animation
+  // state, class names, and layout nodes continuously; observing all of those
+  // and immediately walking the whole document can starve the page's own QR
+  // renderer and login bootstrap.
+  let rescanTimer: ReturnType<typeof setTimeout> | null = null;
+  const mutationTouchesForm = (record: MutationRecord): boolean => {
+    if (record.type === 'attributes') {
+      return record.target instanceof HTMLInputElement ||
+        record.target instanceof HTMLTextAreaElement ||
+        record.target instanceof HTMLSelectElement ||
+        record.target instanceof HTMLFormElement ||
+        record.target instanceof HTMLIFrameElement;
     }
-    if (!structural) return;
-    scanForLoginFields();
-    scanForPaymentFields();
-    scanWebmailMessages();
-    scheduleReposition();
+
+    const relevant = 'input, textarea, select, form, iframe';
+    if (record.target instanceof Element && record.target.matches(relevant)) return true;
+    return Array.from(record.addedNodes).some((node) =>
+      node instanceof Element && (node.matches(relevant) || !!node.querySelector(relevant))
+    );
+  };
+
+  const observer = new MutationObserver((records) => {
+    if (!records.some(mutationTouchesForm) || rescanTimer) return;
+    // Coalesce bursts from React/Vue rendering into one bounded rescan.
+    rescanTimer = setTimeout(() => {
+      rescanTimer = null;
+      scanForLoginFields();
+      scanForEmailFields();
+      scanForPaymentFields();
+      if (isSupportedWebmail(window.location.hostname, window.location.pathname)) {
+        scanWebmailMessages();
+      } else {
+        checkInsecureForms();
+      }
+      scheduleReposition();
+    }, 100);
   });
 
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['type', 'style', 'class', 'hidden', 'disabled', 'readonly'],
+    attributeFilter: ['type', 'style', 'class', 'hidden', 'disabled', 'readonly', 'autocomplete', 'name', 'placeholder', 'aria-label'],
   });
 
   // Keep overlay icons glued to their inputs as the page moves underneath them.

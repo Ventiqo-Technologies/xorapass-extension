@@ -41,18 +41,34 @@ export function looksLikeUsername(attrs: FieldAttrs): boolean {
   if (ac.includes('new-password')) return false;
 
   const id = (attrs.id || '').toLowerCase();
-  // AWS CloudScape Design System input: awsui-input-*
-  if (id.startsWith('awsui-input')) return true;
-
   const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel, attrs.labelText, attrs.className]
     .filter(Boolean)
     .join(' ');
 
   if (NEGATIVE_HINT.test(hints)) return false;
+
+  // AWS CloudScape Design System input: awsui-input-*. CloudScape also uses
+  // this prefix for global search and filter controls, so only use it after
+  // the negative search/filter hints have been checked above.
+  if (id.startsWith('awsui-input')) return true;
   if (type === 'email') return true;
   if (type !== 'text' && type !== 'tel') return false;
 
   return USERNAME_HINT.test(hints);
+}
+
+/** Detect an email field intended for signup/contact, not site search. */
+export function looksLikeEmailField(attrs: FieldAttrs): boolean {
+  const type = (attrs.type || 'text').toLowerCase();
+  if (type === 'password' || type === 'hidden' || type === 'submit' || type === 'button' || type === 'search') return false;
+  if ((attrs.role || '').toLowerCase() === 'searchbox') return false;
+  const hints = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel, attrs.labelText, attrs.className]
+    .filter(Boolean).join(' ');
+  if (NEGATIVE_HINT.test(hints)) return false;
+  const autocomplete = (attrs.autocomplete || '').toLowerCase();
+  if (autocomplete.includes('email')) return true;
+  if (type === 'email') return true;
+  return /e-?mail|correo|courriel|электрон|メール|邮箱/i.test(hints);
 }
 
 /**
