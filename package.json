@@ -22,6 +22,7 @@
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "tldts": "7.4.18",
     "webextension-polyfill": "^0.12.0"
   },
   "devDependencies": {
