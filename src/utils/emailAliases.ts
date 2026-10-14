@@ -6,6 +6,7 @@ export interface EmailAlias {
   domain_tag: string;
   label: string;
   is_active: boolean;
+  admin_disabled?: boolean;
 }
 
 export function isMaskedEmail(address: string): boolean {
@@ -15,7 +16,7 @@ export function isMaskedEmail(address: string): boolean {
 
 /** Do not expose aliases belonging to unrelated sites to a content script. */
 export function aliasesForHost(aliases: EmailAlias[], hostname: string): EmailAlias[] {
-  return aliases.filter((a) => a.is_active && typeof a.id === 'string' &&
+  return aliases.filter((a) => a.is_active && !a.admin_disabled && typeof a.id === 'string' &&
     typeof a.alias_email === 'string' && typeof a.domain_tag === 'string' &&
     isDomainMatch(hostname, a.domain_tag));
 }

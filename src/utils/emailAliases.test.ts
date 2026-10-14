@@ -18,6 +18,9 @@ describe('masked email privacy', () => {
   it('keeps separate tenants on shared hosting separate', () => {
     expect(aliasesForHost([alias('alice.github.io')], 'bob.github.io')).toEqual([]);
   });
+  it('does not offer aliases disabled by an administrator', () => {
+    expect(aliasesForHost([{ ...alias('example.com'), admin_disabled: true }], 'example.com')).toEqual([]);
+  });
   it('retains existing custom fields when updating a saved credential', () => {
     expect(maskedEmailFields({ alias_id: 'existing', note: 'keep' })).toEqual({ alias_id: 'existing', note: 'keep' });
     expect(maskedEmailFields({ note: 'keep' }, {id:'new', email:'new@mask.xorapass.com'})).toEqual({note:'keep',is_masked_email:'true',alias_id:'new',alias_email:'new@mask.xorapass.com'});
