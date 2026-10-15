@@ -51,6 +51,8 @@ import { mergeExtraBrands } from '../utils/brandCatalog';
 import { scorePageSignals, applyPageRisk } from '../utils/pageRisk';
 import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
+import { credentialRequestUrl } from '../utils/credentialOrigin';
+import { VaultSession } from '../utils/vaultSession';
 import { isSupportedWebmail } from '../utils/webmailGuard';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import {
@@ -89,9 +91,8 @@ browser.runtime.onUpdateAvailable?.addListener((details) => {
 // session — surviving any number of worker restarts. Chrome only drops it when
 // the browser itself shuts down.
 //
-// So a mid-session lock is never the worker respawning. It is one of exactly
-// two things, and both are ours: the auto-lock alarm, or an explicit
-// LOCK_VAULT. Those are the only callers of storage.session.clear().
+// A worker restart is not a lock. All actual lock and sign-out paths below
+// invalidate pending credential requests before clearing session storage.
 // console.debug('[XoraPass] service worker started at', new Date().toISOString());
 
 const DISABLED_SITES_KEY = 'disabledSites';
@@ -113,6 +114,7 @@ const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
  * The shorter intervals remain available for anyone who wants them.
  */
 const DEFAULT_AUTO_LOCK_MINUTES = 0;
+const vaultSession = new VaultSession();
 let lastCopiedSecret = '';
 let lastCopiedId = '';
 let lastCopiedField = '';
@@ -174,18 +176,19 @@ async function getLockOnScreenLock(): Promise<boolean> {
 }
 
 async function lockVaultNow(): Promise<void> {
-  const session = await browser.storage.session.get(['unlocked']);
-  if (!session.unlocked) return; // already locked — nothing to clear or log
-  // console.debug('[XoraPass] locking vault:', reason);
-  await browser.alarms.clear(AUTO_LOCK_ALARM);
-  await clearAiHeartbeat();
-  await clearTokenRefresh();
+  const generation = vaultSession.invalidate();
   dismissedByTab.clear();
   clearRiskApprovals();
+  // Preserve the lock across a worker restart while clipboard cleanup waits.
+  // Keep the clipboard marker/key until cleanup, but stop stored vault access.
+  if (!await vaultSession.commit(generation, () => browser.storage.session.set({ unlocked: false }), false)) return;
+  await Promise.allSettled([
+    browser.alarms.clear(AUTO_LOCK_ALARM), clearAiHeartbeat(), clearTokenRefresh(),
+  ]);
   // Same ordering as the auto-lock alarm: drain the clipboard before the
   // pending marker is wiped along with the rest of the session.
   await clearClipboard().catch(() => undefined);
-  await browser.storage.session.clear();
+  await vaultSession.commit(generation, () => browser.storage.session.clear(), false);
 }
 
 // "locked" fires when the OS screen locks or the machine suspends. "idle" is
@@ -334,18 +337,7 @@ browser.alarms.onAlarm.addListener((alarm) => {
   if (handleShieldAlarm(alarm.name)) return;
   // When the idle timer fires, purge the decrypted vault from session storage.
   if (alarm.name === AUTO_LOCK_ALARM) {
-    // console.debug('[XoraPass] auto-lock fired -> clearing session');
-    void clearAiHeartbeat();
-    // Otherwise this alarm keeps firing every 20 minutes after an idle lock,
-    // calling apiRefresh() against a session storage.session.clear() below is
-    // about to wipe -- harmless (doTokenRefresh checks `unlocked` and
-    // no-ops), but a stray wakeup for nothing, and inconsistent with the
-    // explicit LOCK_VAULT path, which already clears this.
-    void clearTokenRefresh();
-    // Locking must not leave a password sitting in the clipboard, so clear it
-    // first — storage.session.clear() would otherwise drop the pending marker
-    // and make the clear a no-op.
-    void clearClipboard().finally(() => browser.storage.session.clear());
+    void lockVaultNow();
     return;
   }
   if (alarm.name === CLIPBOARD_ALARM) {
@@ -373,6 +365,27 @@ interface VaultItem {
   accountId?: string;
   totpSecret?: string;
   customFields?: Record<string, string>;
+}
+
+async function credentialReleaseError(
+  generation: number,
+  session: Record<string, unknown>,
+  item: VaultItem,
+  sender: browser.Runtime.MessageSender,
+  senderUrl: string
+): Promise<string | null> {
+  const [current, tab] = await Promise.all([
+    browser.storage.session.get(['unlocked', 'vaultItems', 'email', 'encKey']),
+    browser.tabs.get(sender.tab!.id!).catch(() => null),
+  ]);
+  if (!vaultSession.isCurrent(generation) || !current.unlocked ||
+      current.email !== session.email || current.encKey !== session.encKey) return 'locked';
+  if (!tab || tab.url !== sender.tab?.url ||
+      credentialRequestUrl({ ...sender, tab }) !== senderUrl) return 'navigation_changed';
+  const currentItem = (current.vaultItems as VaultItem[] | undefined)?.find((i) => i.id === item.id);
+  const securityFields = ['username', 'value', 'url', 'category', 'accountId', 'totpSecret'] as const;
+  if (!currentItem || securityFields.some((field) => currentItem[field] !== item[field])) return 'credential_changed';
+  return null;
 }
 
 interface EmailAliasSummary {
@@ -538,9 +551,7 @@ async function apiJwt(
   // only help and never turn a working call into a failing one.
   const renewed = await apiRefresh();
   if (!renewed) {
-    void clearAiHeartbeat();
-    void clearTokenRefresh();
-    void clearClipboard().finally(() => browser.storage.session.clear());
+    void lockVaultNow();
     return first;
   }
   return callApiJwt(method, path, body, renewed);
@@ -679,9 +690,7 @@ async function doTokenRefresh(): Promise<string> {
       console.debug('[XoraPass] token refresh failed:', resp.status);
       if (resp.status === 401 || resp.status === 403) {
         console.warn('[XoraPass] server session ended (401/403) -> clearing session');
-        void clearAiHeartbeat();
-        void clearTokenRefresh();
-        void clearClipboard().finally(() => browser.storage.session.clear());
+        void lockVaultNow();
       }
       return '';
     }
@@ -1476,6 +1485,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'UNLOCK_VAULT') {
+    const generation = vaultSession.invalidate();
+    clearRiskApprovals();
     // jwt is optional for backward compatibility, but the popup always sends
     // it now -- without it, the AI Access checks below simply find nothing
     // (getJwt() returns '' and apiJwt() fails closed), never an error state.
@@ -1518,9 +1529,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // Offline unlock: keep the login proof (memory-only, cleared on lock) so
     // the session can sign in to the server once it is reachable again.
     if (offline && offlineAuthHash) sessionData.offlineReauth = { email, clientAuthHash: offlineAuthHash };
-    return browser.storage.session
-      .set(sessionData)
-      .then(() => {
+    return vaultSession
+      .commit(generation, () => browser.storage.session.set(sessionData), true)
+      .then((applied) => {
+        if (!applied) return { error: 'session_changed' };
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
         void scheduleTokenRefresh();
@@ -1532,18 +1544,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'LOCK_VAULT') {
-    // console.debug('[XoraPass] LOCK_VAULT -> clearing session');
-    void browser.alarms.clear(AUTO_LOCK_ALARM);
-    void clearAiHeartbeat();
-    void clearTokenRefresh();
-    dismissedByTab.clear();
-    clearRiskApprovals();
-    // Same ordering as auto-lock: drain the clipboard before the pending
-    // marker is wiped along with the rest of the session.
-    return clearClipboard()
-      .catch(() => undefined)
-      .then(() => browser.storage.session.clear())
-      .then(() => ({ success: true }));
+    return lockVaultNow().then(() => ({ success: true }));
   }
 
   if (type === 'REFRESH_TOKEN') {
@@ -1677,8 +1678,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'GET_MATCHING_CREDENTIALS') {
-    const hostname: string = msg.payload.hostname || '';
-    const currentUrl: string = msg.payload.currentUrl || `https://${hostname}`;
+    const generation = vaultSession.capture();
+    const currentUrl = credentialRequestUrl(sender);
+    if (!currentUrl) {
+      return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null, error: 'unauthorized_frame' });
+    }
+    const hostname = extractHostname(currentUrl);
     // Shape of the login form as the content script sees it: iframe embedding,
     // a cross-origin form action, MFA fields. These are the backend's
     // highest-value signals (CROSS_ORIGIN_FORM_ACTION, IFRAME_LOGIN_EMBEDDING)
@@ -1702,7 +1707,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         getDomainAllowlist(),
       ]);
 
-      if (!res.unlocked || !res.vaultItems) {
+      if (generation === null || !vaultSession.isCurrent(generation) || !res.unlocked || !res.vaultItems) {
         // Locked: nothing to fill, but always-on Shield still protects the
         // page (paid entitlement; device-token auth). With no saved sites to
         // compare against, detection comes from the blocklist, the server's
@@ -1766,6 +1771,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       });
 
       // Maintain legacy lookalike compatibility for existing UI callers
+      if (!vaultSession.isCurrent(generation)) {
+        return { credentials: [], disabled: false, lookalike: null, risk: null, locked: true };
+      }
       let lookalike = matching.length === 0 ? findLookalikeTarget(hostname, knownHosts, allowlist) : null;
       if (!lookalike && (risk.decision === 'block' || risk.decision === 'require_approval') && risk.matchedTarget) {
         lookalike = {
@@ -1810,22 +1818,24 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'GET_CREDENTIAL_SECRET') {
     const id: string = msg.payload.id;
+    const generation = vaultSession.capture();
+    if (generation === null) return Promise.resolve({ error: 'locked' });
 
-    // The hostname is taken from the sender tab, never from the message
-    // payload: a compromised content script must not be able to name a
-    // different site and pull that site's password.
-    const senderUrl = sender.tab?.url || sender.url || '';
+    // Authorize the requesting document before looking up any vault data.
+    // The top tab is context, never a substitute for a frame's own authority.
+    const senderUrl = credentialRequestUrl(sender);
+    if (!senderUrl) return Promise.resolve({ error: 'unauthorized_frame' });
     const hostname = extractHostname(senderUrl);
     if (!hostname) {
       return Promise.resolve({ error: 'unknown_origin' });
     }
 
     return Promise.all([
-      browser.storage.session.get(['unlocked', 'vaultItems']),
+      browser.storage.session.get(['unlocked', 'vaultItems', 'email', 'encKey']),
       isSiteDisabled(hostname),
       getDomainAllowlist(),
     ]).then(async ([res, disabled, allowlist]) => {
-      if (!res.unlocked || !res.vaultItems) return { error: 'locked' };
+      if (!vaultSession.isCurrent(generation) || !res.unlocked || !res.vaultItems) return { error: 'locked' };
       if (disabled) return { error: 'site_disabled' };
 
       const item = (res.vaultItems as VaultItem[]).find((i) => i.id === id);
@@ -1841,7 +1851,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         return { error: 'not_fillable' };
       }
 
-      // Re-authorize: the item must still match the tab's real hostname.
+      // Re-authorize: the item must match the authorized requesting hostname.
       if (!isDomainMatch(hostname, item.url)) {
         console.warn('[XoraPass] Refused secret for non-matching domain:', hostname);
         return { error: 'domain_mismatch' };
@@ -1868,12 +1878,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
         sensitivity: sensitivityForItems([item]),
       });
 
+      if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
+
       if (isFillWithheld(risk, sender.tab?.id, hostname)) {
         console.warn('[XoraPass] Refused secret for risk domain:', hostname, risk.decision, risk.reasons);
         return { error: risk.decision === 'block' ? 'risk_blocked' : 'risk_approval_required', risk };
       }
-
-      void scheduleAutoLock(); // filling counts as activity
 
       let totpCode: string | undefined;
       if (item.totpSecret) {
@@ -1888,6 +1898,14 @@ browser.runtime.onMessage.addListener((message, sender) => {
         }
       }
 
+      // Last asynchronous boundary: re-read live session/item and tab state.
+      // The synchronous generation check after it also catches lock -> unlock
+      // of the same account, including while this read was still in flight.
+      const releaseError = await credentialReleaseError(generation, res, item, sender, senderUrl);
+      if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
+      if (releaseError) return { error: releaseError };
+
+      void scheduleAutoLock(); // Only a successful, still-authorized fill is activity.
       return {
         username: item.username,
         value: item.value,
@@ -2023,6 +2041,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'AI_FILL_CONFIRM') {
+    const generation = vaultSession.capture();
+    if (generation === null) return Promise.resolve({ error: 'locked' });
+    const senderUrl = credentialRequestUrl(sender);
+    if (!senderUrl) return Promise.resolve({ error: 'unauthorized_frame' });
     // Re-verify against the LIVE server state at the moment of the click --
     // the banner may have been sitting open for a while, and the session
     // could have expired or been revoked (from the popup, the web app,
@@ -2040,7 +2062,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
         return { error: 'This AI session is no longer active.' };
       }
       return (async () => {
-        const res = await browser.storage.session.get(['vaultItems']);
+        const res = await browser.storage.session.get(['unlocked', 'vaultItems', 'email', 'encKey']);
+        if (!vaultSession.isCurrent(generation) || !res.unlocked) return { error: 'locked' };
         const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
         const item = items?.find((i) => i.id === session.vault_entry_id);
         if (!item) return { error: 'Credential not found in this session -- try unlocking again.' };
@@ -2052,7 +2075,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         // approved for the real one. The AI context is what raises the
         // backend's scrutiny (AI_SESSION_ELEVATED_SCRUTINY, +35) and turns a
         // medium score into require_approval rather than a warning.
-        const aiHostname = extractHostname(sender.tab?.url || sender.url || '');
+        const aiHostname = extractHostname(senderUrl);
         if (!aiHostname) return { error: 'Could not determine this page -- try again.' };
 
         const allowlist = await getDomainAllowlist();
@@ -2063,7 +2086,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
         const risk = await evaluateDomainRisk({
           hostname: aiHostname,
-          currentUrl: sender.tab?.url || sender.url || `https://${aiHostname}`,
+          currentUrl: senderUrl,
           knownHosts,
           allowlist,
           savedDomain: item.url ? extractHostname(item.url) : '',
@@ -2083,6 +2106,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
           };
         }
 
+        const releaseError = await credentialReleaseError(generation, res, item, sender, senderUrl);
+        if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
+        if (releaseError) return { error: releaseError };
         return { username: item.username, value: item.value };
       })();
     });
@@ -2237,7 +2263,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'SHIELD_SIGN_OUT') {
-    return shieldSignOut().then(() => ({ success: true }));
+    // Stop vault access before device-token revocation can wait on the network.
+    return lockVaultNow().then(() => shieldSignOut()).then(() => ({ success: true }));
   }
 
   if (type === 'SHIELD_EMAIL_SCAN') {
@@ -2649,6 +2676,8 @@ async function applyBridgedSession(
   email: string,
   refreshToken?: string
 ): Promise<void> {
+  const generation = vaultSession.invalidate();
+  clearRiskApprovals();
   const res = await fetch(`${API_BASE_URL}/api/vault`, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -2696,7 +2725,8 @@ async function applyBridgedSession(
     offline: false,
   };
   if (refreshToken) sessionData.refreshToken = refreshToken;
-  await browser.storage.session.set(sessionData);
+  const applied = await vaultSession.commit(generation, () => browser.storage.session.set(sessionData), true);
+  if (!applied) throw new Error('Vault session changed during bridge login');
 
   void scheduleAutoLock();
   void scheduleAiHeartbeat();
