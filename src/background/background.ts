@@ -1,5 +1,6 @@
 import { readTabRiskContext, publishTabRisk, type TabRiskContext } from '../utils/tabRiskContext';
 import browser from 'webextension-polyfill';
+import { normalizeEmailScanResult } from '../utils/emailScanResult';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
 import { disabledDomainRiskAssessment, assessWithCatalog, type DomainRiskAssessment } from '../utils/domainRisk';
 import {
@@ -1221,8 +1222,8 @@ async function handleShieldEmailScan(
       body: JSON.stringify({ ...email, trigger: trigger === 'auto' ? 'auto' : 'button' }),
     });
     if (!res.ok) return none;
-    const data = await res.json();
-    if (data?.verdict && data.verdict !== 'unavailable') {
+    const data = normalizeEmailScanResult(await res.json());
+    if (data.verdict !== 'unavailable') {
       emailScanCache.set(key, { res: data, expires: Date.now() + 60 * 60 * 1000 });
       if (emailScanCache.size > 200) emailScanCache.delete(emailScanCache.keys().next().value as string);
     }
