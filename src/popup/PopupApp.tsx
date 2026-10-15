@@ -1,3 +1,4 @@
+import { TEXT_SCAN_CONSENT_KEY, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE } from '../utils/textScanPrivacy';
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
@@ -50,7 +51,7 @@ import {
   Flag,
 } from 'lucide-react';
 import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptSafety';
-import { auditInstalledExtensions, type ExtensionAuditSummary } from '../utils/extensionAudit';
+import { type ExtensionAuditSummary } from '../utils/extensionAudit';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
@@ -491,11 +492,13 @@ export const PopupApp: React.FC = () => {
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 
   // XoraPass Shield Settings
+  const [automaticTextScans, setAutomaticTextScans] = useState(false);
   const [checkoutGuardEnabled, setCheckoutGuardEnabled] = useState(true);
   const [webmailGuardEnabled, setWebmailGuardEnabled] = useState(true);
 
   useEffect(() => {
-    browser.storage.local.get(['themePreference', 'checkoutGuardEnabled', 'webmailGuardEnabled']).then((res: any) => {
+    browser.storage.local.get(['themePreference', 'checkoutGuardEnabled', 'webmailGuardEnabled', TEXT_SCAN_CONSENT_KEY]).then((res: any) => {
+      setAutomaticTextScans(res[TEXT_SCAN_CONSENT_KEY] === TEXT_SCAN_CONSENT_VERSION);
       if (res?.themePreference === 'dark' || res?.themePreference === 'light' || res?.themePreference === 'system') {
         setTheme(res.themePreference);
       }
@@ -822,20 +825,6 @@ export const PopupApp: React.FC = () => {
     setIsAuditingExtensions(true);
     setExtensionAuditDenied(false);
     try {
-      // 1. First try direct audit in popup window context (active DOM window)
-      const localApi = (globalThis as any).chrome?.management || (browser as any)?.management;
-      if (localApi && typeof localApi.getAll === 'function') {
-        try {
-          const directSummary = await auditInstalledExtensions(undefined, localApi);
-          if (directSummary && directSummary.totalExtensions > 0) {
-            setExtensionAudit(directSummary);
-            return;
-          }
-        } catch (e) {
-          console.warn('[XoraPass Popup] Direct audit in popup failed, attempting fallback:', e);
-        }
-      }
-
       // 2. Ensure permission if dynamically requested
       if (browser.permissions?.request) {
         await browser.permissions.request({ permissions: ['management'] }).catch(() => false);
@@ -845,7 +834,7 @@ export const PopupApp: React.FC = () => {
       const res = await browser.runtime.sendMessage({ type: 'AUDIT_EXTENSIONS' });
       if (res?.permissionDenied) {
         setExtensionAuditDenied(true);
-      } else if (res && typeof res.overallHealthScore === 'number') {
+      } else if (res && ['available', 'unavailable'].includes(res.inspection)) {
         setExtensionAudit(res);
       }
     } catch (err) {
@@ -3968,6 +3957,19 @@ export const PopupApp: React.FC = () => {
                   </div>
                 </div>
 
+                <div className="p-3.5 bg-white dark:bg-[#0c1615] border border-slate-900/10 dark:border-white/10 rounded-xl space-y-2">
+                  <label className="flex items-center justify-between gap-3 text-sm font-bold text-slate-900 dark:text-slate-100">
+                    Automatic AI text analysis
+                    <input type="checkbox" checked={automaticTextScans} onChange={async e => {
+                      const enabled = e.target.checked;
+                      if (enabled && !window.confirm(TEXT_SCAN_NOTICE)) return;
+                      await browser.storage.local.set({ [TEXT_SCAN_CONSENT_KEY]: enabled ? TEXT_SCAN_CONSENT_VERSION : null });
+                      setAutomaticTextScans(enabled);
+                    }} className="accent-teal-600 w-4 h-4" />
+                  </label>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Off by default. Sends redacted page and email excerpts to OpenAI when local checks find warning signs. Redaction cannot remove every secret. Local checks continue when off.</p>
+                </div>
+
                 {/* Privacy report, secure browsing, Is it Safe */}
                 <ShieldExtras />
 
@@ -3992,7 +3994,7 @@ export const PopupApp: React.FC = () => {
                   </div>
 
                   <p className="text-xs text-slate-500 dark:text-slate-400 leading-snug">
-                    Audits other installed browser extensions for broad or elevated permissions (e.g. reading all website traffic or clipboard access).
+                    Reviews installed extensions for broad permissions and known threats. Unknown reputation is not a safe verdict.
                   </p>
 
                   {extensionAudit ? (
@@ -4004,14 +4006,14 @@ export const PopupApp: React.FC = () => {
                             className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs ${
                               extensionAudit.highRiskCount > 0
                                 ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 dark:border dark:border-amber-700/50'
-                                : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border dark:border-emerald-700/50'
+                                : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
                             }`}
                           >
-                            {extensionAudit.overallHealthScore}%
+                            {extensionAudit.inspection === 'available' ? extensionAudit.totalExtensions : '—'}
                           </div>
                           <div>
                             <div className="text-xs font-bold text-slate-900 dark:text-white">
-                              {extensionAudit.highRiskCount > 0 ? 'Review Recommended' : 'Extension Health Good'}
+                              {extensionAudit.inspection === 'unavailable' ? 'Inspection unavailable' : extensionAudit.highRiskCount > 0 ? 'Review permissions' : 'Permission review complete'}
                             </div>
                             <div className="text-[11px] text-slate-500 dark:text-slate-400">
                               {extensionAudit.totalExtensions} scanned ({extensionAudit.enabledExtensions} active)
@@ -4025,16 +4027,17 @@ export const PopupApp: React.FC = () => {
                               {extensionAudit.highRiskCount} Elevated
                             </span>
                           )}
-                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border dark:border-emerald-700/50">
-                            {extensionAudit.safeCount} Low/Safe
+                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                            {extensionAudit.unknownCount} Unknown reputation
                           </span>
                         </div>
                       </div>
 
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">{extensionAudit.reputationSource === 'current' ? 'Known-threat list checked. Unlisted extensions remain unknown.' : extensionAudit.reputationSource === 'stale' ? 'Threat list is out of date. Cached warnings remain visible; other reputation is unknown.' : 'Threat list unavailable. Permission findings cannot establish safety.'}</p>
                       {/* Extensions List (Top 6) */}
                       <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar pr-0.5">
                         {extensionAudit.extensions.length === 0 ? (
-                          <p className="text-xs text-slate-400 dark:text-slate-500 text-center py-2">No other extensions installed.</p>
+                          <p className="text-xs text-slate-400 dark:text-slate-500 text-center py-2">{extensionAudit.inspection === 'unavailable' ? 'Could not inspect extensions. Check browser permission and retry.' : 'No other extensions were listed. This is not a safety certification.'}</p>
                         ) : (
                           extensionAudit.extensions.slice(0, 6).map((ext) => (
                             <div
@@ -4061,7 +4064,7 @@ export const PopupApp: React.FC = () => {
                                     {ext.threatReasons[0]}
                                   </p>
                                 ) : (
-                                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-0.5">Normal permissions</p>
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">No elevated permissions detected; reputation unknown</p>
                                 )}
                               </div>
 
@@ -4074,7 +4077,7 @@ export const PopupApp: React.FC = () => {
                                     : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:border dark:border-slate-700/60'
                                 }`}
                               >
-                                {ext.riskLevel === 'high' ? 'Elevated' : ext.riskLevel === 'low' ? 'Moderate' : 'Safe'}
+                                {ext.reputation === 'known_malicious' ? 'Known malicious' : ext.riskLevel === 'high' ? 'Elevated access' : ext.riskLevel === 'low' ? 'Some access' : 'Unknown'}
                               </span>
                             </div>
                           ))
@@ -4089,7 +4092,7 @@ export const PopupApp: React.FC = () => {
                       <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
                         {extensionAuditDenied
                           ? 'The checkup needs permission to list your installed extensions. Click "Audit Extensions" and allow it to continue.'
-                          : 'Click "Audit Extensions" to verify other installed addons.'}
+                          : 'Click "Audit Extensions" to review permissions and known threats. This cannot verify extension safety.'}
                       </p>
                     </div>
                   )}

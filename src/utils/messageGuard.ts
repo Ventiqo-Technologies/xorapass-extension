@@ -89,7 +89,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // The user's explicit "fill anyway" on a require_approval verdict. Same
   // trust tier as REPORT_PHISHING: raised by our own injected overlay, carries
   // no secret, and the background scopes the resulting approval to the sender
-  // tab's REAL hostname (never the payload's) with a short TTL.
+  // full document URL, document token and form destinations with a short TTL.
   'RISK_APPROVE_DOMAIN',
   // Web store update check and apply actions triggered by popup settings.
   'CHECK_UPDATE',

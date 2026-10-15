@@ -1,3 +1,5 @@
+import { showConfirmDialog } from './overlay';
+import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE } from '../utils/textScanPrivacy';
 // XoraPass email check — a small panel above the OPEN email in a supported
 // webmail: who really sent it, what the subject is, where every link really
 // goes, and the on-device findings. "Analyze with AI" (paid Shield, rolled
@@ -7,7 +9,7 @@
 // Sent for AI analysis (only then): sender name + address, Reply-To, subject,
 // link text + destination (no query strings), attachment names, and up to
 // 1,500 characters of body text with e-mail addresses, phone and long numbers
-// removed. Nothing else, and nothing is stored.
+// removed. Arbitrary confidential text may remain; consent is required.
 
 import browser from 'webextension-polyfill';
 import { normalizeEmailScanResult, emailInsightSummary, type EmailScanResult as AiResult } from '../utils/emailScanResult';
@@ -49,7 +51,7 @@ function textOf(el: Element | null | undefined): string {
 /** Text without XoraPass's own inline badges (they must not change the email's identity). */
 function cleanText(el: Element): string {
   const clone = el.cloneNode(true) as Element;
-  clone.querySelectorAll('[data-xorapass-badge], [data-xorapass-email-insight]').forEach((b) => b.remove());
+  clone.querySelectorAll('[data-xorapass-badge], [data-xorapass-email-insight], [contenteditable], input, textarea, select, [role="textbox"], [data-private], [hidden]').forEach((b) => b.remove());
   return (clone.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
@@ -264,10 +266,10 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   }
   if (ai && ai.verdict !== 'unavailable') {
     details.appendChild(
-      el('div', 'muted', 'AI analysis (OpenAI) checked the supplied sender, subject, links and redacted excerpt. Sender authentication was not verified. Nothing is stored.')
+      el('div', 'muted', 'AI analysis (OpenAI) checked the supplied sender, subject, links and redacted excerpt. Sender authentication was not verified. Redaction may leave confidential text; analyze only content you choose to share.')
     );
   } else if (aiAllowed) {
-    details.appendChild(el('div', 'muted', 'Checked on your device. "Analyze with AI" sends the sender, subject, link addresses and a redacted excerpt — nothing is stored.'));
+    details.appendChild(el('div', 'muted', 'Checked on your device. "Analyze with AI" sends the sender, subject, link addresses and a redacted excerpt. Redaction cannot remove every secret.'));
   }
   card.appendChild(details);
   root.appendChild(card);
@@ -287,9 +289,13 @@ const AI_LIMIT_TEXT: Record<string, string> = {
  *  'button' when the user asked (uses 1 AI check). */
 async function runAi(m: OpenEmail, local: EmailLocalSummary, trigger: 'auto' | 'button'): Promise<void> {
   if (!current || current.key !== m.key) return;
+  if (trigger === 'auto') {
+    if (!(await automaticTextScansAllowed(browser.storage.local))) return;
+  } else if (!(await showConfirmDialog({ title: 'Analyze this email with AI?', body: [TEXT_SCAN_NOTICE], confirmLabel: 'Send for analysis', cancelLabel: 'Cancel' }))) return;
+  if (!current || current.key !== m.key) return;
   render(m, local, null, true, true);
   const res = await browser.runtime
-    .sendMessage({ type: 'SHIELD_EMAIL_SCAN', payload: { email: payloadFor(m, local), trigger } })
+    .sendMessage({ type: 'SHIELD_EMAIL_SCAN', payload: { email: payloadFor(m, local), trigger, consent: TEXT_SCAN_CONSENT_VERSION } })
     .catch(() => null);
   if (!current || current.key !== m.key) return;
   render(m, local, normalizeEmailScanResult(res), false, true);

@@ -267,25 +267,26 @@ export function registerDownloadListener(): void {
 const MALICIOUS_EXT_KEY = 'shieldMaliciousExtensions';
 const MALICIOUS_EXT_TTL = 12 * 60 * 60 * 1000;
 
-export async function getMaliciousExtensionIds(): Promise<Set<string>> {
+export async function getMaliciousExtensionReputation(): Promise<{ ids: Set<string>; source: 'current' | 'stale' | 'unavailable' }> {
   const r = (await browser.storage.local.get(MALICIOUS_EXT_KEY)) as Record<string, { ids: string[]; at: number } | undefined>;
   const cached = r[MALICIOUS_EXT_KEY];
-  if (cached && Date.now() - cached.at < MALICIOUS_EXT_TTL) return new Set(cached.ids);
+  if (cached && Date.now() - cached.at < MALICIOUS_EXT_TTL) return { ids: new Set(cached.ids), source: 'current' };
   try {
     const res = await fetch(`${API_BASE_URL}/api/shield/malicious-extensions`);
     if (res.ok) {
       const data = (await res.json()) as { extensions?: { id?: string }[] };
-      const ids = (data.extensions || [])
+      if (!Array.isArray(data.extensions)) throw new Error('invalid reputation response');
+      const ids = data.extensions
         .map((e) => e.id)
         .filter((id): id is string => typeof id === 'string' && /^[a-z0-9@._{}-]{1,128}$/i.test(id))
         .slice(0, 20000);
       await browser.storage.local.set({ [MALICIOUS_EXT_KEY]: { ids, at: Date.now() } });
-      return new Set(ids);
+      return { ids: new Set(ids), source: 'current' };
     }
   } catch {
     /* offline: fall back to the stale copy */
   }
-  return new Set(cached?.ids || []);
+  return { ids: new Set(cached?.ids || []), source: cached ? 'stale' : 'unavailable' };
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────

@@ -36,5 +36,9 @@ export function credentialRequestUrl(sender: CredentialSender): string | null {
     return null;
   }
 
-  return frame.href;
+  // Chromium may retain the document's original sender URL after a same-
+  // document navigation (or omit its fragment). The browser's tab URL is
+  // current for frame zero. Use it only after validating the actual frame's
+  // origin above; child frames never inherit their parent's path authority.
+  return frameId === 0 ? top.href : frame.href;
 }

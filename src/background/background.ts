@@ -1,3 +1,5 @@
+import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION } from '../utils/textScanPrivacy';
+import { RiskApprovals, readApprovalContext, sameApprovalContext } from '../utils/riskApproval';
 import { readTabRiskContext, publishTabRisk, type TabRiskContext } from '../utils/tabRiskContext';
 import browser from 'webextension-polyfill';
 import { normalizeEmailScanResult } from '../utils/emailScanResult';
@@ -43,7 +45,7 @@ import {
   getTabBehavior,
   getPrivacySettings,
   setPrivacySettings,
-  getMaliciousExtensionIds,
+  getMaliciousExtensionReputation,
 } from './shieldPrivacy';
 import { decideNavigation, isTrustedHost, isAllowlistedHost, shouldEscalateRemote, threatReason } from '../utils/shieldEngine';
 import { sanitizeUrlForRiskCheck, authHeaderValue } from '../utils/domainRiskService';
@@ -1011,49 +1013,15 @@ async function getDomainAllowlist(): Promise<string[]> {
 // `warn` and throws away the whole distinction, so it is enforced here exactly
 // like `block` until the user has explicitly approved THIS host in THIS tab.
 //
-// Approvals are deliberately narrow: keyed by tab id + hostname, capped at
-// APPROVAL_TTL_MS, dropped when the vault locks, and never persisted beyond
-// the browser session.
-interface RiskApproval {
-  hostname: string;
-  expiresAt: number;
-}
-
+// Approval grants are ephemeral and bound to the full URL, isolated document
+// token, and current form identities/destinations. Every navigation revokes.
 const APPROVAL_TTL_MS = 5 * 60 * 1000;
-const riskApprovalsByTab = new Map<number, RiskApproval>();
-
-function grantRiskApproval(tabId: number, hostname: string): void {
-  if (tabId === undefined || !hostname) return;
-  riskApprovalsByTab.set(tabId, { hostname, expiresAt: Date.now() + APPROVAL_TTL_MS });
-}
-
-function hasRiskApproval(tabId: number | undefined, hostname: string): boolean {
-  if (tabId === undefined || !hostname) return false;
-  const entry = riskApprovalsByTab.get(tabId);
-  if (!entry) return false;
-  if (Date.now() > entry.expiresAt) {
-    riskApprovalsByTab.delete(tabId);
-    return false;
-  }
-  return entry.hostname === hostname;
-}
-
-function clearRiskApprovals(): void {
-  riskApprovalsByTab.clear();
-}
-
-// A tab that navigates away loses its approval: the approval was for one host,
-// and reusing it after a redirect is exactly the case it must not cover.
+const riskApprovals = new RiskApprovals(Date.now, APPROVAL_TTL_MS);
+function clearRiskApprovals(): void { riskApprovals.clear(); }
 browser.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
-  if (!changeInfo.url) return;
-  const entry = riskApprovalsByTab.get(tabId);
-  if (entry && entry.hostname !== extractHostname(changeInfo.url)) {
-    riskApprovalsByTab.delete(tabId);
-  }
+  if (changeInfo.url !== undefined || changeInfo.status === 'loading') riskApprovals.revoke(tabId);
 });
-browser.tabs?.onRemoved?.addListener((tabId) => {
-  riskApprovalsByTab.delete(tabId);
-});
+browser.tabs?.onRemoved?.addListener(tabId => riskApprovals.revoke(tabId));
 
 /**
  * Maps a vault category to the credential sensitivity the backend scores with.
@@ -1125,7 +1093,7 @@ interface AiScanResult {
  */
 async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload: any): Promise<AiScanResult> {
   const none: AiScanResult = { verdict: 'unavailable', risk_score: 0 };
-  if (sender.frameId !== 0) return none;
+  if (sender.frameId !== 0 || !(await automaticTextScansAllowed(browser.storage.local))) return none;
   const url = sender.url || sender.tab?.url || '';
   if (!/^https?:\/\//i.test(url) || isLocalOrPrivateHost(extractHostname(url))) return none;
   const cfg = await getShieldConfig();
@@ -1160,7 +1128,7 @@ async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload
     const res = await fetch(`${API_BASE_URL}/api/shield/ai-scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
-      body: JSON.stringify({ url: cleanUrl, page, page_signals: payload?.pageSignals }),
+      body: JSON.stringify({ url: cleanUrl, page, page_signals: payload?.pageSignals, consent: TEXT_SCAN_CONSENT_VERSION }),
     });
     if (!res.ok) return none;
     const data = (await res.json()) as Partial<AiScanResult>;
@@ -1194,7 +1162,8 @@ const emailScanCache = new Map<string, { res: unknown; expires: number }>();
 async function handleShieldEmailScan(
   sender: browser.Runtime.MessageSender,
   email: any,
-  trigger: 'auto' | 'button' = 'button'
+  trigger: 'auto' | 'button' = 'button',
+  consent?: string
 ): Promise<unknown> {
   const none = { verdict: 'unavailable' };
   const senderUrl = sender.url || sender.tab?.url || '';
@@ -1210,6 +1179,7 @@ async function handleShieldEmailScan(
   if (!cfg.shield_enabled || !cfg.email_scan.enabled || !(await shieldFeature('email_ai'))) {
     return { verdict: 'unavailable', reason: 'not_available' };
   }
+  if (trigger === 'auto' ? !(await automaticTextScansAllowed(browser.storage.local)) : consent !== TEXT_SCAN_CONSENT_VERSION) return none;
   const key = JSON.stringify(email);
   const hit = emailScanCache.get(key);
   if (hit && hit.expires > Date.now()) return hit.res;
@@ -1219,7 +1189,7 @@ async function handleShieldEmailScan(
     const res = await fetch(`${API_BASE_URL}/api/shield/email-scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
-      body: JSON.stringify({ ...email, trigger: trigger === 'auto' ? 'auto' : 'button' }),
+      body: JSON.stringify({ ...email, trigger: trigger === 'auto' ? 'auto' : 'button', consent: TEXT_SCAN_CONSENT_VERSION }),
     });
     if (!res.ok) return none;
     const data = normalizeEmailScanResult(await res.json());
@@ -1408,10 +1378,15 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
  * Whether this verdict withholds credentials. `block` always does;
  * `require_approval` does until the user approves this host in this tab.
  */
-function isFillWithheld(risk: DomainRiskAssessment, tabId: number | undefined, hostname: string): boolean {
+async function isFillWithheld(risk: DomainRiskAssessment, sender: browser.Runtime.MessageSender): Promise<boolean> {
   if (risk.decision === 'block') return true;
-  if (risk.decision === 'require_approval') return !hasRiskApproval(tabId, hostname);
-  return false;
+  if (risk.decision !== 'require_approval') return false;
+  // A child frame cannot inherit an approval granted to the top document.
+  const tabId = sender.tab?.id;
+  const url = credentialRequestUrl(sender);
+  if (sender.frameId !== 0 || tabId == null || !url) return true;
+  const context = await readApprovalContext(browser.tabs, tabId, url);
+  return !context || !riskApprovals.has(tabId, context);
 }
 
 async function setDomainAllowlist(hostname: string, allowlisted: boolean): Promise<string[]> {
@@ -1670,7 +1645,6 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const scamCues: string[] | undefined = Array.isArray(msg.payload.scamCues)
       ? msg.payload.scamCues.filter((c: unknown): c is string => typeof c === 'string')
       : undefined;
-    const senderTabId = sender.tab?.id;
     if (!hostname) {
       return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null });
     }
@@ -1761,7 +1735,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
       // Withhold credentials on `block`, and on `require_approval` until the
       // user has explicitly approved this host in this tab. See isFillWithheld.
-      const withheld = isFillWithheld(risk, senderTabId, hostname);
+      const withheld = await isFillWithheld(risk, sender);
       const credentialsToOffer = withheld ? [] : matching;
 
       return {
@@ -1855,7 +1829,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
       if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
 
-      if (isFillWithheld(risk, sender.tab?.id, hostname)) {
+      if (await isFillWithheld(risk, sender)) {
         console.warn('[XoraPass] Refused secret for risk domain:', hostname, risk.decision, risk.reasons);
         return { error: risk.decision === 'block' ? 'risk_blocked' : 'risk_approval_required', risk };
       }
@@ -1879,6 +1853,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const releaseError = await credentialReleaseError(generation, res, item, sender, senderUrl);
       if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
       if (releaseError) return { error: releaseError };
+      if (await isFillWithheld(risk, sender)) return { error: 'risk_approval_required', risk };
+      if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
 
       void scheduleAutoLock(); // Only a successful, still-authorized fill is activity.
       return {
@@ -2011,7 +1987,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (type === 'AI_CHECK_TAB') {
     const hostname: string = msg.payload.hostname;
     const tabId = sender.tab?.id;
-    if (tabId === undefined) return Promise.resolve({ offer: null });
+    if (tabId == null) return Promise.resolve({ offer: null });
     return getAiFillForHostname(hostname, tabId).then((offer) => ({ offer }));
   }
 
@@ -2207,7 +2183,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // whether the merchant page is suspicious. Ignore top-frame senders — the
     // main content script already scans its own document.
     const tabId = sender.tab?.id;
-    if (tabId === undefined || !sender.frameId) return Promise.resolve({ success: false });
+    if (tabId == null || !sender.frameId) return Promise.resolve({ success: false });
     return browser.tabs
       .sendMessage(tabId, { type: 'CARD_FIELDS_IN_FRAME' }, { frameId: 0 })
       .then(() => ({ success: true }))
@@ -2243,7 +2219,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'SHIELD_EMAIL_SCAN') {
-    return handleShieldEmailScan(sender, msg.payload?.email, msg.payload?.trigger);
+    return handleShieldEmailScan(sender, msg.payload?.email, msg.payload?.trigger, msg.payload?.consent);
   }
 
   if (type === 'SHIELD_BEHAVIOR') {
@@ -2402,18 +2378,20 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'RISK_APPROVE_DOMAIN') {
-    // The hostname is taken from the sender tab, never the payload — the same
-    // discipline GET_CREDENTIAL_SECRET uses. A caller naming some other host
-    // must not be able to pre-approve it. The payload host is only used to
-    // confirm the overlay and the tab still agree on where they are.
-    const tabId = sender.tab?.id;
-    const realHost = extractHostname(sender.tab?.url || sender.url || '');
-    const claimedHost = extractHostname(msg.payload?.hostname || '');
-    if (tabId === undefined || !realHost || realHost !== claimedHost) {
-      return Promise.resolve({ success: false, error: 'unknown_origin' });
-    }
-    grantRiskApproval(tabId, realHost);
-    return Promise.resolve({ success: true, expiresInSeconds: APPROVAL_TTL_MS / 1000 });
+    return (async () => {
+      const tabId = sender.tab?.id;
+      const url = credentialRequestUrl(sender);
+      const claimedHost = extractHostname(msg.payload?.hostname || '');
+      if (sender.frameId !== 0 || tabId == null || !url || extractHostname(url) !== claimedHost) {
+        return { success: false, error: 'unknown_origin' };
+      }
+      const generation = vaultSession.capture();
+      if (generation === null) return { success: false, error: 'locked' };
+      const context = await readApprovalContext(browser.tabs, tabId, url);
+      if (!context || !sameApprovalContext(context, msg.payload?.approvalContext) || !vaultSession.isCurrent(generation)) return { success: false, error: 'page_changed' };
+      riskApprovals.grant(tabId, context);
+      return { success: true, expiresInSeconds: APPROVAL_TTL_MS / 1000 };
+    })();
   }
 
   if (type === 'REPORT_PHISHING') {
@@ -2496,9 +2474,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'AUDIT_EXTENSIONS') {
     return (async () => {
-      const malicious = await getMaliciousExtensionIds().catch(() => new Set<string>());
+      const reputation = await getMaliciousExtensionReputation().catch(() => ({ ids: new Set<string>(), source: 'unavailable' as const }));
       const api = (globalThis as any).chrome?.management || (browser as any)?.management;
-      return auditInstalledExtensions(malicious, api);
+      return auditInstalledExtensions(reputation.source === 'unavailable' ? undefined : reputation.ids, api, reputation.source);
     })();
   }
 

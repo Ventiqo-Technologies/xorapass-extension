@@ -11,7 +11,8 @@ export interface ExtensionPermissionRisk {
   icons?: { size: number; url: string }[];
   permissions: string[];
   hostPermissions: string[];
-  riskLevel: 'safe' | 'low' | 'high';
+  riskLevel: 'unknown' | 'low' | 'high';
+  reputation: 'known_malicious' | 'unknown';
   riskScore: number;
   threatReasons: string[];
 }
@@ -21,8 +22,10 @@ export interface ExtensionAuditSummary {
   enabledExtensions: number;
   highRiskCount: number;
   lowRiskCount: number;
-  safeCount: number;
-  overallHealthScore: number; // 0-100 (100 is best)
+  unknownCount: number;
+  inspection: 'available' | 'unavailable';
+  reputationChecked: boolean;
+  reputationSource: 'current' | 'stale' | 'unavailable';
   extensions: ExtensionPermissionRisk[];
 }
 
@@ -87,73 +90,50 @@ export function installOriginFindings(ext: { installType?: string; updateUrl?: s
   return out;
 }
 
-async function getAllInstalledItems(customApi?: any): Promise<any[]> {
-  const candidates = [
-    customApi,
-    (globalThis as any).chrome?.management,
-    (globalThis as any).browser?.management,
-  ].filter(Boolean);
-
+async function getAllInstalledItems(customApi?: any): Promise<any[] | null> {
+  const candidates = customApi ? [customApi] : [(globalThis as any).chrome?.management, (globalThis as any).browser?.management].filter(Boolean);
   for (const api of candidates) {
+    if (typeof api?.getAll !== 'function') continue;
     try {
-      if (typeof api.getAll === 'function') {
-        // 1. Try promise-based getAll() (standard MV3 / webextension-polyfill)
-        try {
-          const res = api.getAll();
-          if (res && typeof res.then === 'function') {
-            const items = await res;
-            if (Array.isArray(items) && items.length > 0) return items;
-          }
-        } catch (promiseErr) {
-          console.warn('[XoraPass] getAll promise-style call failed on candidate:', promiseErr);
-        }
-
-        // 2. Try callback-based getAll() (standard Chromium callback signature)
-        const cbItems: any[] = await new Promise((resolve) => {
-          try {
-            const maybePromise = api.getAll((items: any[]) => {
-              const lastErr = (globalThis as any).chrome?.runtime?.lastError;
-              if (lastErr) {
-                console.warn('[XoraPass] getAll callback reported runtime.lastError:', lastErr);
-                resolve([]);
-              } else {
-                resolve(Array.isArray(items) ? items : []);
-              }
-            });
-            // If the method returned a promise instead of using the callback
-            if (maybePromise && typeof maybePromise.then === 'function') {
-              maybePromise
-                .then((items: any[]) => resolve(Array.isArray(items) ? items : []))
-                .catch(() => resolve([]));
-            }
-          } catch {
-            resolve([]);
-          }
-        });
-        if (Array.isArray(cbItems) && cbItems.length > 0) return cbItems;
+      const result = api.getAll();
+      if (result && typeof result.then === 'function') {
+        const items = await result;
+        if (Array.isArray(items)) return items;
+        continue;
       }
-    } catch (err) {
-      console.warn('[XoraPass] getAll installed items failed on candidate:', err);
-    }
+    } catch { /* callback API or rejected inspection */ }
+    const items = await new Promise<any[] | null>(resolve => {
+      const timer = setTimeout(() => resolve(null), 2000);
+      const finish = (value: unknown) => { clearTimeout(timer); resolve(Array.isArray(value) ? value : null); };
+      try {
+        const pending = api.getAll((value: unknown) => {
+          if ((globalThis as any).chrome?.runtime?.lastError) finish(null); else finish(value);
+        });
+        if (pending?.then) pending.then(finish).catch(() => finish(null));
+      } catch { finish(null); }
+    });
+    if (items) return items;
   }
-
-  return [];
+  return null;
 }
 
 export async function auditInstalledExtensions(
   maliciousIds?: ReadonlySet<string>,
-  managementApi?: any
+  managementApi?: any, reputationSource: 'current' | 'stale' | 'unavailable' = maliciousIds ? 'current' : 'unavailable'
 ): Promise<ExtensionAuditSummary> {
   const allItems = await getAllInstalledItems(managementApi);
 
-  if (!allItems || allItems.length === 0) {
+  if (!allItems || !allItems.every(item => item && typeof item.id === 'string' &&
+      [item.permissions, item.hostPermissions].every(list => list === undefined || (Array.isArray(list) && list.every(p => typeof p === 'string'))))) {
     return {
       totalExtensions: 0,
       enabledExtensions: 0,
       highRiskCount: 0,
       lowRiskCount: 0,
-      safeCount: 0,
-      overallHealthScore: 100,
+      unknownCount: 0,
+      inspection: 'unavailable',
+      reputationChecked: reputationSource === 'current',
+    reputationSource,
       extensions: [],
     };
   }
@@ -224,7 +204,7 @@ export async function auditInstalledExtensions(
     }
 
     // Classify Level
-    let riskLevel: 'safe' | 'low' | 'high' = 'safe';
+    let riskLevel: 'unknown' | 'low' | 'high' = 'unknown';
     if (riskScore >= 40) riskLevel = 'high';
     else if (riskScore > 0) riskLevel = 'low';
 
@@ -238,6 +218,7 @@ export async function auditInstalledExtensions(
       permissions,
       hostPermissions,
       riskLevel,
+      reputation: maliciousIds?.has(ext.id) ? 'known_malicious' as const : 'unknown' as const,
       riskScore,
       threatReasons,
     };
@@ -249,19 +230,17 @@ export async function auditInstalledExtensions(
   const enabledCount = audited.filter((e) => e.enabled).length;
   const highRiskCount = audited.filter((e) => e.enabled && e.riskLevel === 'high').length;
   const lowRiskCount = audited.filter((e) => e.enabled && e.riskLevel === 'low').length;
-  const safeCount = audited.filter((e) => e.enabled && e.riskLevel === 'safe').length;
-
-  // Compute Overall Health (100 minus penalties for active high risks)
-  const penalty = highRiskCount * 25 + lowRiskCount * 8;
-  const overallHealthScore = Math.max(0, 100 - penalty);
+  const unknownCount = audited.filter(e => e.enabled && e.reputation === 'unknown').length;
 
   return {
     totalExtensions: audited.length,
     enabledExtensions: enabledCount,
     highRiskCount,
     lowRiskCount,
-    safeCount,
-    overallHealthScore,
+    unknownCount,
+    inspection: 'available',
+    reputationChecked: reputationSource === 'current',
+    reputationSource,
     extensions: audited,
   };
 }

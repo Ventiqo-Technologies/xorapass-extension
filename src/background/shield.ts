@@ -1,3 +1,4 @@
+import { TokenRevocations } from '../utils/tokenRevocations';
 // XoraPass Shield runtime (background service worker).
 //
 // Owns everything that makes Shield ALWAYS-ON rather than "on while the vault
@@ -282,22 +283,24 @@ export async function ensureShieldDeviceToken(jwt: string, email: string): Promi
   }
 }
 
+const tokenRevocations = new TokenRevocations(browser.storage.local, async token => {
+  const res = await fetch(`${API_BASE_URL}/api/shield/device-token`, {
+    method: 'DELETE', headers: { Authorization: `Shield ${token}` }, signal: AbortSignal.timeout(8000),
+  });
+  return res.status === 204;
+});
 async function revokeStoredToken(t: StoredToken | null): Promise<void> {
-  if (!t) return;
-  try {
-    await fetch(`${API_BASE_URL}/api/shield/device-token`, {
-      method: 'DELETE',
-      headers: { Authorization: `Shield ${t.token}` },
-    });
-  } catch {
-    /* best effort; token also expires on its own */
-  }
-  await browser.storage.local.remove(TOKEN_KEY).catch(() => undefined);
+  // Queue before removing the active token. A network/server failure is
+  // retried after logout and worker restart; expiry remains the offline bound.
+  try { await tokenRevocations.retry(t || undefined); }
+  finally { await browser.storage.local.remove(TOKEN_KEY); }
 }
 
 /** Sign-out: revoke the device token and forget everything account-bound. */
 export async function shieldSignOut(): Promise<void> {
-  await revokeStoredToken(await getStoredToken());
+  try { await revokeStoredToken(await getStoredToken()); }
+  catch { console.warn('[XoraPass] remote revocation retry could not be persisted'); }
+  await browser.storage.local.remove('shieldTextScanConsent');
   await setEntitlement(INACTIVE());
   prefixSet = null;
   blocklistVersion = '';
@@ -498,6 +501,11 @@ export function handleShieldAlarm(name: string): boolean {
 
 export function initShield(deps: { getJwt: () => Promise<string> }): void {
   getSessionJwt = deps.getJwt;
+  browser.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === 'shield-token-revocation') void tokenRevocations.retry().catch(() => undefined);
+  });
+  void browser.alarms.create('shield-token-revocation', { delayInMinutes: 1, periodInMinutes: 5 });
+  void tokenRevocations.retry().catch(() => undefined);
   void (async () => {
     const cfg = await getShieldConfig();
     const existing = await browser.alarms.get(SHIELD_CONFIG_ALARM).catch(() => undefined);

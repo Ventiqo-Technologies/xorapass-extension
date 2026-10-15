@@ -4,11 +4,14 @@
 // whether a page is worth an AI look at all. Only when it is (or the page's
 // risk is already elevated) does a SMALL, REDACTED extract leave the device:
 // title, a few headings / button / form-label texts and ~2k chars of visible
-// text. Never form values, never anything the user typed, and emails, phone
-// numbers, long digit runs and URL query strings are stripped first (the
-// server re-applies the same redaction).
+// text. Editable and sensitive regions are excluded. Known secret patterns,
+// emails, phone numbers, long digits and URL queries are redacted again on
+// the server. Arbitrary confidential text may remain: explicit consent is
+// required before transmission. This is not universal secret detection.
 //
 // Everything except collectPageText() is pure and unit-tested.
+
+import { scanForSecrets, redact } from './secretScan';
 
 export interface ScanPageText {
   title: string;
@@ -22,7 +25,10 @@ export interface ScanPageText {
 const LIMITS = { title: 200, item: 120, items: 15, text: 2000 };
 
 export function redactText(input: string, max: number): string {
-  let s = (input || '').replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '');
+  let s = redact(input || '', scanForSecrets(input || '').matches).replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '');
+  s = s.replace(/\b(?:password|passwd|secret|api[_ -]?key|access[_ -]?token|authorization)\s*[:=]\s*["']?[^\s"'<>]+/gi, '[secret]');
+  s = s.replace(/\bbearer\s+[A-Za-z0-9._~+/-]+=*/gi, '[secret]');
+  s = s.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[secret]@');
   s = s.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[email]');
   s = s.replace(/(https?:\/\/[^\s?#]+)[?#]\S*/g, '$1');
   s = s.replace(/\+?\d[\d\s().-]{7,}\d/g, '[phone]');
@@ -91,14 +97,23 @@ function texts(root: ParentNode, selector: string, attr?: string): string[] {
 
 /** DOM adapter: builds the redacted extract for the current document. */
 export function collectPageText(doc: Document = document): ScanPageText {
-  const body = doc.body;
-  const visible = body ? (body.innerText || body.textContent || '').slice(0, 8000) : '';
-  const headings = texts(doc, 'h1, h2, h3');
+  // Read a detached, pruned copy so editable values, messages and hidden
+  // regions cannot enter any field (including nested heading/button text).
+  const body = doc.body?.cloneNode(true) as HTMLElement | undefined;
+  body?.querySelectorAll('script, style, template, noscript, input, textarea, select, [contenteditable], [role="textbox"], [role="log"], [role="feed"], [aria-hidden="true"], [hidden], [data-private], [data-sensitive], [data-xorapass-email-insight], [data-xorapass-badge]').forEach(el => el.remove());
+  body?.querySelectorAll('[style]').forEach(el => {
+    const style = (el as HTMLElement).style;
+    if (style.display === 'none' || style.visibility === 'hidden') el.remove();
+  });
+  const root: ParentNode = body || doc.createElement('div');
+  body?.querySelectorAll('p,div,section,article,li,h1,h2,h3,button,label,br').forEach(el => { el.append(doc.createTextNode(' ')); });
+  const visible = (body?.textContent || '').slice(0, 8000);
+  const headings = texts(root, 'h1, h2, h3');
   const buttons = [
-    ...texts(doc, 'button, [role="button"], a.button, a.btn'),
-    ...texts(doc, 'input[type="submit"], input[type="button"]', 'value'),
+    ...texts(root, 'button, [role="button"], a.button, a.btn'),
+
   ];
-  const labels = [...texts(doc, 'label'), ...texts(doc, 'input[placeholder], textarea[placeholder]', 'placeholder')];
+  const labels = texts(root, 'label');
   const title = doc.title || '';
 
   const cues = detectScamCues([title, ...headings, ...buttons, visible].join('\n'));

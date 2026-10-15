@@ -1,3 +1,4 @@
+import { automaticTextScansAllowed } from '../utils/textScanPrivacy';
 // XoraPass Content Script (Manifest V3)
 //
 // Responsibilities are deliberately narrow: detect login fields, ask the
@@ -20,6 +21,30 @@ import { acceptsTabRiskUpdate, createRiskDocumentToken, sameRiskDocument, type P
 const riskDocumentToken = createRiskDocumentToken();
 const pageRiskContext = (): PageRiskContext => ({url:window.location.href,documentToken:riskDocumentToken});
 let warningRiskContext: PageRiskContext | null = null;
+
+// Node identities prevent a replacement form with the same URL from inheriting
+// a grant. No field values are read or transmitted by this scope.
+const approvalNodes = new WeakMap<Element, string>();
+function credentialApprovalContext() {
+  const formScope = querySelectorAllDeep<HTMLElement>(document, 'form, button[formaction], input[formaction]').map(node => {
+    let id = approvalNodes.get(node);
+    if (!id) { id = createRiskDocumentToken(); approvalNodes.set(node, id); }
+    const raw = node.getAttribute(node.tagName === 'FORM' ? 'action' : 'formaction') || window.location.href;
+    let action = raw;
+    try { action = new URL(raw, document.baseURI).href; } catch { /* retain invalid action identity */ }
+    return [id, action, node.getAttribute('method') || node.getAttribute('formmethod') || 'get'];
+  });
+  return { ...pageRiskContext(), formScope: JSON.stringify(formScope) };
+}
+async function requestCredentialSecret(id: string): Promise<any> {
+  const before = credentialApprovalContext();
+  const result = await browser.runtime.sendMessage({ type: 'GET_CREDENTIAL_SECRET',
+    payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() } });
+  const after = credentialApprovalContext();
+  if (!sameRiskDocument(before, after) || before.formScope !== after.formScope) return { error: 'page_changed' };
+  return result;
+}
+
 const notifyTabRiskChanged = () => {
   if (window === window.top) void browser.runtime.sendMessage({type:'TAB_RISK_CHANGED'}).catch(() => {});
 };
@@ -468,6 +493,7 @@ function scheduleAiScan(): void {
 }
 
 async function maybeRunAiScan(href: string): Promise<void> {
+  if (!(await automaticTextScansAllowed(browser.storage.local))) return;
   if (aiScannedHref === href || window.location.href.split('#')[0] !== href) return;
   aiScannedHref = href;
   const nav = (window as unknown as { __xoraShieldNav?: { shown: boolean } }).__xoraShieldNav;
@@ -562,6 +588,7 @@ function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): 
     'XoraPass Shield blocked this site: Confirmed phishing or malware domain.';
   const reasons = opts?.reasons || domainRisk?.reasons || ['Domain confirmed blocked by security policy.'];
 
+  const approvalContext = credentialApprovalContext();
   showPhishingInterstitial({
     advisory: webRiskAdvisoryFromSignals(domainRisk?.threatIntelSignals),
     currentDomain: currentHostname,
@@ -596,7 +623,7 @@ function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): 
         .catch(() => ({ success: false, reason: 'network' })),
     onProceedAnyway: () =>
       browser.runtime
-        .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname } })
+        .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname, approvalContext } })
         .then((res: any) => ({ success: !!res?.success }))
         .catch(() => ({ success: false })),
   });
@@ -679,6 +706,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   const blockTitle = isMalware ? 'Dangerous Malware Site Blocked' : 'Likely Phishing Site Blocked';
 
   warningRiskContext = warningContext;
+  const approvalContext = credentialApprovalContext();
   showRiskWarning({
     severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
     title: decision === 'block' ? blockTitle : 'Suspicious Site Detected',
@@ -748,7 +776,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
       decision === 'require_approval'
         ? () =>
             browser.runtime
-              .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname } })
+              .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname, approvalContext } })
               .then((res: any) => {
                 if (res?.success) {
                   // Re-request the credential list: the background withheld it
@@ -805,6 +833,8 @@ browser.runtime.onMessage.addListener((message: any) => {
     renderAiBanner(message.payload as AiFillOffer);
   } else if (message.type === 'SHORTCUT_AUTOFILL') {
     void handleShortcutAutofill();
+  } else if (message.type === 'GET_CREDENTIAL_APPROVAL_CONTEXT') {
+    return window === window.top ? Promise.resolve(credentialApprovalContext()) : undefined;
   } else if (message.type === 'GET_TAB_RISK_CONTEXT') {
     return window === window.top ? Promise.resolve(pageRiskContext()) : undefined;
   } else if (message.type === 'TAB_RISK_UPDATE') {
@@ -1098,11 +1128,7 @@ function scanForLoginFields(): void {
             const confirmed = await confirmFillIfNeeded(cred);
             if (!confirmed) return;
 
-            const res = (await browser.runtime
-              .sendMessage({
-                type: 'GET_CREDENTIAL_SECRET',
-                payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
-              })
+            const res = (await requestCredentialSecret(id)
               .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
 
             if (!res || res.error) {
@@ -1144,11 +1170,7 @@ function scanForLoginFields(): void {
             if (!confirmed) return;
 
             // Fetch the secret which includes the account ID / alias (stored in accountId)
-            const res = (await browser.runtime
-              .sendMessage({
-    type: 'GET_CREDENTIAL_SECRET',
-    payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
-  })
+            const res = (await requestCredentialSecret(id)
               .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
 
             if (!res || res.error) {
@@ -1605,11 +1627,7 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
   if (!confirmed) return;
 
   // Fetch the secret only now, for this one entry.
-  const res = (await browser.runtime
-    .sendMessage({
-    type: 'GET_CREDENTIAL_SECRET',
-    payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
-  })
+  const res = (await requestCredentialSecret(id)
     .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
 
   if (!res || res.error || typeof res.value !== 'string') {

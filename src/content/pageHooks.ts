@@ -7,8 +7,8 @@
 //     written to the clipboard is BLOCKED here, synchronously, before it
 //     reaches the clipboard.
 //   • Crypto wallet drainers — dangerous wallet requests (blind eth_sign,
-//     token permits, unlimited approvals, setApprovalForAll) are held until
-//     the user answers XoraPass's warning (fails open after 60 s).
+//     token permits, unlimited approvals, setApprovalForAll) are observed for
+//     advisory warnings. Only the wallet can approve or reject its requests.
 //   • Fake tech-support lock-in — full screen, keyboard/pointer lock,
 //     beforeunload traps, back-button flooding, autoplaying audio.
 //   • Notification-permission requests and browser fingerprinting.
@@ -16,9 +16,8 @@
 // It has no extension APIs; it reports to the isolated-world Shield script
 // (shieldNav.ts) with window.postMessage. LIMITATION: messages on `window`
 // are visible to the page, so a page written specifically to evade XoraPass
-// can observe them (e.g. forge a wallet "allow"). The warnings themselves are
-// raised by the isolated world and can't be suppressed that way, and the
-// wallet's own confirmation remains.
+// can observe, forge or evade them. No page message grants wallet authority.
+// Native wallet confirmation is required; this is not guaranteed blocking.
 //
 // Built as its own self-contained IIFE (vite --mode pagehooks); NO imports
 // other than pure utilities.
@@ -127,42 +126,19 @@ import { shouldBlockClipboardWrite, classifyWalletRequest } from '../utils/scamB
     /* ignore */
   }
 
-  // ── Wallet requests ─────────────────────────────────────────────────────
-  const pending = new Map<string, (allow: boolean) => void>();
-  window.addEventListener('message', (ev) => {
-    const d = ev.data;
-    if (ev.source !== window || !d || d.__xoraShieldReply !== 'v1' || typeof d.id !== 'string') return;
-    const resolve = pending.get(d.id);
-    if (resolve) {
-      pending.delete(d.id);
-      resolve(d.allow !== false);
-    }
-  });
-
-  const askUser = (method: string, summary: string, level: string): Promise<boolean> =>
-    new Promise((resolve) => {
-      const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
-      pending.set(id, resolve);
-      post('wallet_check', { id, method, summary, level });
-      setTimeout(() => {
-        if (pending.delete(id)) resolve(true); // fail open: the wallet still asks
-      }, 60_000);
-    });
-
+  // ── Wallet observations (advisory only) ──────────────────────────────
+  // MAIN-world messages cannot authorize or block a hostile page's wallet.
+  // Observe requests without introducing a forgeable approval channel or hold.
   const wrapped = new WeakSet<object>();
   const wrapProvider = (p: any) => {
     if (!p || typeof p !== 'object' || wrapped.has(p) || typeof p.request !== 'function') return;
     wrapped.add(p);
     const origRequest = p.request.bind(p);
-    const guarded = async (args: any) => {
+    const guarded = (args: any) => {
       const risk = classifyWalletRequest(args?.method, args?.params);
       if (risk.level) {
-        const allow = await askUser(String(args?.method), risk.summary, risk.level);
-        if (!allow) {
-          const err: any = new Error('User rejected the request (blocked by XoraPass Shield).');
-          err.code = 4001;
-          throw err;
-        }
+        try { post('wallet_check', { method: String(args?.method), summary: risk.summary, level: risk.level }); }
+        catch { /* advisory reporting cannot replace wallet-native confirmation */ }
       }
       return origRequest(args);
     };

@@ -16,7 +16,7 @@
 // Built as its own self-contained IIFE (vite --mode shieldnav).
 
 import browser from 'webextension-polyfill';
-import { showPhishingInterstitial, closePhishingInterstitial, showRiskWarning, showConfirmDialog } from './overlay';
+import { showPhishingInterstitial, closePhishingInterstitial, showRiskWarning } from './overlay';
 import { detectScamCues } from '../utils/pageContent';
 import { webRiskAdvisoryFromThreatType } from '../utils/webRiskAttribution';
 import { techSupportScamScore, TECH_SUPPORT_WARN, isNotificationBait, type BehaviorKind } from '../utils/scamBehavior';
@@ -155,24 +155,16 @@ const MAX_GUARD_MS = 1500;
     browser.runtime.sendMessage({ type: 'SHIELD_BEHAVIOR', payload: { kind, ...detail } }).catch(() => undefined);
   };
 
-  const reply = (id: string, allow: boolean) => {
-    window.postMessage({ __xoraShieldReply: 'v1', id, allow }, '*');
-  };
-
   const handle = (d: any) => {
     const kind = String(d.kind || '');
     if (kind === 'wallet_check') {
-      if (!shieldActive || state.shown) return reply(String(d.id), true);
+      if (!shieldActive || state.shown) return;
       tellBackground('wallet_check', { level: d.level });
-      void showConfirmDialog({
-        title: d.level === 'danger' ? 'XoraPass blocked a risky wallet request' : 'Check this wallet request',
-        body: [
-          String(d.summary || 'This site is asking your crypto wallet for a risky permission.'),
-          'Wallet-draining scams work exactly like this. Only continue if you fully trust this site and understand the request.',
-        ],
-        confirmLabel: 'Block request',
-        cancelLabel: 'Continue anyway',
-      }).then((block) => reply(String(d.id), !block));
+      showRiskWarning({
+        severity: 'warn', title: 'Risky wallet request detected',
+        message: `${String(d.summary || 'This page requested a risky wallet permission.').slice(0, 300)} XoraPass provides an advisory warning only. Review and reject unwanted requests in your wallet; page-level detection can be bypassed.`,
+        currentDomain: location.hostname, riskLevel: 'high',
+      });
       return;
     }
     if (!shieldActive) return;

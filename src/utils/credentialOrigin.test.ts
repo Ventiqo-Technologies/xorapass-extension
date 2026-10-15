@@ -4,7 +4,7 @@ import { credentialRequestUrl } from './credentialOrigin';
 
 const sender = (overrides: Partial<Runtime.MessageSender & { origin?: string }> = {}) => ({
   id: 'own-extension',
-  tab: { id: 1, url: 'https://victim.example.com/home' } as Runtime.MessageSender['tab'],
+  tab: { id: 1, url: 'https://victim.example.com/login' } as Runtime.MessageSender['tab'],
   frameId: 0,
   url: 'https://victim.example.com/login',
   origin: 'https://victim.example.com',
@@ -18,6 +18,11 @@ describe('SHIELD-004 credential request origin authorization', () => {
 
   it('allows a positively identified same-origin child frame', () => {
     expect(credentialRequestUrl(sender({ frameId: 3 }))).toBe('https://victim.example.com/login');
+  });
+  it('uses the current top-frame URL after same-document navigation while preserving child frame scope', () => {
+    const tab = { id: 1, url: 'https://victim.example.com/other#route' } as Runtime.MessageSender['tab'];
+    expect(credentialRequestUrl(sender({ tab }))).toBe('https://victim.example.com/other#route');
+    expect(credentialRequestUrl(sender({ tab, frameId: 3 }))).toBe('https://victim.example.com/login');
   });
 
   it.each([
@@ -70,7 +75,7 @@ describe('SHIELD-004 credential request origin authorization', () => {
     expect(credentialRequestUrl(sender({ url: 'https://victim.example.com:443/login' })))
       .toBe('https://victim.example.com/login');
     expect(credentialRequestUrl(sender({
-      tab: { id: 1, url: 'http://localhost:8080/' } as Runtime.MessageSender['tab'],
+      tab: { id: 1, url: 'http://localhost:8080/login' } as Runtime.MessageSender['tab'],
       url: 'http://localhost:8080/login', origin: 'http://localhost:8080',
     }))).toBe('http://localhost:8080/login');
   });
