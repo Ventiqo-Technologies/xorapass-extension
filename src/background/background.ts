@@ -1,3 +1,4 @@
+import { readTabRiskContext, publishTabRisk, type TabRiskContext } from '../utils/tabRiskContext';
 import browser from 'webextension-polyfill';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
 import { disabledDomainRiskAssessment, assessWithCatalog, type DomainRiskAssessment } from '../utils/domainRisk';
@@ -1375,6 +1376,7 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
 
     // Query page signals from the content script so brand impersonation,
     // suspicious forms, and phishing cues are evaluated proactively on navigation.
+    const pageContext = await readTabRiskContext(browser.tabs, tabId, url);
     let pageSignals: PageSignals | undefined;
     try {
       const r: any = await browser.tabs.sendMessage(tabId, { type: 'GET_PAGE_SIGNALS' }, { frameId: 0 });
@@ -1394,15 +1396,8 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
       remoteGate: listingRemoteGate(hostname, knownHosts, undefined, pageSignals),
     });
 
-    if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
-      browser.tabs
-        .sendMessage(tabId, {
-          type: 'TAB_RISK_UPDATE',
-          payload: { risk },
-          risk,
-        })
-        .catch(() => {});
-    }
+    await publishTabRisk(browser.tabs, pageContext, risk);
+
   } catch (err) {
     console.debug('[XoraPass] checkAndPushTabRisk error:', err);
   }
@@ -2341,6 +2336,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // Page shape, straight from the tab's own content script. The popup
       // can't collect it, and without it the backend's page classifier (and
       // the report's script/form indicators) have nothing to work with.
+      const [scanTab] = await browser.tabs.query({active:true,currentWindow:true});
+      const pageContext: TabRiskContext | null = scanTab?.id !== undefined && scanTab.url === targetUrl
+        ? await readTabRiskContext(browser.tabs, scanTab.id, targetUrl) : null;
       let pageSignals: PageSignals | undefined = msg.payload?.pageSignals;
       if (!pageSignals) {
         try {
@@ -2396,18 +2394,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         extraBrands: brands,
       });
 
-      // If the scan produced a risk assessment that warrants warning/blocking,
-      // notify the tab directly so its proactive risk alert triggers immediately.
-      if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
-        browser.tabs.query({ active: true, currentWindow: true }).then(([activeTab]) => {
-          if (activeTab?.id && activeTab.url === targetUrl) {
-            browser.tabs.sendMessage(activeTab.id, {
-              type: 'TAB_RISK_UPDATE',
-              payload: { risk },
-            }).catch(() => {});
-          }
-        }).catch(() => {});
-      }
+      await publishTabRisk(browser.tabs, pageContext, risk);
 
       return { report };
     })();
@@ -2866,19 +2853,10 @@ async function handleWebBridgeMessage(type: string, payload: any): Promise<any> 
     browser.tabs.query({}).then((tabs) => {
       for (const tab of tabs) {
         if (tab.id !== undefined && tab.url && extractHostname(tab.url) === hostname) {
-          browser.tabs.sendMessage(tab.id, {
-            type: 'TAB_RISK_UPDATE',
-            payload: {
-              risk: {
-                decision: 'block',
-                showInterstitial: true,
-                riskScore: 100,
-                riskLevel: 'critical',
-                reasons: ['Domain blocked by platform administrator policy.'],
-                matchedTarget: null,
-              },
-            },
-          }).catch(() => {});
+          void readTabRiskContext(browser.tabs, tab.id, tab.url).then(context => publishTabRisk(browser.tabs, context, {
+            pageHostname: hostname, decision:'block', showInterstitial:true,
+            riskScore:100, riskLevel:'critical', reasons:['Domain blocked by platform administrator policy.'], matchedTarget:null,
+          }));
         }
       }
     }).catch(() => {});
@@ -3141,7 +3119,7 @@ browser.runtime.onConnect.addListener((port) => {
           .sendMessage(tab.id, {
             type: 'POPUP_STATE_CHANGED',
             payload: { open: true, isOpen: true },
-          })
+          }, { frameId: 0 })
           .catch(() => {});
       }
     }).catch(() => {});
@@ -3152,7 +3130,7 @@ browser.runtime.onConnect.addListener((port) => {
           .sendMessage(openedTabId, {
             type: 'POPUP_STATE_CHANGED',
             payload: { open: false, isOpen: false },
-          })
+          }, { frameId: 0 })
           .catch(() => {});
       }
       browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
@@ -3161,7 +3139,7 @@ browser.runtime.onConnect.addListener((port) => {
             .sendMessage(tab.id, {
               type: 'POPUP_STATE_CHANGED',
               payload: { open: false, isOpen: false },
-            })
+            }, { frameId: 0 })
             .catch(() => {});
         }
       }).catch(() => {});

@@ -119,4 +119,11 @@ describe('querySelectorAllDeep', () => {
   it('gracefully handles empty or null root', () => {
     expect(querySelectorAllDeep(null as any, 'input')).toEqual([]);
   });
+
+  it('does not descend into an extension-owned shadow host', () => {
+    const field: MockElement = {id:'shield-field',tagName:'INPUT',attributes:{type:'password'},querySelectorAll:()=>[]};
+    const host: MockElement = {id:'xorapass-overlay-host',tagName:'DIV',attributes:{},querySelectorAll:()=>[]};
+    const root=createMockRoot([host],[{host,root:createMockRoot([field])}]);
+    expect(querySelectorAllDeep(root as any,'input')).toEqual([]);
+  });
 });

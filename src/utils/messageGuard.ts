@@ -102,6 +102,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // inside a (usually cross-origin) payment iframe. Carries no data at all;
   // the background only relays "card fields exist" to the tab's top frame.
   'CARD_FIELDS_IN_FRAME',
+  'TAB_RISK_CHANGED',
   // Always-on Shield. SHIELD_NAV_CHECK comes from the document_start content
   // script and carries nothing — the background uses the sender frame's URL.
   'SHIELD_NAV_CHECK',
@@ -129,6 +130,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // Popup requests the active warning (if any) that the in-page overlay is
   // displaying, so it can mirror it inline without a second risk scan.
   'GET_ACTIVE_TAB_WARNING',
+  'GET_TAB_RISK_CONTEXT',
   // Popup tells the content script the user dismissed the warning in the popup,
   // so the in-page overlay card can also be closed.
   'DISMISS_TAB_RISK_WARNING',

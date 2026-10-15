@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
+import { useActiveTabRisk } from './useActiveTabRisk';
+import { isCurrentRiskContext, autofillRiskIndicator } from '../utils/tabRiskContext';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import { GOOGLE_NO_GUARANTEE_NOTICE, webRiskAdvisoryFromSignals, type ThreatAdvisory } from '../utils/webRiskAttribution';
 import {
@@ -448,15 +450,7 @@ export const PopupApp: React.FC = () => {
   const [activeTabUrl, setActiveTabUrl] = useState<string>('');
   const [activeTabTitle, setActiveTabTitle] = useState<string>('');
   const [activeTabFavIcon, setActiveTabFavIcon] = useState<string>('');
-  const [activeThreatWarning, setActiveThreatWarning] = useState<{
-    severity: string;
-    title: string;
-    message: string;
-    currentDomain: string;
-    expectedDomain?: string | null;
-    riskLevel?: string;
-    allowlistRequestStatus?: string | null;
-  } | null>(null);
+  const { tab: activeRiskTab, warning: activeThreatWarning } = useActiveTabRisk();
   const [threatBannerDismissed, setThreatBannerDismissed] = useState(false);
 
   // XoraPass Shield - "Is This Safe?" Analyzer state
@@ -630,42 +624,7 @@ export const PopupApp: React.FC = () => {
     };
     checkStatus();
 
-    browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-      const activeTab = tabs[0];
-      if (activeTab && activeTab.url) {
-        setActiveTabUrl(activeTab.url);
-        setActiveTabTitle(activeTab.title || '');
-        setActiveTabFavIcon(activeTab.favIconUrl || '');
-        if (activeTab.id !== undefined) {
-          browser.tabs
-            .sendMessage(activeTab.id, { type: 'GET_ACTIVE_TAB_WARNING' })
-            .then((warning: any) => {
-              if (warning && typeof warning === 'object' && warning.title) {
-                setActiveThreatWarning(warning);
-              }
-            })
-            .catch(() => {});
-        }
-        try {
-          const url = new URL(activeTab.url);
-          setCurrentHostname(url.hostname);
-          setCurrentProtocol(url.protocol);
-          browser.runtime
-            .sendMessage({ type: 'GET_SITE_SETTINGS', payload: { hostname: url.hostname } })
-            .then((res: any) => {
-              if (res && typeof res.disabled === 'boolean') setSiteDisabled(res.disabled);
-            });
-          // Load the domain allowlist for false-positive bypass rendering
-          browser.runtime
-            .sendMessage({ type: 'GET_DOMAIN_ALLOWLIST' })
-            .then((res: any) => {
-              if (res && Array.isArray(res.allowlist)) setDomainAllowlist(res.allowlist);
-            });
-        } catch (e) {
-          console.warn("Could not parse active tab URL", e);
-        }
-      }
-    });
+
   }, []);
 
   // Popup lifecycle port: notifies the background (and thereby active tab) that popup is open/closed
@@ -685,30 +644,29 @@ export const PopupApp: React.FC = () => {
     };
   }, []);
 
-  // Listen for active tab risk updates to mirror threats into popup in real time
   useEffect(() => {
-    const handleRiskUpdate = (msg: any) => {
-      if (msg?.type === 'TAB_RISK_UPDATE') {
-        browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-          if (tab?.id !== undefined) {
-            browser.tabs
-              .sendMessage(tab.id, { type: 'GET_ACTIVE_TAB_WARNING' })
-              .then((w: any) => {
-                if (w && typeof w === 'object' && w.title) {
-                  setActiveThreatWarning(w);
-                  setThreatBannerDismissed(false);
-                }
-              })
-              .catch(() => {});
-          }
-        }).catch(() => {});
-      }
-    };
-    browser.runtime.onMessage.addListener(handleRiskUpdate);
-    return () => {
-      browser.runtime.onMessage.removeListener(handleRiskUpdate);
-    };
+    setActiveTabUrl(activeRiskTab?.url || '');
+    setActiveTabTitle(activeRiskTab?.title || '');
+    setActiveTabFavIcon(activeRiskTab?.favIconUrl || '');
+    setRemoteDomainRisk(null); setThreatBannerDismissed(false); setSiteDisabled(false);
+    let cancelled = false;
+    try {
+      const url = new URL(activeRiskTab?.url || '');
+      setCurrentHostname(url.hostname); setCurrentProtocol(url.protocol);
+      browser.runtime.sendMessage({type:'GET_SITE_SETTINGS',payload:{hostname:url.hostname}}).then((res:any) => {
+        if (!cancelled && typeof res?.disabled === 'boolean') setSiteDisabled(res.disabled);
+      }).catch(() => {});
+    } catch { setCurrentHostname(''); setCurrentProtocol(''); }
+    return () => { cancelled = true; };
+  }, [activeRiskTab]);
+
+  useEffect(() => {
+    browser.runtime.sendMessage({type:'GET_DOMAIN_ALLOWLIST'}).then((res:any) => {
+      if (Array.isArray(res?.allowlist)) setDomainAllowlist(res.allowlist);
+    }).catch(() => {});
   }, []);
+
+  useEffect(() => { if (activeThreatWarning) setThreatBannerDismissed(false); }, [activeThreatWarning]);
 
   const updateGenOptions = (patch: Partial<GeneratorOptions>) => {
     const next = { ...genOptions, ...patch };
@@ -1592,7 +1550,8 @@ export const PopupApp: React.FC = () => {
   // telemetry as a side effect, same as before.
   useEffect(() => {
     setRemoteDomainRisk(null);
-    if (!currentHostname || siteDisabled || isLocalHost) return;
+    const context = activeRiskTab?.context;
+    if (!context || !currentHostname || siteDisabled || isLocalHost) return;
     let cancelled = false;
     const isLegitLocal =
       localDomainRisk?.signals?.isSameRegistrableDomain ||
@@ -1603,35 +1562,23 @@ export const PopupApp: React.FC = () => {
         type: 'CHECK_DOMAIN_RISK',
         payload: {
           currentDomain: currentHostname,
-          currentUrl: `${currentProtocol}//${currentHostname}`,
+          currentUrl: context.url,
           savedDomain: isLegitLocal ? '' : (localDomainRisk?.matchedTarget || lookalike?.target || ''),
         },
       })
-      .then((res: any) => {
-        if (!cancelled && res?.risk) {
-          setRemoteDomainRisk(res.risk);
-          // Broadcast verdict to the active tab so in-page overlay displays immediately
-          try {
-            browser.tabs.query({ active: true, currentWindow: true }).then((tabs: any[]) => {
-              const activeTabId = tabs?.[0]?.id;
-              if (activeTabId) {
-                const base = localDomainRisk || disabledDomainRiskAssessment(currentHostname);
-                const merged = mergeLocalAndRemoteRisk(base, res.risk);
-                browser.tabs.sendMessage(activeTabId, {
-                  type: 'TAB_RISK_UPDATE',
-                  risk: merged,
-                }).catch(() => {});
-              }
-            }).catch(() => {});
-          } catch {}
-        }
+      .then(async (res: any) => {
+        if (cancelled || !res?.risk || !await isCurrentRiskContext(browser.tabs, context)) return;
+        const [active] = await browser.tabs.query({active:true,currentWindow:true});
+        if (!cancelled && active?.id === context.tabId) setRemoteDomainRisk(res.risk);
+        // Page-aware verdict publication belongs to the background. A popup's
+        // URL-only lookup must not overwrite the content script's richer scan.
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentHostname, siteDisabled, isLocalHost]);
+  }, [activeRiskTab?.context, currentHostname, currentProtocol, siteDisabled, isLocalHost]);
 
   const health = computeVaultHealth(vaultItems.map((i) => ({ category: i.category, value: i.value })));
   const tier = scoreTier(health.score);
@@ -1642,10 +1589,9 @@ export const PopupApp: React.FC = () => {
   // Cross-sync threat dismiss and allowlist review with content script on active tab
   const handleDismissThreatWarning = () => {
     setThreatBannerDismissed(true);
-    setActiveThreatWarning(null);
     browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
       if (tab?.id !== undefined) {
-        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING' }).catch(() => {});
+        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING', pageContext: activeRiskTab?.context }, { frameId: 0 }).catch(() => {});
       }
     }).catch(() => {});
   };
@@ -1655,7 +1601,7 @@ export const PopupApp: React.FC = () => {
     // Dismiss in-page alert upon submitting allowlist review
     browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
       if (tab?.id !== undefined) {
-        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING' }).catch(() => {});
+        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING', pageContext: activeRiskTab?.context }, { frameId: 0 }).catch(() => {});
       }
     }).catch(() => {});
   };
@@ -1680,6 +1626,8 @@ export const PopupApp: React.FC = () => {
     riskLevel: activeThreatWarning?.riskLevel || domainRiskAssessment?.riskLevel || (isDangerousSite ? 'critical' : 'medium'),
     allowlistRequestStatus: activeThreatWarning?.allowlistRequestStatus || null,
   } : null;
+
+  const autofillIndicator = autofillRiskIndicator(siteDisabled, activeThreatWarning?.severity, domainRiskAssessment?.decision);
 
   const renderActiveThreatBanner = () => {
     if (!activeThreat || threatBannerDismissed) return null;
@@ -2720,14 +2668,17 @@ export const PopupApp: React.FC = () => {
                         </div>
                         <button
                           onClick={toggleSiteDisabled}
-                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider border transition cursor-pointer shrink-0 ${siteDisabled
-                              ? 'bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby hover:bg-brand-ruby/20'
+                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider border transition cursor-pointer shrink-0 ${autofillIndicator.tone === 'block' || autofillIndicator.tone === 'off'
+                              ? 'bg-rose-50 border-rose-300 text-rose-800 dark:bg-rose-950/60 dark:border-rose-500/40 dark:text-rose-200'
+                              : autofillIndicator.tone === 'warn' ? 'bg-amber-50 border-amber-300 text-amber-900 dark:bg-amber-950/60 dark:border-amber-500/40 dark:text-amber-200'
                               : 'bg-brand-emerald/10 border-brand-emerald/25 text-brand-emerald hover:bg-brand-emerald/20'
                             }`}
-                          title={siteDisabled ? 'Autofill is disabled on this site' : 'Disable autofill on this site'}
+                          title={`${autofillIndicator.detail} Click to ${siteDisabled ? 'enable' : 'disable'} your site preference.`}
+                          aria-label={`${siteDisabled ? 'Enable' : 'Disable'} autofill preference for ${currentHostname}`}
+                          aria-pressed={!siteDisabled}
                         >
-                          {siteDisabled ? <ShieldOff className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-                          <span>{siteDisabled ? 'Autofill Off' : 'Autofill On'}</span>
+                          {autofillIndicator.tone === 'block' || autofillIndicator.tone === 'off' ? <ShieldOff className="w-3.5 h-3.5" /> : autofillIndicator.tone === 'warn' ? <AlertTriangle className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                          <span>{autofillIndicator.label}</span>
                         </button>
                       </div>
 

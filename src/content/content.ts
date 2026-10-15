@@ -15,6 +15,14 @@
 // and a warning is shown. All detection is on-device -- the pasted text is
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
+import { isAutofillSuppressed, isExtensionUiElement, onAutofillSuppressed } from '../utils/autofillSurface';
+import { acceptsTabRiskUpdate, createRiskDocumentToken, sameRiskDocument, type PageRiskContext } from '../utils/tabRiskContext';
+const riskDocumentToken = createRiskDocumentToken();
+const pageRiskContext = (): PageRiskContext => ({url:window.location.href,documentToken:riskDocumentToken});
+let warningRiskContext: PageRiskContext | null = null;
+const notifyTabRiskChanged = () => {
+  if (window === window.top) void browser.runtime.sendMessage({type:'TAB_RISK_CHANGED'}).catch(() => {});
+};
 import {
   looksLikeUsername,
   looksLikeEmailField,
@@ -353,6 +361,7 @@ function emailFieldAttrs(el: HTMLInputElement) {
 }
 
 async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
+  if (isAutofillSuppressed() || isExtensionUiElement(input)) return;
   if (domainRisk?.decision === 'block') {
     showToast('Masked email', 'Email fill is blocked on this site for security.');
     return;
@@ -411,6 +420,7 @@ async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
 }
 
 function scanForEmailFields(): void {
+  if (isAutofillSuppressed()) return;
   if (window !== window.top) return;
   const inputs = querySelectorAllDeep<HTMLInputElement>(document, 'input')
     .filter((el) => isFillable(el) && looksLikeEmailField(emailFieldAttrs(el)) && !hasIcon(el));
@@ -593,6 +603,7 @@ function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): 
 // on hostname+decision so repeated loadCredentials() calls (tab focus,
 // visibility change, SPA route watchers) don't re-pop an already-seen alert.
 async function maybeShowProactiveRiskWarning(): Promise<void> {
+  const warningContext = pageRiskContext();
   // The document_start navigation guard (shieldNav.ts) may already have
   // shown the full-page warning for this page — never stack a second one,
   // and if the user chose to continue there, don't re-block them here.
@@ -602,11 +613,13 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   if (navHandled && nav!.action === 'block') return;
   const decision = domainRisk?.decision;
   const isRisky = decision === 'block' || decision === 'warn' || decision === 'require_approval';
-  const key = `${window.location.hostname}|${decision || ''}`;
+  const key = `${window.location.href}|${decision || ''}`;
 
   if (!isRisky) {
+    warningRiskContext = null;
     lastWarnedRiskKey = null;
     closeRiskWarning();
+    notifyTabRiskChanged();
     if (isInterstitialOpen()) closePhishingInterstitial();
     return;
   }
@@ -619,8 +632,10 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // block instead of a corner banner: at that point letting the user read and
   // interact with the page at all is the risk being managed.
   if ((domainRisk?.showInterstitial || (domainRisk as any)?.show_interstitial || domainRisk?.decision === 'block') && !navHandled) {
+    warningRiskContext = warningContext;
     lastWarnedRiskKey = key;
     triggerFullPageBlock();
+    notifyTabRiskChanged();
     return;
   }
 
@@ -653,12 +668,13 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // The risky-decision key can change (or this can go stale) while the
   // lookup above was in flight — a page navigation, or the risk clearing.
   // Bail rather than showing a warning for a state that's no longer current.
-  if (lastWarnedRiskKey !== key) return;
+  if (lastWarnedRiskKey !== key || !sameRiskDocument(warningContext, pageRiskContext())) return;
 
   const isMalware = (domainRisk?.reasons || []).some((r) => /malware/i.test(r)) ||
     Object.values(domainRisk?.threatIntelSignals || {}).some((s) => s === 'malware_hit');
   const blockTitle = isMalware ? 'Dangerous Malware Site Blocked' : 'Likely Phishing Site Blocked';
 
+  warningRiskContext = warningContext;
   showRiskWarning({
     severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
     title: decision === 'block' ? blockTitle : 'Suspicious Site Detected',
@@ -741,6 +757,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
               .catch(() => ({ success: false }))
         : undefined,
   });
+  notifyTabRiskChanged();
 }
 
 /**
@@ -784,26 +801,39 @@ browser.runtime.onMessage.addListener((message: any) => {
     renderAiBanner(message.payload as AiFillOffer);
   } else if (message.type === 'SHORTCUT_AUTOFILL') {
     void handleShortcutAutofill();
+  } else if (message.type === 'GET_TAB_RISK_CONTEXT') {
+    return window === window.top ? Promise.resolve(pageRiskContext()) : undefined;
   } else if (message.type === 'TAB_RISK_UPDATE') {
-    const risk = message.payload?.risk || message.risk;
-    if (risk) {
-      domainRisk = risk;
-      lastWarnedRiskKey = null; // force fresh evaluation
-      maybeShowProactiveRiskWarning();
+    if (acceptsTabRiskUpdate(window === window.top, pageRiskContext(), message)) {
+      domainRisk = message.payload?.risk || message.risk;
+      lastWarnedRiskKey = null;
+      void maybeShowProactiveRiskWarning().then(notifyTabRiskChanged);
     }
   } else if (message.type === 'POPUP_STATE_CHANGED') {
     setPopupSuppressed(Boolean(message.payload?.open ?? message.payload?.isOpen));
   } else if (message.type === 'GET_ACTIVE_TAB_WARNING') {
-    return Promise.resolve(getActiveRiskWarning());
+    if (window !== window.top || !sameRiskDocument(message.pageContext, pageRiskContext())) return undefined;
+    if (!sameRiskDocument(warningRiskContext, pageRiskContext())) return Promise.resolve(null);
+    const warning = getActiveRiskWarning();
+    // Full-page blocks do not create a corner warning, but the popup still
+    // needs their effective decision rather than displaying "Autofill on".
+    return Promise.resolve(domainRisk?.decision === 'block' ? {
+      severity: 'block', title: 'Dangerous Site Blocked',
+      message: domainRisk.safeWarningMessage || getRiskWarningMessage() || 'Shield blocks autofill on this page.',
+      currentDomain: window.location.hostname, expectedDomain: domainRisk.matchedTarget,
+      riskLevel: domainRisk.riskLevel,
+    } : warning);
   } else if (message.type === 'GET_PAGE_SIGNALS') {
-    return Promise.resolve({ pageSignals: worthAssessingSignals() || collectPageSignals() });
+    if (window !== window.top) return undefined;
+    return Promise.resolve({ pageSignals: worthAssessingSignals() || collectPageSignals(), pageContext: pageRiskContext() });
   } else if (message.type === 'DISMISS_TAB_RISK_WARNING') {
-    closeRiskWarning();
+    if (window === window.top && sameRiskDocument(message.pageContext, pageRiskContext())) closeRiskWarning();
   }
   return undefined;
 });
 
 async function handleShortcutAutofill(): Promise<void> {
+  if (isAutofillSuppressed()) return;
   // If credentials are not loaded yet or empty, try a fast reload
   if (activeCredentials.length === 0) {
     loadCredentials();
@@ -906,6 +936,9 @@ function isClippedByAncestor(el: HTMLElement): boolean {
 
 // An input is fillable if it's visible and user-editable.
 function isFillable(el: HTMLInputElement): boolean {
+  // Risk collection also uses this predicate. Keep assessing the underlying
+  // form while the overlay/scanner entry points suppress its autofill UI.
+  if (isExtensionUiElement(el)) return false;
   if (!el || el.type === 'hidden' || el.disabled || el.readOnly) return false;
   if (el.offsetParent === null && el.offsetWidth === 0 && el.offsetHeight === 0) return false;
 
@@ -934,6 +967,7 @@ function isFillable(el: HTMLInputElement): boolean {
  * idempotent, so the MutationObserver can call it freely.
  */
 function scanForLoginFields(): void {
+  if (isAutofillSuppressed()) return;
   const passwordInputs = querySelectorAllDeep<HTMLInputElement>(
     document,
     'input[type="password"]'
@@ -1191,6 +1225,7 @@ try {
 let paymentFieldsInSubframe = false;
 
 function scanForPaymentFields(): void {
+  if (isAutofillSuppressed()) return;
   if (!checkoutGuardEnabled || hasWarnedCheckoutOnPage) return;
 
   const isInsecure = isInsecureContext();
@@ -1456,6 +1491,7 @@ let preferredSuggestionLength = 20;
 // the user actually clicked or focused, so the menu appears where they are
 // looking. On a sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
+  if (isAutofillSuppressed() || isExtensionUiElement(anchor)) return;
   // The email field shares the signup icon with its password pair. Route this
   // activation to email masking, leaving password generation on the password.
   if (anchor !== passInput && newPasswordFields.get(passInput) === true && looksLikeEmailField(emailFieldAttrs(anchor))) {
@@ -1557,6 +1593,7 @@ function applyGeneratedPassword(passInput: HTMLInputElement, password: string): 
 }
 
 async function handlePick(id: string, passInput: HTMLInputElement): Promise<void> {
+  if (isAutofillSuppressed()) return;
   const cred = activeCredentials.find((c) => c.id === id);
   if (!cred) return;
 
@@ -1724,6 +1761,7 @@ function removeAiBanner() {
 }
 
 function renderAiBanner(offer: AiFillOffer) {
+  if (isAutofillSuppressed()) { removeAiBanner(); return; }
   // Don't stack duplicate banners for the same session, and don't downgrade
   // an already-shown banner for a different offer without replacing it.
   if (aiBanner && aiBanner.dataset.sessionId === offer.sessionId) return;
@@ -1906,6 +1944,7 @@ async function confirmFillIfNeeded(cred: OverlayCredential): Promise<boolean> {
  * plain `el.value = x` is silently reverted by React's controlled inputs.
  */
 function autofillField(el: HTMLInputElement, value: string): void {
+  if (isAutofillSuppressed() || isExtensionUiElement(el)) return;
   // Use the native setter to bypass React/Vue's value tracking so the
   // internal state and the DOM value are both updated.
   const nativeSetter = Object.getOwnPropertyDescriptor(
@@ -2826,6 +2865,8 @@ function initPasteGuard(): void {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
+onAutofillSuppressed(() => { clearAll(); closeSavePrompt(); removeAiBanner(); });
+
 const frame = assessFrame();
 if (frame.isTop || !frame.isCrossOriginFrame) {
   // Only run in the top frame or in a same-origin (first-party) sub-frame.
@@ -2933,11 +2974,6 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     if (message?.type === 'SHOW_LINK_INSPECTION' && message.payload) {
       showLinkInspectionModal(message.payload);
     }
-    // Site Scanner (popup → background → here): structural page features
-    // only — see the privacy contract in utils/pageSignals.ts.
-    if (message?.type === 'GET_PAGE_SIGNALS') {
-      return Promise.resolve({ pageSignals: collectPageSignals() });
-    }
     // Privacy report (popup): trackers + mixed content seen by this page.
     if (message?.type === 'GET_PRIVACY_SIGNALS' && window === window.top) {
       return Promise.resolve({ privacy: collectPrivacySignals() });
@@ -2952,14 +2988,6 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     if (message?.type === 'CARD_FIELDS_IN_FRAME') {
       paymentFieldsInSubframe = true;
       scanForPaymentFields();
-    }
-    if (message?.type === 'TAB_RISK_UPDATE' && window === window.top) {
-      if (message.risk) {
-        domainRisk = message.risk;
-        lastWarnedRiskKey = null; // force re-evaluation
-        maybeShowProactiveRiskWarning();
-      }
-      return Promise.resolve({ received: true });
     }
     return undefined;
   });
