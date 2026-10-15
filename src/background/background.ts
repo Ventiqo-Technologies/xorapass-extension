@@ -37,6 +37,7 @@ import {
   getShieldState,
   refreshShieldConfig,
   refreshShieldEntitlement,
+  applyShieldPreference,
   refreshBlocklist,
 } from './shield';
 import {
@@ -69,7 +70,7 @@ import {
   deriveSharedSecret,
   type EncryptedPayload,
 } from '../utils/crypto';
-import { API_BASE_URL } from '../utils/config';
+import { API_BASE_URL, WEB_APP_URL } from '../utils/config';
 import {
   CLIPBOARD_PLACEHOLDER,
   clearDelayInMinutes,
@@ -1017,6 +1018,9 @@ async function getDomainAllowlist(): Promise<string[]> {
 // token, and current form identities/destinations. Every navigation revokes.
 const APPROVAL_TTL_MS = 5 * 60 * 1000;
 const riskApprovals = new RiskApprovals(Date.now, APPROVAL_TTL_MS);
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.shieldEntitlement) { clearRemoteRiskCache(); riskApprovals.clear(); }
+});
 function clearRiskApprovals(): void { riskApprovals.clear(); }
 browser.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
   if (changeInfo.url !== undefined || changeInfo.status === 'loading') riskApprovals.revoke(tabId);
@@ -1422,7 +1426,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const msg = message as { type: string; payload?: any };
 
   if (typeof type === 'string' && type.startsWith('WEB_BRIDGE_')) {
-    return handleWebBridgeMessage(type, msg.payload);
+    return handleWebBridgeMessage(type, msg.payload, sender);
   }
 
   if (type === 'GET_STATUS') {
@@ -1531,10 +1535,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const enabled = !!msg.payload?.enabled;
     clearRemoteRiskCache();
     clearRiskApprovals();
-    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => {
-      // The user's own toggle is part of the always-on Shield entitlement.
-      void refreshShieldEntitlement();
-      return { success };
+    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then(async success => {
+      if (success) { await applyShieldPreference(enabled); await refreshShieldEntitlement(true); }
+      return { success, state: await getShieldState() };
     });
   }
 
@@ -2201,7 +2204,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'SHIELD_GET_STATE') {
-    return getShieldState();
+    return (async () => { if (msg.payload?.refresh) await refreshShieldEntitlement(); return getShieldState(); })();
   }
 
   if (type === 'SHIELD_REFRESH') {
@@ -2743,7 +2746,14 @@ async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   return { deviceId, publicKey: pair.publicKey, privateKey: pair.privateKey };
 }
 
-async function handleWebBridgeMessage(type: string, payload: any): Promise<any> {
+async function handleWebBridgeMessage(type: string, payload: any, sender?: browser.Runtime.MessageSender): Promise<any> {
+  if (type === 'WEB_BRIDGE_SHIELD_SETTINGS_CHANGED') {
+    // A hint only: refresh using this extension's credential, never a page
+    // supplied enabled flag or account. Both native and fallback bridges use it.
+    let origin = ''; try { origin = new URL(sender?.url || '').origin; } catch {}
+    if (!['https://app.xorapass.com', new URL(WEB_APP_URL).origin].includes(origin)) return { success: false };
+    await refreshShieldEntitlement(true); return { success: true };
+  }
   if (type === 'WEB_BRIDGE_LOGIN') {
     const { token, encKey, email } = payload || {};
     let derivedEncBytes: Uint8Array;
@@ -2864,7 +2874,7 @@ if (api?.runtime?.onMessageExternal) {
       return;
     }
 
-    handleWebBridgeMessage(guard.type as string, message.payload)
+    handleWebBridgeMessage(guard.type as string, message.payload, sender)
       .then(sendResponse)
       .catch((err) => sendResponse({ error: 'bridge_failed', detail: String(err) }));
 

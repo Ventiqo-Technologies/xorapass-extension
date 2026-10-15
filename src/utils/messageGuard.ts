@@ -79,6 +79,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // because the real consent already happened when a human unlocked it.
   'WEB_BRIDGE_REQUEST_SESSION',
   'WEB_BRIDGE_DOMAIN_BLOCKED',
+  'WEB_BRIDGE_SHIELD_SETTINGS_CHANGED',
   'GET_COPIED_SECRET',
   'CHECK_DOMAIN_RISK',
   // Risk-warning safe actions: same trust tier as CHECK_DOMAIN_RISK — our own
@@ -267,6 +268,7 @@ export function validateMessage(
     'WEB_BRIDGE_DELIVER_KEY',
     'WEB_BRIDGE_REQUEST_SESSION',
     'WEB_BRIDGE_DOMAIN_BLOCKED',
+    'WEB_BRIDGE_SHIELD_SETTINGS_CHANGED',
   ]);
   if (isExternalWebPage && !EXTERNAL_WEB_ALLOWED.has(type)) {
     return { ok: false, reason: 'unauthorized-external-type' };

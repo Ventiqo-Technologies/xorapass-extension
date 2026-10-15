@@ -5,14 +5,19 @@ import { classifyWalletRequest } from '../utils/scamBehavior';
 
 const source = readFileSync(new URL('./pageHooks.ts', import.meta.url), 'utf8');
 const section = source.slice(source.indexOf('  // ── Wallet observations'), source.indexOf('  // ── Lock-in'));
-function fixture(request: (...args: any[]) => any, post = vi.fn()) {
+function fixture(request: (...args: any[]) => any, post = vi.fn(), hooksEnabled = true) {
   const w = { ethereum: { request } };
   const window = { addEventListener: vi.fn() };
   const compiled = transformSync(section, { loader: 'ts', target: 'esnext' }).code;
-  new Function('w', 'window', 'classifyWalletRequest', 'post', compiled)(w, window, classifyWalletRequest, post);
+  new Function('w', 'window', 'classifyWalletRequest', 'post', 'hooksEnabled', compiled)(w, window, classifyWalletRequest, post, hooksEnabled);
   return { provider: w.ethereum, post, window };
 }
 describe('wallet observation preserves native wallet authority', () => {
+  it('does not report wallet activity when Shield is off', async () => {
+    const request = vi.fn(async () => 'native'); const post = vi.fn(); const f = fixture(request, post, false);
+    expect(await f.provider.request({ method: 'eth_sign' })).toBe('native'); expect(post).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledOnce();
+  });
   it('warns while invoking the native provider exactly once, without waiting for page approval', async () => {
     const args = { method: 'eth_sign', params: ['account', 'payload'] };
     const request = vi.fn(async () => 'native-wallet-result'); const f = fixture(request);

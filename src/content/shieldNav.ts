@@ -16,7 +16,7 @@
 // Built as its own self-contained IIFE (vite --mode shieldnav).
 
 import browser from 'webextension-polyfill';
-import { showPhishingInterstitial, closePhishingInterstitial, showRiskWarning } from './overlay';
+import { showPhishingInterstitial, closePhishingInterstitial, closeRiskWarning, showRiskWarning } from './overlay';
 import { detectScamCues } from '../utils/pageContent';
 import { webRiskAdvisoryFromThreatType } from '../utils/webRiskAttribution';
 import { techSupportScamScore, TECH_SUPPORT_WARN, isNotificationBait, type BehaviorKind } from '../utils/scamBehavior';
@@ -225,7 +225,7 @@ const MAX_GUARD_MS = 1500;
 
   window.addEventListener('message', (ev) => {
     const d = ev.data;
-    if (ev.source !== window || !d || d.__xoraShield !== 'v1') return;
+    if (ev.source !== window || !d || d.__xoraShield !== 'v1' || d.kind === 'ready') return;
     if (shieldActive === null) queued.push(d);
     else handle(d);
   });
@@ -235,23 +235,32 @@ const MAX_GUARD_MS = 1500;
     for (const d of queued.splice(0)) handle(d);
   };
 
-  browser.runtime
-    .sendMessage({ type: 'SHIELD_NAV_CHECK' })
-    .then((v: NavVerdict | undefined) => {
+  let stateVersion = 0;
+  const publishHooks = () => window.postMessage({ __xoraShieldState: 'v1', enabled: shieldActive === true }, '*');
+  const refreshNavigation = () => {
+    const version = ++stateVersion;
+    browser.runtime.sendMessage({ type: 'SHIELD_NAV_CHECK' }).then((v: NavVerdict | undefined) => {
+      if (version !== stateVersion) return;
       clearTimeout(failOpen);
-      setActive(!!v && v.layer !== 'disabled' && v.hooks === true);
+      setActive(!!v && v.layer !== 'disabled' && v.hooks === true); publishHooks();
       state.action = v?.action || 'allow';
-      if (v?.action === 'block') {
-        // Keep holding input until the user explicitly chooses to continue.
-        show(v);
-      } else {
-        release();
-      }
-    })
-    .catch(() => {
-      clearTimeout(failOpen);
-      setActive(false);
-      state.action = 'allow';
-      release();
+      if (v?.action === 'block') show(v); else release();
+    }).catch(() => {
+      if (version !== stateVersion) return;
+      clearTimeout(failOpen); setActive(false); publishHooks(); state.action = 'allow'; release();
     });
+  };
+  browser.storage.onChanged.addListener((changes: any, area: string) => {
+    const update = changes.shieldEntitlement;
+    if (area !== 'local' || !update) return;
+    if (update.newValue?.userEnabled === false || update.newValue?.active === false) {
+      ++stateVersion; setActive(false); publishHooks(); state.action = 'allow'; state.shown = false;
+      warnedClickFix = false; warnedTechSupport = false; warnedNotification = false; behaviors.clear();
+      clearTimeout(failOpen); release(); closePhishingInterstitial(); closeRiskWarning();
+    } else if (!update.oldValue?.active || update.oldValue?.userEnabled === false) refreshNavigation();
+  });
+  window.addEventListener('message', event => {
+    if (event.source === window && event.data?.__xoraShield === 'v1' && event.data?.kind === 'ready') publishHooks();
+  });
+  refreshNavigation();
 })();

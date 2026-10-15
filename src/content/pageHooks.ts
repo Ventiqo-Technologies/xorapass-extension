@@ -44,6 +44,14 @@ import { shouldBlockClipboardWrite, classifyWalletRequest } from '../utils/scamB
       /* ignore */
     }
   };
+  // This page-visible control carries no authority over vault/credentials.
+  // MAIN-world observations are inherently bypassable; use it only to stop
+  // optional hooks when the isolated script reports protection off.
+  let hooksEnabled = false;
+  window.addEventListener('message', event => {
+    if (event.source === window && event.data?.__xoraShieldState === 'v1') hooksEnabled = event.data.enabled === true;
+  });
+  post('ready');
   const activated = () => !!(navigator as any).userActivation?.hasBeenActive;
   const once = new Set<string>();
   const report = (kind: string, data: Record<string, unknown> = {}) => {
@@ -61,7 +69,7 @@ import { shouldBlockClipboardWrite, classifyWalletRequest } from '../utils/scamB
       return '';
     }
   };
-  const isMaliciousClipboardCommand = (text: string) => shouldBlockClipboardWrite(text, pageText());
+  const isMaliciousClipboardCommand = (text: string) => hooksEnabled && shouldBlockClipboardWrite(text, pageText());
 
   try {
     const clip = navigator.clipboard as any;
@@ -136,7 +144,7 @@ import { shouldBlockClipboardWrite, classifyWalletRequest } from '../utils/scamB
     const origRequest = p.request.bind(p);
     const guarded = (args: any) => {
       const risk = classifyWalletRequest(args?.method, args?.params);
-      if (risk.level) {
+      if (risk.level && hooksEnabled) {
         try { post('wallet_check', { method: String(args?.method), summary: risk.summary, level: risk.level }); }
         catch { /* advisory reporting cannot replace wallet-native confirmation */ }
       }

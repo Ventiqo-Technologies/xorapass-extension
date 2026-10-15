@@ -105,6 +105,7 @@ import { scanEmailContent, checkInsecureForms, checkOpaqueOriginLogin, featureOn
 
 let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
+let shieldUserEnabled = true;
 let domainRisk: {
   decision: string;
   riskScore: number;
@@ -352,8 +353,8 @@ function loadCredentials(): void {
         return;
       }
 
-      lookalikeWarning = response.lookalike || null;
-      domainRisk = response.risk || null;
+      lookalikeWarning = shieldUserEnabled ? response.lookalike || null : null;
+      domainRisk = shieldUserEnabled ? response.risk || null : null;
       activeCredentials = response.credentials || [];
 
       maybeShowProactiveRiskWarning();
@@ -493,6 +494,7 @@ function scheduleAiScan(): void {
 }
 
 async function maybeRunAiScan(href: string): Promise<void> {
+  if (!shieldUserEnabled) return;
   if (!(await automaticTextScansAllowed(browser.storage.local))) return;
   if (aiScannedHref === href || window.location.href.split('#')[0] !== href) return;
   aiScannedHref = href;
@@ -523,7 +525,7 @@ async function maybeRunAiScan(href: string): Promise<void> {
       },
     })
     .catch(() => null);
-  if (!res || typeof res.risk_score !== 'number' || res.risk_score < 45) return;
+  if (!shieldUserEnabled || !res || typeof res.risk_score !== 'number' || res.risk_score < 45) return;
   if (window.location.href.split('#')[0] !== href || isInterstitialOpen()) return;
   // Never downgrade or replace a stronger warning that is already showing.
   if (isRiskWarningOpen() && domainRisk?.decision === 'block') return;
@@ -579,6 +581,7 @@ async function maybeRunAiScan(href: string): Promise<void> {
 }
 
 function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): void {
+  if (!shieldUserEnabled) return;
   closeRiskWarning();
   const currentHostname = window.location.hostname;
   const expectedDomain = domainRisk?.matchedTarget || lookalikeWarning?.target || null;
@@ -634,6 +637,7 @@ function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): 
 // on hostname+decision so repeated loadCredentials() calls (tab focus,
 // visibility change, SPA route watchers) don't re-pop an already-seen alert.
 async function maybeShowProactiveRiskWarning(): Promise<void> {
+  if (!shieldUserEnabled) return;
   const warningContext = pageRiskContext();
   // The document_start navigation guard (shieldNav.ts) may already have
   // shown the full-page warning for this page — never stack a second one,
@@ -838,7 +842,7 @@ browser.runtime.onMessage.addListener((message: any) => {
   } else if (message.type === 'GET_TAB_RISK_CONTEXT') {
     return window === window.top ? Promise.resolve(pageRiskContext()) : undefined;
   } else if (message.type === 'TAB_RISK_UPDATE') {
-    if (acceptsTabRiskUpdate(window === window.top, pageRiskContext(), message)) {
+    if (shieldUserEnabled && acceptsTabRiskUpdate(window === window.top, pageRiskContext(), message)) {
       domainRisk = message.payload?.risk || message.risk;
       lastWarnedRiskKey = null;
       void maybeShowProactiveRiskWarning().then(notifyTabRiskChanged);
@@ -1251,6 +1255,7 @@ try {
 let paymentFieldsInSubframe = false;
 
 function scanForPaymentFields(): void {
+  if (!shieldUserEnabled) return;
   if (isAutofillSuppressed()) return;
   if (!checkoutGuardEnabled || hasWarnedCheckoutOnPage) return;
 
@@ -1322,6 +1327,7 @@ function scanForPaymentFields(): void {
 const warnedSendersOnPage = new Set<string>();
 
 function scanWebmailMessages(): void {
+  if (!shieldUserEnabled) return;
   if (window === window.top) {
     checkInsecureForms();
     checkOpaqueOriginLogin();
@@ -1484,6 +1490,7 @@ function isAiSessionRisk(): boolean {
 // state, shared by the in-dropdown banner (activate()) and the proactive
 // unprompted alert (maybeShowProactiveRiskWarning()).
 function getRiskWarningMessage(): string | null {
+  if (!shieldUserEnabled) return null;
   // Prefer the backend's explanation (static fallback table or OpenAI-
   // generated) — it's already tailored to the specific reason codes,
   // including the AI-session and org-policy cases below, so when present it
@@ -3086,3 +3093,28 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   });
 })();
 
+
+// Preferences apply to open documents, not just the next navigation.
+let shieldPreferenceVersion = 0;
+function applyContentShieldPreference(enabled: boolean): void {
+  const before = shieldUserEnabled;
+  shieldUserEnabled = enabled;
+  if (!shieldUserEnabled) {
+    domainRisk = null; lookalikeWarning = null; warningRiskContext = null; lastWarnedRiskKey = null;
+    closeRiskWarning(); closePhishingInterstitial(); closeCheckoutProtectionBanner(); closeWebmailPhishingBanner();
+    notifyTabRiskChanged();
+  }
+  if (before !== shieldUserEnabled && (frame.isTop || !frame.isCrossOriginFrame)) loadCredentials();
+}
+const initialPreferenceVersion = shieldPreferenceVersion;
+void browser.storage.local.get('shieldEntitlement').then((r: any) => {
+  if (shieldPreferenceVersion === initialPreferenceVersion) applyContentShieldPreference(r.shieldEntitlement?.userEnabled !== false);
+});
+browser.storage.onChanged.addListener((changes: any, area: string) => {
+  if (area !== 'local' || !changes.shieldEntitlement) return;
+  ++shieldPreferenceVersion;
+  applyContentShieldPreference(changes.shieldEntitlement.newValue?.userEnabled !== false);
+  if (window === window.top && ['https://app.xorapass.com', new URL(WEB_APP_URL).origin].includes(window.location.origin)) {
+    window.postMessage({ source: 'xorapass-extension-bridge', type: 'SHIELD_SETTINGS_CHANGED' }, window.location.origin);
+  }
+});

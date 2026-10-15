@@ -297,7 +297,7 @@ async function runAi(m: OpenEmail, local: EmailLocalSummary, trigger: 'auto' | '
   const res = await browser.runtime
     .sendMessage({ type: 'SHIELD_EMAIL_SCAN', payload: { email: payloadFor(m, local), trigger, consent: TEXT_SCAN_CONSENT_VERSION } })
     .catch(() => null);
-  if (!current || current.key !== m.key) return;
+  if (!featureOn('email_ai') || !current || current.key !== m.key) return;
   render(m, local, normalizeEmailScanResult(res), false, true);
 }
 
@@ -331,4 +331,8 @@ export function updateEmailInsight(host: string, customConfig?: any): void {
     autoRan.add(m.key);
     void runAi(m, local, 'auto');
   }
+}
+
+export function clearEmailInsight(): void {
+  current?.host.remove(); current = null;
 }

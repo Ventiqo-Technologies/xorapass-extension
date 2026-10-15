@@ -181,7 +181,9 @@ function authHeader(cred: string): string {
 }
 
 async function setEntitlement(e: ShieldEntitlement): Promise<void> {
+  const before = entitlementMem;
   entitlementMem = e;
+  if (!before || before.active !== e.active || before.userEnabled !== e.userEnabled || before.planAllows !== e.planAllows || JSON.stringify(before.features) !== JSON.stringify(e.features)) clearRemoteRiskCache();
   await localSet({ [ENTITLEMENT_KEY]: e });
 }
 
@@ -202,47 +204,54 @@ const INACTIVE = (email = ''): ShieldEntitlement => ({
   checkedAt: Date.now(),
 });
 
-/** Re-checks the entitlement with the server. Keeps the old value offline. */
-export async function refreshShieldEntitlement(): Promise<ShieldEntitlement | null> {
-  const cred = await getShieldCredential();
-  if (!cred) {
-    await setEntitlement(INACTIVE());
-    return entitlementMem;
-  }
-  try {
-    const res = await fetch(`${API_BASE_URL}/api/shield/status`, {
-      headers: { Authorization: authHeader(cred) },
-      cache: 'no-store',
-    });
-    if (res.status === 401) {
-      if (cred.startsWith('Shield ')) await browser.storage.local.remove(TOKEN_KEY).catch(() => undefined);
-      await setEntitlement(INACTIVE());
-      return entitlementMem;
-    }
-    if (!res.ok) return getEntitlement();
-    const data = (await res.json()) as {
-      active?: boolean;
-      plan_allows?: boolean;
-      user_enabled?: boolean;
-      features?: Record<string, unknown>;
-      ai_checks?: ShieldAIChecks | null;
+let entitlementGeneration = 0;
+let entitlementRefresh: Promise<ShieldEntitlement | null> | null = null;
+
+/** Read the server once for concurrent callers. Forced refreshes invalidate
+ * older responses so a pre-toggle request cannot restore an old preference. */
+export function refreshShieldEntitlement(force = false): Promise<ShieldEntitlement | null> {
+  if (entitlementRefresh && !force) return entitlementRefresh;
+  const generation = ++entitlementGeneration;
+  const pending = (async () => {
+    const cred = await getShieldCredential();
+    const commit = async (value: ShieldEntitlement) => {
+      const currentCredential = await getShieldCredential();
+      if (generation !== entitlementGeneration || cred !== currentCredential) return getEntitlement();
+      await setEntitlement(value); return getEntitlement();
     };
-    const features: Partial<Record<ShieldFeature, boolean>> = {};
-    for (const [k, v] of Object.entries(data.features || {})) if (v === true) features[k as ShieldFeature] = true;
-    const tok = await getStoredToken();
-    await setEntitlement({
-      active: data.active === true,
-      planAllows: data.plan_allows === true,
-      userEnabled: data.user_enabled === true,
-      email: tok?.email || (await getEntitlement())?.email || '',
-      checkedAt: Date.now(),
-      features,
-      aiChecks: data.ai_checks && typeof data.ai_checks === 'object' ? data.ai_checks : null,
-    });
-    return entitlementMem;
-  } catch {
-    return getEntitlement();
-  }
+    if (!cred) return commit(INACTIVE());
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/shield/status`, { headers: { Authorization: authHeader(cred) }, cache: 'no-store' });
+      const currentCredential = await getShieldCredential();
+      if (generation !== entitlementGeneration || cred !== currentCredential) return getEntitlement();
+      if (res.status === 401) {
+        if (cred.startsWith('Shield ')) await browser.storage.local.remove(TOKEN_KEY).catch(() => undefined);
+        if (generation === entitlementGeneration) await setEntitlement(INACTIVE());
+        return getEntitlement();
+      }
+      if (!res.ok) return getEntitlement();
+      const data = await res.json();
+      const features: Partial<Record<ShieldFeature, boolean>> = {};
+      for (const [key, value] of Object.entries(data.features || {})) if (value === true) features[key as ShieldFeature] = true;
+      const tok = await getStoredToken();
+      return commit({ active: data.active === true && data.user_enabled === true && data.plan_allows === true,
+        planAllows: data.plan_allows === true, userEnabled: data.user_enabled === true,
+        email: tok?.email || (await getEntitlement())?.email || '', checkedAt: Date.now(), features,
+        aiChecks: data.ai_checks && typeof data.ai_checks === 'object' ? data.ai_checks : null });
+    } catch { return getEntitlement(); }
+  })();
+  entitlementRefresh = pending;
+  void pending.finally(() => { if (entitlementRefresh === pending) entitlementRefresh = null; }).catch(() => undefined);
+  return pending;
+}
+
+/** Apply a successfully saved preference immediately, including offline
+ * refresh failure. Enabling still needs a fresh server entitlement/rollout. */
+export async function applyShieldPreference(enabled: boolean): Promise<void> {
+  ++entitlementGeneration; entitlementRefresh = null;
+  const current = await getEntitlement();
+  if (current) await setEntitlement({ ...current, active: false, userEnabled: enabled, features: {} });
+  clearRemoteRiskCache();
 }
 
 /**
@@ -255,7 +264,7 @@ export async function ensureShieldDeviceToken(jwt: string, email: string): Promi
   const existing = await getStoredToken();
   const sameAccount = existing && existing.email === email;
   if (sameAccount && existing!.expiresAt - Date.now() > TOKEN_ROTATE_BEFORE_MS) {
-    void refreshShieldEntitlement();
+    void refreshShieldEntitlement(true);
     return;
   }
   try {
@@ -276,7 +285,7 @@ export async function ensureShieldDeviceToken(jwt: string, email: string): Promi
     // Replacing another account's (or an old) token: revoke it server-side.
     if (existing && existing.token !== data.token) await revokeStoredToken(existing);
     await localSet({ [TOKEN_KEY]: { token: data.token, expiresAt, email } satisfies StoredToken });
-    await refreshShieldEntitlement();
+    await refreshShieldEntitlement(true);
     void refreshBlocklist();
   } catch {
     /* offline — retried on next unlock */
@@ -298,6 +307,7 @@ async function revokeStoredToken(t: StoredToken | null): Promise<void> {
 
 /** Sign-out: revoke the device token and forget everything account-bound. */
 export async function shieldSignOut(): Promise<void> {
+  ++entitlementGeneration; entitlementRefresh = null;
   try { await revokeStoredToken(await getStoredToken()); }
   catch { console.warn('[XoraPass] remote revocation retry could not be persisted'); }
   await browser.storage.local.remove('shieldTextScanConsent');
@@ -321,7 +331,7 @@ export async function shieldFeature(feature: ShieldFeature): Promise<boolean> {
   const cfg = await getShieldConfig();
   if (!cfg.shield_enabled) return false;
   const e = await getEntitlement();
-  if (!e || !e.active) return false;
+  if (!e || !e.active || !e.userEnabled || !e.planAllows) return false;
   if (Date.now() - e.checkedAt > ENTITLEMENT_GRACE_MS) {
     void refreshShieldEntitlement();
     return false;
@@ -452,7 +462,7 @@ async function lookupFullHashes(prefixes: string[]): Promise<boolean> {
  */
 export async function checkBlocklist(url: string): Promise<BlocklistHit | null> {
   const cfg = await getShieldConfig();
-  if (!cfg.shield_enabled || !cfg.blocklist.enabled) return null;
+  if (!cfg.shield_enabled || !cfg.blocklist.enabled || !(await isShieldActive())) return null;
   await ensureBlocklistLoaded();
   const set = prefixSet;
   if (!set || set.size === 0) return null;

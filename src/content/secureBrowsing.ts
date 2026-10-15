@@ -13,7 +13,7 @@
 
 import browser from 'webextension-polyfill';
 import { showRiskWarning, showConfirmDialog, closeWebmailPhishingBanner } from './overlay';
-import { updateEmailInsight } from './emailInsight';
+import { updateEmailInsight, clearEmailInsight } from './emailInsight';
 import { analyzeEmailLink, analyzeAttachmentName, type EmailFinding } from '../utils/emailGuard';
 import { findEmailRoots, attachmentNames } from './webmailProviders';
 import { trackerFor } from '../utils/trackerList';
@@ -30,7 +30,7 @@ let currentShieldConfig: any = null;
 
 function readRollout(e: any, cfg: any): Record<string, boolean> {
   const fresh = e && e.active === true && Date.now() - Number(e.checkedAt || 0) < 24 * 60 * 60 * 1000;
-  if (!fresh || (cfg && cfg.shield_enabled === false) || e.features?.always_on !== true) return {};
+  if (!fresh || e.userEnabled === false || e.planAllows === false || (cfg && cfg.shield_enabled === false) || e.features?.always_on !== true) return {};
   return e.features || {};
 }
 
@@ -59,6 +59,11 @@ function loadRollout(): void {
 // storage; run them again once it is known (a static page may never mutate).
 let lastEmailHost: string | null = null;
 function rerunGatedChecks(): void {
+  if (!rollout.email_guard) {
+    clearEmailInsight(); closeWebmailPhishingBanner();
+    seenLinks = new WeakSet(); seenAttachments = new WeakSet(); linkFindings = new WeakMap();
+    document.querySelectorAll('[data-xorapass-badge]').forEach(el => el.remove());
+  }
   if (lastEmailHost && rollout.email_guard) {
     // The panel replaces the older sender banner — close it if it got there first.
     closeWebmailPhishingBanner();
@@ -74,9 +79,9 @@ export function featureOn(name: string): boolean {
 
 // ── Email Guard ────────────────────────────────────────────────────────────
 
-const seenLinks = new WeakSet<Element>();
-const seenAttachments = new WeakSet<Element>();
-const linkFindings = new WeakMap<Element, EmailFinding>();
+let seenLinks = new WeakSet<Element>();
+let seenAttachments = new WeakSet<Element>();
+let linkFindings = new WeakMap<Element, EmailFinding>();
 
 function badge(finding: EmailFinding): HTMLElement {
   const b = document.createElement('span');
@@ -99,6 +104,7 @@ function badge(finding: EmailFinding): HTMLElement {
 }
 
 function onEmailLinkClick(ev: MouseEvent): void {
+  if (!featureOn('email_guard')) return;
   const a = (ev.target as Element | null)?.closest?.('a[href]');
   if (!a) return;
   const f = linkFindings.get(a);
@@ -259,7 +265,7 @@ export function checkInsecureForms(): void {
     form.addEventListener(
       'submit',
       (ev) => {
-        if (confirmed || location.protocol !== 'https:' || !insecureAction(form)) return;
+        if (!featureOn('insecure_forms') || confirmed || location.protocol !== 'https:' || !insecureAction(form)) return;
         ev.preventDefault();
         ev.stopImmediatePropagation();
         void showConfirmDialog({

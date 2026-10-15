@@ -474,13 +474,24 @@ export const PopupApp: React.FC = () => {
     entitlement: { planAllows: boolean; userEnabled: boolean } | null;
     blocklistSize: number;
   } | null>(null);
+  const [shieldSettingsSaving, setShieldSettingsSaving] = useState(false);
+  const applyShieldState = (st: any) => {
+    if (!st || typeof st.active !== 'boolean') return;
+    setShieldState(st);
+    if (st.entitlement) {
+      setDomainRiskEnabled(!!st.entitlement.userEnabled);
+      setPlanAllowsDomainRisk(!!st.entitlement.planAllows);
+      setDomainRiskSettingsLoaded(true);
+    }
+  };
   useEffect(() => {
-    browser.runtime
-      .sendMessage({ type: 'SHIELD_GET_STATE' })
-      .then((st: any) => {
-        if (st && typeof st.active === 'boolean') setShieldState(st);
-      })
-      .catch(() => undefined);
+    let disposed = false;
+    const load = (refresh = false) => browser.runtime.sendMessage({ type: 'SHIELD_GET_STATE', payload: { refresh } })
+      .then((st: any) => { if (!disposed) applyShieldState(st); }).catch(() => undefined);
+    const changed = (changes: any, area: string) => { if (area === 'local' && (changes.shieldEntitlement || changes.shieldConfig)) void load(); };
+    browser.storage.onChanged.addListener(changed);
+    void load(true);
+    return () => { disposed = true; browser.storage.onChanged.removeListener(changed); };
   }, [unlocked]);
 
   // Theme preference ('dark' | 'light' | 'system')
@@ -605,14 +616,6 @@ export const PopupApp: React.FC = () => {
               if (s && typeof s.lockOnScreenLock === 'boolean') {
                 setLockOnScreenLock(s.lockOnScreenLock);
               }
-            });
-            browser.runtime.sendMessage({ type: 'GET_DOMAIN_RISK_SETTINGS' }).then((r: any) => {
-              const settings = r?.settings;
-              if (settings) {
-                setDomainRiskEnabled(!!settings.userEnabled);
-                setPlanAllowsDomainRisk(!!settings.planAllows);
-              }
-              setDomainRiskSettingsLoaded(true);
             });
             browser.runtime.sendMessage({ type: 'GET_PLAN_FEATURES' }).then((r: any) => {
               setPlanAllowsPasteGuard(r?.allowPasteGuard !== false);
@@ -854,14 +857,12 @@ export const PopupApp: React.FC = () => {
     browser.runtime.sendMessage({ type: 'SET_LOCK_ON_SCREEN_LOCK', payload: { enabled } });
   };
 
-  const changeDomainRiskEnabled = (enabled: boolean) => {
-    setDomainRiskEnabled(enabled); // optimistic; reverted below on failure
-    browser.runtime
-      .sendMessage({ type: 'SET_DOMAIN_RISK_SETTINGS', payload: { enabled } })
-      .then((r: any) => {
-        if (!r?.success) setDomainRiskEnabled(!enabled);
-      })
-      .catch(() => setDomainRiskEnabled(!enabled));
+  const changeDomainRiskEnabled = async (enabled: boolean) => {
+    if (shieldSettingsSaving) return;
+    setShieldSettingsSaving(true);
+    try { const result: any = await browser.runtime.sendMessage({ type: 'SET_DOMAIN_RISK_SETTINGS', payload: { enabled } }); applyShieldState(result?.state); }
+    catch { /* retain the last confirmed switch/banner state */ }
+    finally { setShieldSettingsSaving(false); }
   };
 
   const changeCheckoutGuardEnabled = (enabled: boolean) => {
@@ -3254,7 +3255,7 @@ export const PopupApp: React.FC = () => {
                       role="switch"
                       aria-checked={domainRiskEnabled}
                       aria-label="Enable Phishing & Lookalike Shield"
-                      disabled={!planAllowsDomainRisk || !domainRiskSettingsLoaded}
+                      disabled={shieldSettingsSaving || !planAllowsDomainRisk || !domainRiskSettingsLoaded}
                       onClick={() => changeDomainRiskEnabled(!domainRiskEnabled)}
                       className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                         domainRiskEnabled && planAllowsDomainRisk ? 'bg-brand-cyan' : 'bg-slate-300'
@@ -3448,27 +3449,27 @@ export const PopupApp: React.FC = () => {
             {tab === 'ai' && (
               <div className="space-y-3 animate-fade-in flex-1 flex flex-col">
                 {/* XoraPass Shield Banner Card */}
-                <div className="p-3 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden border border-slate-800">
+                <div data-shield-active={shieldState?.active === true} className={`p-3 rounded-xl shadow-xs space-y-1.5 relative overflow-hidden border ${shieldState?.active ? 'bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 text-white border-slate-800' : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:border-slate-700'}`}>
                   <div className="flex items-center justify-between relative z-10">
                     <div className="flex items-center gap-2">
-                      <div className="w-7 h-7 rounded-lg bg-brand-cyan/20 border border-brand-cyan/30 flex items-center justify-center text-brand-cyan">
+                      <div className={`w-7 h-7 rounded-lg border flex items-center justify-center ${shieldState?.active ? 'bg-brand-cyan/20 border-brand-cyan/30 text-brand-cyan' : 'bg-slate-200 border-slate-300 text-slate-500 dark:bg-slate-800 dark:border-slate-600 dark:text-slate-400'}`}>
                         <ShieldCheck className="w-4 h-4" />
                       </div>
                       <div>
-                        <h3 className="text-sm font-black tracking-tight text-white leading-none">XoraPass Shield</h3>
-                        <span className="text-[10px] text-brand-cyan font-bold tracking-wide uppercase">Active Browsing Defense</span>
+                        <h3 className="text-sm font-black tracking-tight leading-none">XoraPass Shield</h3>
+                        <span className={`text-[10px] font-bold tracking-wide uppercase ${shieldState?.active ? 'text-brand-cyan' : 'text-slate-600 dark:text-slate-400'}`}>{shieldState?.active ? 'Active browsing defense' : shieldState ? 'Automatic protection off' : 'Checking protection…'}</span>
                       </div>
                     </div>
                     <button
-                      onClick={() => { scanCurrentSite(); scanActiveAiTabs(); }}
-                      className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-                      title="Re-scan current website and tabs"
+                      onClick={async () => { const st = await browser.runtime.sendMessage({ type: 'SHIELD_REFRESH' }); applyShieldState(st); scanCurrentSite(); scanActiveAiTabs(); }}
+                      className={`p-1 rounded-lg transition cursor-pointer ${shieldState?.active ? 'hover:bg-white/10 text-slate-400 hover:text-white' : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'}`}
+                      title="Refresh protection status and scan website and tabs"
                     >
                       <RefreshCw className={`w-4 h-4 ${isScanningSite || scanningTabs ? 'animate-spin' : ''}`} />
                     </button>
                   </div>
-                  <p className="text-xs text-slate-300 leading-snug relative z-10">
-                    Continuous zero-knowledge phishing defense, lookalike detection, and credential guard.
+                  <p className={`text-xs leading-snug relative z-10 ${shieldState?.active ? 'text-slate-300' : 'text-slate-600 dark:text-slate-400'}`}>
+                    {shieldState?.active ? 'Continuous phishing defense, lookalike detection, and credential guard.' : shieldState ? 'Automatic phishing checks and credential warnings are paused. You can still run a manual site scan.' : 'Checking your account protection setting.'}
                   </p>
                   {shieldState && (
                     <p className="text-[11px] leading-snug relative z-10 font-semibold">
@@ -3477,15 +3478,15 @@ export const PopupApp: React.FC = () => {
                           Always-on protection: active{shieldState.blocklistSize > 0 ? ` · ${shieldState.blocklistSize.toLocaleString()} known threats` : ''} · keeps working while locked
                         </span>
                       ) : shieldState.killSwitch ? (
-                        <span className="text-amber-300">Always-on protection is temporarily paused by XoraPass.</span>
+                        <span className="text-amber-700 dark:text-amber-300">Always-on protection is temporarily paused by XoraPass.</span>
                       ) : shieldState.entitlement && !shieldState.entitlement.planAllows ? (
-                        <span className="text-slate-400">Always-on protection (works while locked) is included in paid plans.</span>
+                        <span className="text-slate-600 dark:text-slate-400">Always-on protection (works while locked) is included in paid plans.</span>
                       ) : shieldState.entitlement && !shieldState.entitlement.userEnabled ? (
-                        <span className="text-slate-400">Always-on protection is off — turn on Phishing &amp; Lookalike Shield in Settings.</span>
+                        <span className="text-slate-600 dark:text-slate-400">Automatic protection is off. Manual site scans are still available.</span>
                       ) : unlocked ? (
-                        <span className="text-slate-400">Always-on protection is rolling out to accounts.</span>
+                        <span className="text-slate-600 dark:text-slate-400">Always-on protection is rolling out to accounts.</span>
                       ) : (
-                        <span className="text-slate-400">Sign in to enable always-on protection.</span>
+                        <span className="text-slate-600 dark:text-slate-400">Sign in to enable always-on protection.</span>
                       )}
                     </p>
                   )}
