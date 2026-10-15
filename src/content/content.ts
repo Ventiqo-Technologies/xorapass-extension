@@ -373,8 +373,11 @@ async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
   if (response.error) { showToast('Masked email', response.error); return; }
   if (!input.isConnected) return;
   const options: OverlayCredential[] = [{
-    id: '__generate_masked_email__', label: 'Generate masked email',
-    username: `Create an alias for ${window.location.hostname}`, category: 'email_alias', hasTotp: false,
+    id: '__generate_masked_email__', label: 'Generate website-based email',
+    username: `Includes the name of ${window.location.hostname}`, category: 'email_alias', hasTotp: false,
+  }, {
+    id: '__generate_random_masked_email__', label: 'Generate random email',
+    username: 'Random address without the website name', category: 'email_alias', hasTotp: false,
   }];
   if (response.primaryEmail) options.push({
     id: '__primary_email__', label: 'Use primary email', username: response.primaryEmail,
@@ -391,9 +394,10 @@ async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
     credentials: options,
     warning: null,
     onPick: async (id) => {
-      if (id === '__generate_masked_email__') {
+      if (id === '__generate_masked_email__' || id === '__generate_random_masked_email__') {
+        const format = id === '__generate_random_masked_email__' ? 'random_uuid' : 'brand_prefix';
         const generated = await browser.runtime.sendMessage({
-          type: 'GENERATE_EMAIL_ALIAS', payload: { label: window.location.hostname, format: 'brand_prefix' },
+          type: 'GENERATE_EMAIL_ALIAS', payload: { label: window.location.hostname, format },
         }).catch(() => null) as any;
         if (!generated?.alias?.alias_email) {
           showToast('Masked email', generated?.error || 'Could not generate a masked email');
