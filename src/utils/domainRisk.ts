@@ -68,6 +68,8 @@ export interface DomainRiskAssessment {
   // Raw threat-intel provider signals from the backend, carried through the
   // merge so the Site Scanner can display them. Never set locally.
   threatIntelSignals?: Record<string, string>;
+  policyEnforced?: boolean;
+  confirmedThreat?: boolean;
 }
 
 /** Known phishing and credential-harvesting action keywords. */

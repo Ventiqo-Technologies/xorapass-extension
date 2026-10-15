@@ -53,6 +53,7 @@ import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
 import { credentialRequestUrl } from '../utils/credentialOrigin';
 import { VaultSession } from '../utils/vaultSession';
+import { applyCredentialFormRisk } from '../utils/credentialFormRisk';
 import { isSupportedWebmail } from '../utils/webmailGuard';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import {
@@ -1237,15 +1238,15 @@ function blocklistAssessment(base: DomainRiskAssessment, threatType: string): Do
     riskScore: 100,
     riskLevel: 'critical',
     decision: 'block',
+    confirmedThreat: true,
     reasons: Array.from(new Set([threatReason(threatType), ...base.reasons])),
     safeWarningMessage: threatReason(threatType),
   };
 }
 
 /**
- * Navigation guard (L0 → L1 → L2) for a top-level page that is still
- * loading. Fast and local; the server is only contacted to confirm a
- * blocklist prefix hit.
+ * Navigation guard for a top-level page that is still loading. Domain trust
+ * does not skip confirmed-threat or enabled remote policy checks.
  */
 async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
   const cfg = await getShieldConfig();
@@ -1260,7 +1261,6 @@ async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
   const host = extractHostname(url);
   // Gradual rollout: MAIN-world behaviour hooks (ClickFix, wallets, lock-in).
   const hooks = await shieldFeature('page_hooks');
-  if (hasRiskApproval(sender.tab?.id, host)) return { ...allow, layer: 'allowlist', hooks };
 
   const [allowlist, session] = await Promise.all([
     getDomainAllowlist(),
@@ -1276,7 +1276,9 @@ async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
 
   const blocklistHit = await checkBlocklist(url);
   // Saved sites + built-in brand catalog, so this works while locked too.
-  const local = assessWithCatalog(host, knownHosts, allowlist, url, shieldAssessOptions(cfg), mergeExtraBrands(cfg.extra_brands));
+  const local = await evaluateDomainRisk({
+    hostname: host, currentUrl: url, knownHosts, allowlist, savedDomain: '', sensitivity: 'standard', locked: true,
+  });
   const decision = decideNavigation({ url, config: cfg, active, userAllowlist: allowlist, knownHosts, blocklistHit, local });
   return { ...decision, typingGuardMs, hooks };
 }
@@ -1300,41 +1302,21 @@ async function evaluateDomainRisk(opts: {
     : await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
   if (!domainRiskOn || isLocalOrPrivateHost(opts.hostname)) return disabledDomainRiskAssessment(opts.hostname);
 
-  // Layer-0 Global Trusted Domains (admin panel) & user allowlist integration:
-  // Trusted platforms & admin-allowlisted hosts must not be flagged by local lookalike heuristics.
-  const effectiveAllowlist = Array.from(new Set([...opts.allowlist, ...(cfg.trusted_domains || [])]));
-  if (isTrustedHost(opts.hostname, opts.knownHosts, cfg.trusted_domains || [])) {
-    return {
-      pageHostname: opts.hostname,
-      registrableDomain: registrableDomain(opts.hostname),
-      riskScore: 0,
-      riskLevel: 'safe',
-      decision: 'allow',
-      reasons: ['Domain is verified as a trusted platform or globally allowlisted'],
-      matchedTarget: null,
-      isAllowlisted: true,
-      signals: {
-        isExactMatch: false,
-        isSubdomainMatch: false,
-        isSameRegistrableDomain: true,
-        hasPunycode: false,
-        isHomograph: false,
-        suspiciousKeywords: [],
-        isInsecureTransport: false,
-        isHighRiskTld: false,
-        subdomainCount: opts.hostname.split('.').length,
-      },
-    };
-  }
+  // Trust suppresses hostname heuristics, never form, threat or policy checks.
+  const trusted = isTrustedHost(opts.hostname, opts.knownHosts, cfg.trusted_domains || []);
+  const effectiveAllowlist = Array.from(new Set([...opts.allowlist, ...(cfg.trusted_domains || []), ...(trusted ? [opts.hostname] : [])]));
 
   const brands = mergeExtraBrands(cfg.extra_brands);
   let risk = assessWithCatalog(opts.hostname, opts.knownHosts, effectiveAllowlist, opts.currentUrl, shieldAssessOptions(cfg), brands);
   // Page structure (brand shown vs. real domain, password field, hosting,
   // fake windows), scored locally — works offline and without the server.
   risk = applyPageRisk(risk, scorePageSignals(opts.pageSignals, opts.hostname, brands), shieldAssessOptions(cfg));
+  risk = applyCredentialFormRisk(risk, opts.currentUrl, opts.formContext, opts.pageSignals);
+  const hit = await checkBlocklist(opts.currentUrl);
+  if (hit) risk = blocklistAssessment(risk, hit.threatType);
 
   // Remote kill switch applies to every path; the gate only to the listing.
-  if (!cfg.remote.enabled || (opts.remoteGate && !opts.remoteGate(risk, cfg))) return risk;
+  if (!cfg.remote.enabled || (!trusted && !risk.isAllowlisted && opts.remoteGate && !opts.remoteGate(risk, cfg))) return risk;
 
   const remoteRisk = await checkDomainRiskRemote(
     opts.currentUrl,
@@ -1344,7 +1326,8 @@ async function evaluateDomainRisk(opts: {
     opts.sensitivity,
     globalThis.fetch,
     getShieldCredential,
-    opts.pageSignals
+    opts.pageSignals,
+    true // Mandatory policy checks must reach the server, not a client cache.
   );
 
   // Always merge. mergeLocalAndRemoteRisk owns the allowlist rule — it returns
@@ -1353,7 +1336,10 @@ async function evaluateDomainRisk(opts: {
   // the call for allowlisted domains (as this used to) made that guard dead
   // code and let a user-level allowlist toggle silently override an org
   // blocklist — precisely what the policy_enforced flag exists to prevent.
-  return remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
+  const merged = remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
+  // A domain allow policy does not authorize an unsafe credential destination.
+  // A locally confirmed blocklist hit is also independent of trust/policy hints.
+  return hit ? blocklistAssessment(merged, hit.threatType) : applyCredentialFormRisk(merged, opts.currentUrl, opts.formContext, opts.pageSignals);
 }
 
 /**
@@ -1366,15 +1352,13 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
   if (!hostname || isLocalOrPrivateHost(hostname)) return;
 
   try {
-    const [disabled, allowlist, isShieldOn, cfg] = await Promise.all([
+    const [disabled, allowlist, isShieldOn] = await Promise.all([
       isSiteDisabled(hostname),
       getDomainAllowlist(),
       isShieldActive(),
-      getShieldConfig(),
     ]);
 
     if (disabled || !isShieldOn) return;
-    if (hasRiskApproval(tabId, hostname)) return;
 
     const res = await browser.storage.session.get(['unlocked', 'vaultItems']);
     const items = (res as Record<string, unknown>).unlocked
@@ -1384,11 +1368,6 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
       .filter((i) => !!i.url)
       .map((i) => extractHostname(i.url!))
       .filter(Boolean);
-
-    // Layer-0 Global Trusted Domains or user allowlist: bypass proactive tab warnings
-    if (isAllowlistedHost(hostname, allowlist) || isTrustedHost(hostname, knownHosts, cfg.trusted_domains || [])) {
-      return;
-    }
 
     const matching = (items || []).filter(
       (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)

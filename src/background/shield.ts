@@ -19,6 +19,7 @@
 
 import browser from 'webextension-polyfill';
 import { API_BASE_URL } from '../utils/config';
+import { clearRemoteRiskCache } from '../utils/domainRiskService';
 import { DEFAULT_SHIELD_CONFIG, coerceShieldConfig, type ShieldConfig } from '../utils/shieldConfig';
 import { PrefixSet, prefixHex, loadStoredBlocklist, saveStoredBlocklist } from '../utils/shieldBlocklist';
 import { hashUrlExpressions } from '../utils/urlHashing';
@@ -129,6 +130,7 @@ export async function refreshShieldConfig(): Promise<ShieldConfig> {
     }
     if (!res.ok) return before;
     const cfg = coerceShieldConfig(await res.json());
+    if (JSON.stringify(cfg) !== JSON.stringify(before)) clearRemoteRiskCache();
     configMem = cfg;
     if (cfg?.redirector_rules?.length) {
       setActiveRedirectorRules(cfg.redirector_rules);

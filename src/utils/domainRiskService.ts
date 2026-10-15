@@ -82,41 +82,58 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 // Cached separately from MEMORY_CACHE (which is keyed per-domain): this is a
 // single account-wide flag, refreshed on its own short TTL so a plan change
 // takes effect quickly without a status call on every single domain check.
-let statusCache: { enabled: boolean; expiresAt: number } | null = null;
+let statusCache: { enabled: boolean; expiresAt: number; scope: string } | null = null;
 const STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
 
-/**
- * Stable hash of the page-shape vector, so two visits to the same host with
- * the same page share a cached verdict while a page that changes shape does
- * not. Mirrors pageSignalsFingerprint in the backend's page_classifier.go.
- */
-function pageShapeKey(signals?: PageSignals): string {
-  if (!signals) return 'nosig';
-  const json = JSON.stringify(signals);
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < json.length; i++) {
-    hash ^= json.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
+// Canonical full metadata prevents property order and delimiter collisions.
+function canonicalMetadata(value: unknown): string {
+  if (Array.isArray(value)) return '[' + value.map(canonicalMetadata).join(',') + ']';
+  if (value && typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    return '{' + Object.keys(object).filter(k => object[k] !== undefined).sort()
+      .map(k => JSON.stringify(k) + ':' + canonicalMetadata(object[k])).join(',') + '}';
   }
-  return hash.toString(16);
+  return JSON.stringify(value) ?? 'null';
 }
 
-function buildCacheKey(
-  currentDomain: string,
-  savedDomain: string,
-  actionHost: string,
-  isAI: boolean,
-  sensitivity: string,
-  signals?: PageSignals
-): string {
-  return [
-    extractHostname(currentDomain),
-    extractHostname(savedDomain),
-    extractHostname(actionHost),
-    isAI ? 'ai' : 'user',
-    sensitivity,
-    pageShapeKey(signals),
-  ].join('|');
+let cacheGeneration = 0;
+let activeCredentialScope = 'anonymous';
+async function credentialScope(credential: string): Promise<string> {
+  if (!credential) return 'anonymous';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(credential));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function buildCacheKey(payload: RemoteDomainRiskCheckRequest, scope: string): string {
+  return payload.current_domain + '|' + scope + '|' + canonicalMetadata(payload);
+}
+
+function riskPayload(currentUrl: string, savedDomain: string, formContext?: FormThreatContext,
+  aiContext?: AISessionThreatContext, sensitivity = 'standard', pageSignals?: PageSignals): RemoteDomainRiskCheckRequest {
+  const normalizedUrl = sanitizeUrlForRiskCheck(currentUrl) || `https://${extractHostname(currentUrl)}/`;
+  const payload: RemoteDomainRiskCheckRequest = {
+    current_url: normalizedUrl, current_domain: extractHostname(currentUrl), saved_domain: extractHostname(savedDomain),
+    credential_sensitivity: sensitivity as RemoteDomainRiskCheckRequest['credential_sensitivity'],
+  };
+  if (pageSignals) payload.page_signals = pageSignals;
+  if (formContext) {
+    let actionUrl: string | undefined;
+    if (formContext.actionUrl) {
+      try {
+        const resolved = new URL(formContext.actionUrl, normalizedUrl);
+        actionUrl = /^https?:$/.test(resolved.protocol) ? sanitizeUrlForRiskCheck(resolved.href) : 'invalid:';
+      } catch { actionUrl = 'invalid:'; }
+    }
+    payload.form_context = {
+      is_login_form: !!formContext.isLoginForm, has_password_field: !!formContext.hasPasswordField,
+      has_mfa_field: !!formContext.hasMfaField, has_lead_capture_form: !!formContext.hasLeadCaptureForm,
+      is_iframe: !!formContext.isIframe, action_url: actionUrl, num_inputs: formContext.numInputs ?? 0,
+    };
+  }
+  if (aiContext?.isAISession) payload.ai_session_context = {
+    is_ai_session: true, agent_id: aiContext.agentId || '', tool_name: aiContext.toolName || '',
+  };
+  return payload;
 }
 
 /**
@@ -129,6 +146,7 @@ function buildCacheKey(
  * for ten minutes after the user turned it back on.
  */
 export function clearRemoteRiskCache(): void {
+  cacheGeneration++;
   MEMORY_CACHE.clear();
   statusCache = null;
 }
@@ -138,6 +156,7 @@ export function clearRemoteRiskCache(): void {
  */
 export function clearRemoteRiskCacheForHost(hostname: string): void {
   const norm = extractHostname(hostname);
+  cacheGeneration++;
   for (const key of MEMORY_CACHE.keys()) {
     if (key.startsWith(norm + '|')) {
       MEMORY_CACHE.delete(key);
@@ -182,16 +201,19 @@ export function getCachedRemoteRisk(
   actionUrl: string = '',
   isAI: boolean = false,
   sensitivity: 'standard' | 'high' | 'critical' = 'standard',
-  signals?: PageSignals
+  signals?: PageSignals,
+  context?: { formContext?: FormThreatContext; aiContext?: AISessionThreatContext }
 ): RemoteDomainRiskResponse | null {
-  const key = buildCacheKey(currentDomain, savedDomain, actionUrl, isAI, sensitivity, signals);
+  const payload = riskPayload(currentDomain, savedDomain, context?.formContext ?? (actionUrl ? { actionUrl } : undefined),
+    context?.aiContext ?? (isAI ? { isAISession: true } : undefined), sensitivity, signals);
+  const key = buildCacheKey(payload, activeCredentialScope);
   const entry = MEMORY_CACHE.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
     MEMORY_CACHE.delete(key);
     return null;
   }
-  return { ...entry.data, cached: true };
+  return { ...structuredClone(entry.data), cached: true };
 }
 
 // Resolves the current session JWT, or '' if locked/unavailable/lookup fails.
@@ -232,65 +254,27 @@ export async function checkDomainRiskRemote(
   sensitivity: 'standard' | 'high' | 'critical' = 'standard',
   fetchFn: typeof fetch = globalThis.fetch,
   getJwtFn?: () => Promise<string>,
-  pageSignals?: PageSignals
+  pageSignals?: PageSignals,
+  forceRefresh = true
 ): Promise<RemoteDomainRiskResponse | null> {
   const currHost = extractHostname(currentUrl);
   if (!currHost) return null;
 
-  // Ensure current_url is always a full URL — providers like Google Web Risk
-  // require scheme + host — and never carries a query string, fragment or
-  // userinfo: that is where reset tokens, magic links, OAuth codes and
-  // session IDs live, and none of it says anything about the site itself.
-  const normalizedUrl = sanitizeUrlForRiskCheck(currentUrl) || `https://${currHost}/`;
-
-  const actionHost = formContext?.actionUrl ? extractHostname(formContext.actionUrl) : '';
-  const isAI = !!aiContext?.isAISession;
-
-  // 1. Check client cache first
-  const cached = getCachedRemoteRisk(currHost, savedDomain, actionHost, isAI, sensitivity, pageSignals);
-  if (cached) {
-    return cached;
-  }
-
-  // 2. Prepare safe zero-knowledge request payload
-  const payload: RemoteDomainRiskCheckRequest = {
-    current_url: normalizedUrl,
-    current_domain: currHost,
-    saved_domain: extractHostname(savedDomain),
-    credential_sensitivity: sensitivity,
-  };
-
-  if (pageSignals) {
-    payload.page_signals = pageSignals;
-  }
-
-  if (formContext) {
-    payload.form_context = {
-      is_login_form: formContext.isLoginForm,
-      has_password_field: formContext.hasPasswordField,
-      has_mfa_field: formContext.hasMfaField,
-      has_lead_capture_form: formContext.hasLeadCaptureForm,
-      is_iframe: formContext.isIframe,
-      action_url: formContext.actionUrl ? sanitizeUrlForRiskCheck(formContext.actionUrl) : undefined,
-      num_inputs: formContext.numInputs,
-    };
-  }
-
-  if (aiContext && aiContext.isAISession) {
-    payload.ai_session_context = {
-      is_ai_session: true,
-      agent_id: aiContext.agentId || '',
-      tool_name: aiContext.toolName || '',
-    };
-  }
-
-  // 3. Attach JWT if available — the backend records an anonymized telemetry
-  //    event on every call, but the admin panel receives these events in the
-  //    Domain Risk feed. Without auth the call still works (the route is
-  //    public), but attaching the token ensures proper session tracking and
-  //    makes the event visible immediately in the admin panel refresh.
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const generation = cacheGeneration;
   const jwt = await getJwtOrEmpty(getJwtFn);
+  const scope = await credentialScope(jwt);
+  activeCredentialScope = scope;
+  const payload = riskPayload(currentUrl, savedDomain, formContext, aiContext, sensitivity, pageSignals);
+  const key = buildCacheKey(payload, scope);
+  // Default calls always reach the backend for fresh policy/user approvals.
+  // Explicit opt-in reuse is for metadata-only callers; credential checks
+  // already pass forceRefresh=true. Never reuse a policy-enforced response.
+  const cached = MEMORY_CACHE.get(key);
+  if (!forceRefresh && generation === cacheGeneration && cached && Date.now() < cached.expiresAt && !cached.data.policy_enforced) {
+    return { ...structuredClone(cached.data), cached: true };
+  }
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (jwt) {
     headers['Authorization'] = authHeaderValue(jwt);
   }
@@ -309,10 +293,8 @@ export async function checkDomainRiskRemote(
     const data = (await res.json()) as RemoteDomainRiskResponse;
     if (data && typeof data.risk_score === 'number' && data.decision) {
       // Store in memory cache
-      const key = buildCacheKey(currHost, savedDomain, actionHost, isAI, sensitivity, pageSignals);
-      MEMORY_CACHE.set(key, {
-        data,
-        expiresAt: Date.now() + CACHE_TTL_MS,
+      if (generation === cacheGeneration) MEMORY_CACHE.set(key, {
+        data: structuredClone(data), expiresAt: Date.now() + CACHE_TTL_MS,
       });
       return data;
     }
@@ -334,13 +316,19 @@ export function mergeLocalAndRemoteRisk(
     return local;
   }
 
+  const hasThreatIntelHit =
+    (remote.reason_codes || []).some((rc) => rc === 'THREAT_INTEL_PHISHING_HIT' || rc === 'THREAT_INTEL_MALWARE_HIT') ||
+    Object.values(remote.threat_intel_signals || {}).some((sig) => sig === 'phishing_hit' || sig === 'malware_hit');
+  const hasFormRisk = (remote.reason_codes || []).some((rc) =>
+    ['CROSS_ORIGIN_FORM_ACTION', 'INSECURE_FORM_ACTION', 'INVALID_FORM_ACTION'].includes(rc));
+
   // A local, user-level allowlist toggle can suppress ordinary heuristic/
   // threat-intel noise for a domain the user has personally vetted — but it
   // must NOT be able to override a business admin's DomainRiskPolicy. That's
   // precisely the "weaker user-level setting" business policy exists to
   // override; letting isAllowlisted bypass it here would silently defeat the
   // whole org-blocklist / stricter-credential-category feature.
-  if (local.isAllowlisted && !remote.policy_enforced) {
+  if (local.isAllowlisted && !remote.policy_enforced && !hasThreatIntelHit && !hasFormRisk) {
     return local;
   }
 
@@ -363,13 +351,6 @@ export function mergeLocalAndRemoteRisk(
   // Check whether threat intelligence (Google Web Risk, VirusTotal, Cloudflare, etc.) flagged
   // this domain as suspected phishing or malware. A confirmed threat intel hit must NEVER
   // be softened or presented as merely a low/medium warning.
-  const hasThreatIntelHit =
-    (remote.reason_codes || []).some(
-      (rc) => rc === 'THREAT_INTEL_PHISHING_HIT' || rc === 'THREAT_INTEL_MALWARE_HIT'
-    ) ||
-    Object.values(remote.threat_intel_signals || {}).some(
-      (sig) => sig === 'phishing_hit' || sig === 'malware_hit'
-    );
 
   // Choose stricter decision & higher score
   let score = Math.max(local.riskScore, remote.risk_score);
@@ -443,6 +424,8 @@ export function mergeLocalAndRemoteRisk(
         (hasThreatIntelHit && !isUnblockedOverride) ||
         (decision === 'block' && (!!remote.policy_enforced || score >= 85))),
     threatIntelSignals: remote.threat_intel_signals,
+    policyEnforced: !!remote.policy_enforced,
+    confirmedThreat: hasThreatIntelHit && !isUnblockedOverride && !isPolicyAllowed,
   };
 }
 
@@ -502,23 +485,22 @@ export async function checkDomainRiskEnabled(
   fetchFn: typeof fetch = globalThis.fetch,
   getJwtFn?: () => Promise<string>
 ): Promise<boolean> {
-  if (statusCache && Date.now() < statusCache.expiresAt) {
-    return statusCache.enabled;
-  }
-
-  const headers: Record<string, string> = {};
+  const generation = cacheGeneration;
   const jwt = await getJwtOrEmpty(getJwtFn);
+  const scope = await credentialScope(jwt);
+  if (statusCache?.scope === scope && Date.now() < statusCache.expiresAt) return statusCache.enabled;
+  const headers: Record<string, string> = {};
   if (jwt) headers['Authorization'] = authHeaderValue(jwt);
 
   try {
     const res = await fetchFn(`${API_BASE_URL}/api/domain-risk/status`, { headers });
-    if (!res.ok) return statusCache?.enabled ?? true;
+    if (!res.ok) return statusCache?.scope === scope ? statusCache.enabled : true;
     const data = (await res.json()) as { enabled?: boolean };
     const enabled = data.enabled !== false;
-    statusCache = { enabled, expiresAt: Date.now() + STATUS_CACHE_TTL_MS };
+    if (generation === cacheGeneration) statusCache = { enabled, scope, expiresAt: Date.now() + STATUS_CACHE_TTL_MS };
     return enabled;
   } catch {
-    return statusCache?.enabled ?? true;
+    return statusCache?.scope === scope ? statusCache.enabled : true;
   }
 }
 
@@ -586,7 +568,7 @@ export async function updateDomainRiskSettings(
       body: JSON.stringify({ enabled }),
     });
     if (!res.ok) return false;
-    statusCache = null;
+    clearRemoteRiskCache();
     return true;
   } catch {
     return false;

@@ -79,12 +79,12 @@ describe('domainRiskService — Privacy & Zero-Knowledge Contract', () => {
     }));
 
     // First call (fetches remote)
-    const first = await checkDomainRiskRemote('https://github.com', 'github.com', undefined, undefined, 'standard', mockFetch as any);
+    const first = await checkDomainRiskRemote('https://github.com', 'github.com', undefined, undefined, 'standard', mockFetch as any, undefined, undefined, false);
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(first?.risk_score).toBe(0);
 
     // Second call (hits client cache)
-    const second = await checkDomainRiskRemote('https://github.com', 'github.com', undefined, undefined, 'standard', mockFetch as any);
+    const second = await checkDomainRiskRemote('https://github.com', 'github.com', undefined, undefined, 'standard', mockFetch as any, undefined, undefined, false);
     expect(mockFetch).toHaveBeenCalledTimes(1); // Not called again!
     expect(second?.cached).toBe(true);
   });
