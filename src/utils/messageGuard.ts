@@ -79,6 +79,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // because the real consent already happened when a human unlocked it.
   'WEB_BRIDGE_REQUEST_SESSION',
   'WEB_BRIDGE_DOMAIN_BLOCKED',
+  'WEB_BRIDGE_SHIELD_SETTINGS_CHANGED',
   'GET_COPIED_SECRET',
   'CHECK_DOMAIN_RISK',
   // Risk-warning safe actions: same trust tier as CHECK_DOMAIN_RISK — our own
@@ -89,7 +90,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // The user's explicit "fill anyway" on a require_approval verdict. Same
   // trust tier as REPORT_PHISHING: raised by our own injected overlay, carries
   // no secret, and the background scopes the resulting approval to the sender
-  // tab's REAL hostname (never the payload's) with a short TTL.
+  // full document URL, document token and form destinations with a short TTL.
   'RISK_APPROVE_DOMAIN',
   // Web store update check and apply actions triggered by popup settings.
   'CHECK_UPDATE',
@@ -102,6 +103,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // inside a (usually cross-origin) payment iframe. Carries no data at all;
   // the background only relays "card fields exist" to the tab's top frame.
   'CARD_FIELDS_IN_FRAME',
+  'TAB_RISK_CHANGED',
   // Always-on Shield. SHIELD_NAV_CHECK comes from the document_start content
   // script and carries nothing — the background uses the sender frame's URL.
   'SHIELD_NAV_CHECK',
@@ -129,6 +131,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // Popup requests the active warning (if any) that the in-page overlay is
   // displaying, so it can mirror it inline without a second risk scan.
   'GET_ACTIVE_TAB_WARNING',
+  'GET_TAB_RISK_CONTEXT',
   // Popup tells the content script the user dismissed the warning in the popup,
   // so the in-page overlay card can also be closed.
   'DISMISS_TAB_RISK_WARNING',
@@ -265,6 +268,7 @@ export function validateMessage(
     'WEB_BRIDGE_DELIVER_KEY',
     'WEB_BRIDGE_REQUEST_SESSION',
     'WEB_BRIDGE_DOMAIN_BLOCKED',
+    'WEB_BRIDGE_SHIELD_SETTINGS_CHANGED',
   ]);
   if (isExternalWebPage && !EXTERNAL_WEB_ALLOWED.has(type)) {
     return { ok: false, reason: 'unauthorized-external-type' };
@@ -380,7 +384,7 @@ export function validateMessage(
       break;
     case 'GET_CREDENTIAL_SECRET':
       // Only the item id is trusted from the caller; the background re-derives
-      // the requesting hostname from the sender tab rather than the payload.
+      // the requesting hostname from authorized frame metadata, not the payload.
       if (!payload || typeof payload.id !== 'string' || !payload.id) {
         return { ok: false, reason: 'bad-payload' };
       }

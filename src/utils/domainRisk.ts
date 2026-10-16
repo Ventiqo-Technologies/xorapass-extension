@@ -1,3 +1,4 @@
+import { numericRiskLevel, heuristicDecision } from './riskThresholds';
 // Pure, dependency-free domain risk and phishing detection engine.
 //
 // Detects:
@@ -68,6 +69,8 @@ export interface DomainRiskAssessment {
   // Raw threat-intel provider signals from the backend, carried through the
   // merge so the Site Scanner can display them. Never set locally.
   threatIntelSignals?: Record<string, string>;
+  policyEnforced?: boolean;
+  confirmedThreat?: boolean;
 }
 
 /** Known phishing and credential-harvesting action keywords. */
@@ -1143,20 +1146,9 @@ export function assessDomainRisk(
   assessment.reasons = Array.from(new Set(detectedReasons));
   assessment.riskScore = highestScore;
 
-  // Determine Risk Level and Decision
-  if (highestScore >= blockScore) {
-    assessment.riskLevel = highestScore >= 90 ? 'critical' : 'high';
-    assessment.decision = 'block';
-  } else if (highestScore >= warnScore) {
-    assessment.riskLevel = 'medium';
-    assessment.decision = 'warn';
-  } else if (highestScore > 0) {
-    assessment.riskLevel = 'low';
-    assessment.decision = 'allow';
-  } else {
-    assessment.riskLevel = 'safe';
-    assessment.decision = 'allow';
-  }
+  // Severity bands stay independent from configurable action thresholds.
+  assessment.riskLevel = numericRiskLevel(highestScore);
+  assessment.decision = heuristicDecision(highestScore, warnScore, blockScore);
 
   return assessment;
 }

@@ -1,4 +1,4 @@
-// Shared, dependency-free site-trust utilities.
+// Shared site-trust utilities, with a bundled Public Suffix List.
 //
 // IMPORTANT: keep this module free of DOM / chrome API usage so it stays pure
 // and unit-testable, and so it can be bundled into both the background service
@@ -6,6 +6,14 @@
 // imported by the content script, which must remain a self-contained classic
 // script.
 
+import { getPublicSuffix } from 'tldts';
+
+const PSL_OPTIONS = { allowPrivateDomains: true } as const;
+
+// Conservative extra boundaries retained from the existing platform catalog.
+// The maintained PSL is authoritative for longer/wildcard/exception suffixes;
+// these can only make a boundary stricter, never collapse two PSL tenants.
+//
 // Public suffixes under which registrations are made. Two kinds live here:
 //
 //  1. ccTLD second-level registries (co.uk, com.au, ...) — the classic case.
@@ -17,10 +25,8 @@
 //     reduce to github.io, and isDomainMatch() happily offers one tenant's
 //     saved credentials on another tenant's page.
 //
-// This is deliberately not the full Public Suffix List. Unknown suffixes fall
-// back to the last two labels, which is the stricter (safe) direction for the
-// ccTLD case — but note it is the UNSAFE direction for case 2, which is why
-// shared-hosting suffixes must be added here explicitly as they are adopted.
+// This catalog supplements the full PSL; it must never be used as a fallback
+// that replaces a more specific rule in that list.
 export const MULTI_PART_SUFFIXES = new Set([
   // ── ccTLD second-level registries ──────────────────────────────────────
   'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk', 'ltd.uk', 'plc.uk', 'net.uk', 'sch.uk',
@@ -97,6 +103,37 @@ export const FREE_HOSTING_SUFFIXES: readonly string[] = [
   'typedream.app', 'carrd.co', 'tiiny.site',
 ];
 
+// AWS access portals are separate organization/account realms. Sharing the
+// provider's suffix is not authorization to release another realm's login.
+const ADDITIONAL_TENANT_SUFFIXES = ['awsapps.com', 'signin.aws'] as const;
+const EXTRA_SUFFIXES = new Set([
+  ...MULTI_PART_SUFFIXES,
+  ...FREE_HOSTING_SUFFIXES,
+  ...ADDITIONAL_TENANT_SUFFIXES,
+]);
+
+/** Longest applicable boundary, including private PSL and wildcard rules. */
+function publicSuffix(host: string): string {
+  const suffix = getPublicSuffix(host, PSL_OPTIONS) || '';
+  const labels = host.split('.');
+  for (let i = 0; i < labels.length; i++) {
+    const candidate = labels.slice(i).join('.');
+    if (candidate.length <= suffix.length) break;
+    if (EXTRA_SUFFIXES.has(candidate)) return candidate;
+  }
+  return suffix;
+}
+
+/** The hostname itself when it is local/IP/a suffix, otherwise its tenant. */
+function domainForHost(host: string): string {
+  if (!host || host === 'localhost' || IPV4_RE.test(host) || host.includes(':')) return host;
+  const suffix = publicSuffix(host);
+  if (!suffix || host === suffix) return host;
+  const prefix = host.slice(0, -(suffix.length + 1));
+  const label = prefix.split('.').pop();
+  return label ? `${label}.${suffix}` : host;
+}
+
 export function isFreeHostingHost(host: string): boolean {
   const h = normalizeHostname(host);
   if (!h) return false;
@@ -112,11 +149,15 @@ export function isUserContentHost(host: string): boolean {
 
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 
-/** Lower-cases, trims and strips a trailing dot and a leading `www.`. */
+/** Normalizes a host; strips `www.` only within the same registrable tenant. */
 export function normalizeHostname(host: string): string {
   let h = (host || '').trim().toLowerCase();
   h = h.replace(/\.+$/, '');
-  h = h.replace(/^www\./, '');
+  if (h.startsWith('www.')) {
+    const withoutWww = h.slice(4);
+    // www.framer.app can itself be a tenant; it is not framer.app's alias.
+    if (domainForHost(h) === domainForHost(withoutWww)) h = withoutWww;
+  }
   return h;
 }
 
@@ -146,17 +187,7 @@ export function extractHostname(input: string): string {
  * IP addresses and `localhost` are returned unchanged.
  */
 export function registrableDomain(host: string): string {
-  const h = normalizeHostname(host);
-  if (!h || h === 'localhost' || IPV4_RE.test(h) || h.includes(':')) return h;
-
-  const parts = h.split('.').filter(Boolean);
-  if (parts.length <= 2) return h;
-
-  const lastTwo = parts.slice(-2).join('.');
-  if (MULTI_PART_SUFFIXES.has(lastTwo)) {
-    return parts.slice(-3).join('.');
-  }
-  return lastTwo;
+  return domainForHost(normalizeHostname(host));
 }
 
 /**
@@ -172,14 +203,10 @@ export function registrableDomain(host: string): string {
 export function stripPublicSuffix(host: string): string {
   const h = normalizeHostname(host);
   if (!h) return '';
-  const parts = h.split('.').filter(Boolean);
-  if (parts.length <= 1) return h;
-  // The suffix is two labels for a known multi-part suffix (co.uk, github.io),
-  // one otherwise. Mirrors registrableDomain's rule, so the two never disagree
-  // about where the registrable part of a hostname begins.
-  const suffixLabels = MULTI_PART_SUFFIXES.has(parts.slice(-2).join('.')) ? 2 : 1;
-  if (parts.length <= suffixLabels) return h;
-  return parts.slice(0, parts.length - suffixLabels).join('.');
+  if (IPV4_RE.test(h) || h.includes(':')) return h;
+  const suffix = publicSuffix(h);
+  if (!suffix || h === suffix) return h;
+  return h.slice(0, -(suffix.length + 1));
 }
 
 /** True when `host` equals `base` or is a subdomain of it. */
@@ -194,8 +221,9 @@ export function isSubdomainOf(host: string, base: string): boolean {
  * Decides whether a stored credential (whose saved URL/host is `credInput`) may
  * be offered for the page at `pageHost`.
  *
- * A match requires an exact host, a genuine sub/parent-domain relationship, or
- * an identical registrable domain. This rejects the classic suffix-confusion
+ * A match requires an exact host or an identical registrable tenant. A raw
+ * parent/subdomain relationship cannot bypass a public/private suffix boundary.
+ * This rejects the classic suffix-confusion
  * attacks (e.g. `example.com.evil.com` will NOT match `example.com`) that the
  * previous `includes()`-based logic allowed.
  */
@@ -211,27 +239,9 @@ export function isDomainMatch(pageHost: string, credInput: string): boolean {
   // Google's page, and the same goes for tenants on *.blob.core.windows.net.
   if (isUserContentHost(page) || isUserContentHost(cred)) return false;
 
-  if (isSubdomainOf(page, cred) || isSubdomainOf(cred, page)) return true;
-
   const rp = registrableDomain(page);
   const rc = registrableDomain(cred);
-  if (rp && rc && rp === rc) return true;
-
-  // AWS SSO / IAM Identity Center cross-domain compatibility:
-  // AWS SSO portals live on *.awsapps.com, *.signin.aws, and *.aws.amazon.com
-  const isAwsDomain = (h: string) =>
-    h.endsWith('.awsapps.com') ||
-    h === 'awsapps.com' ||
-    h.endsWith('.signin.aws') ||
-    h === 'signin.aws' ||
-    h.endsWith('.aws.amazon.com') ||
-    h === 'aws.amazon.com';
-
-  if (isAwsDomain(page) && isAwsDomain(cred)) {
-    return true;
-  }
-
-  return false;
+  return !!rp && !!rc && rp === rc;
 }
 
 export interface FrameContext {

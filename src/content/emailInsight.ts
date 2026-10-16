@@ -1,3 +1,5 @@
+import { showConfirmDialog } from './overlay';
+import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE } from '../utils/textScanPrivacy';
 // XoraPass email check — a small panel above the OPEN email in a supported
 // webmail: who really sent it, what the subject is, where every link really
 // goes, and the on-device findings. "Analyze with AI" (paid Shield, rolled
@@ -7,9 +9,10 @@
 // Sent for AI analysis (only then): sender name + address, Reply-To, subject,
 // link text + destination (no query strings), attachment names, and up to
 // 1,500 characters of body text with e-mail addresses, phone and long numbers
-// removed. Nothing else, and nothing is stored.
+// removed. Arbitrary confidential text may remain; consent is required.
 
 import browser from 'webextension-polyfill';
+import { normalizeEmailScanResult, emailInsightSummary, type EmailScanResult as AiResult } from '../utils/emailScanResult';
 import { summarizeEmailLocal, findReplyTo, type EmailLocalSummary } from '../utils/emailGuard';
 import { unwrapLink } from '../utils/linkInspect';
 import { extractHostname } from '../utils/siteTrust';
@@ -30,19 +33,6 @@ interface OpenEmail {
   bodyText: string;
 }
 
-interface AiResult {
-  verdict: 'phishing' | 'scam' | 'suspicious' | 'legit' | 'unavailable';
-  risk_score?: number;
-  title?: string;
-  message?: string;
-  impersonated_brand?: string;
-  sender_domain?: string;
-  sender_matches_brand?: boolean;
-  red_flags?: string[];
-  links?: { index: number; host: string; reason: string }[];
-  reason?: string;
-}
-
 const EMAIL_RE = /([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/;
 
 const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
@@ -61,7 +51,7 @@ function textOf(el: Element | null | undefined): string {
 /** Text without XoraPass's own inline badges (they must not change the email's identity). */
 function cleanText(el: Element): string {
   const clone = el.cloneNode(true) as Element;
-  clone.querySelectorAll('[data-xorapass-badge], [data-xorapass-email-insight]').forEach((b) => b.remove());
+  clone.querySelectorAll('[data-xorapass-badge], [data-xorapass-email-insight], [contenteditable], input, textarea, select, [role="textbox"], [data-private], [hidden]').forEach((b) => b.remove());
   return (clone.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
@@ -190,36 +180,13 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
 
   const aiBad = ai && (ai.verdict === 'phishing' || ai.verdict === 'scam');
   const aiWarn = ai && ai.verdict === 'suspicious';
-  const aiLegit = ai && ai.verdict === 'legit';
-  const hasSevereFinding = local.findings.some((f) => f.reasons.some((r) => /IP address|runs code|executable/i.test(r)));
-  const effectiveDanger = aiLegit ? hasSevereFinding : local.danger;
-  const effectiveCautions = aiLegit ? 0 : local.cautions;
-  const level = aiBad || effectiveDanger ? 'danger' : aiWarn || effectiveCautions > 0 ? 'caution' : 'ok';
+  const { level, summary } = emailInsightSummary(local, ai);
   const card = el('div', `card ${level === 'ok' ? '' : level}`);
   const bar = el('div', 'bar');
   const logo = el('img', 'logo');
   logo.src = browser.runtime.getURL('icons/icon16.png');
   logo.alt = 'XoraPass';
   bar.appendChild(logo);
-  const n = local.findings.length;
-  const summary =
-    ai && ai.verdict !== 'unavailable'
-      ? aiBad
-        ? ai.verdict === 'phishing'
-          ? 'Likely phishing email — don\'t click its links'
-          : 'Likely scam email — don\'t reply or pay'
-        : aiWarn
-          ? 'Suspicious email — check carefully'
-          : aiLegit
-            ? 'AI verified: legitimate email from verified sender'
-            : n
-              ? `AI found no scam, but ${n} thing${n === 1 ? '' : 's'} to check`
-              : 'AI found no signs of a scam'
-      : local.danger
-        ? `XoraPass found ${n} warning${n === 1 ? '' : 's'} on this email`
-        : n
-          ? `${n} thing${n === 1 ? '' : 's'} to check on this email`
-          : 'XoraPass email check: nothing suspicious found';
   bar.appendChild(el('div', `summary ${level}`, summary));
   const toggle = el('button', '', 'Details');
   bar.appendChild(toggle);
@@ -299,10 +266,10 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   }
   if (ai && ai.verdict !== 'unavailable') {
     details.appendChild(
-      el('div', 'muted', 'AI analysis (OpenAI): sender, subject, link addresses and a redacted excerpt were checked. Nothing is stored.')
+      el('div', 'muted', 'AI analysis (OpenAI) checked the supplied sender, subject, links and redacted excerpt. Sender authentication was not verified. Redaction may leave confidential text; analyze only content you choose to share.')
     );
   } else if (aiAllowed) {
-    details.appendChild(el('div', 'muted', 'Checked on your device. "Analyze with AI" sends the sender, subject, link addresses and a redacted excerpt — nothing is stored.'));
+    details.appendChild(el('div', 'muted', 'Checked on your device. "Analyze with AI" sends the sender, subject, link addresses and a redacted excerpt. Redaction cannot remove every secret.'));
   }
   card.appendChild(details);
   root.appendChild(card);
@@ -313,18 +280,25 @@ const AI_LIMIT_TEXT: Record<string, string> = {
   quota: 'You have used this month\'s AI checks. Add more from the XoraPass popup, or wait for the monthly reset. On-device checks still run.',
   daily_limit: 'Daily AI check limit reached. It resets at midnight UTC. On-device checks still run.',
   budget: 'AI checks are paused for today. On-device checks still run.',
+  invalid_response: 'AI returned an invalid result. On-device warnings are unchanged; you can retry the analysis.',
+  low_confidence: 'AI could not reach a confident result. On-device warnings are unchanged.',
+  error: 'AI analysis is unavailable. On-device warnings are unchanged; you can retry.',
 };
 
 /** trigger: 'auto' when XoraPass ran it on its own (free, fair-use limit),
  *  'button' when the user asked (uses 1 AI check). */
 async function runAi(m: OpenEmail, local: EmailLocalSummary, trigger: 'auto' | 'button'): Promise<void> {
   if (!current || current.key !== m.key) return;
-  render(m, local, null, true, true);
-  const res = (await browser.runtime
-    .sendMessage({ type: 'SHIELD_EMAIL_SCAN', payload: { email: payloadFor(m, local), trigger } })
-    .catch(() => null)) as AiResult | null;
+  if (trigger === 'auto') {
+    if (!(await automaticTextScansAllowed(browser.storage.local))) return;
+  } else if (!(await showConfirmDialog({ title: 'Analyze this email with AI?', body: [TEXT_SCAN_NOTICE], confirmLabel: 'Send for analysis', cancelLabel: 'Cancel' }))) return;
   if (!current || current.key !== m.key) return;
-  render(m, local, res || { verdict: 'unavailable' }, false, true);
+  render(m, local, null, true, true);
+  const res = await browser.runtime
+    .sendMessage({ type: 'SHIELD_EMAIL_SCAN', payload: { email: payloadFor(m, local), trigger, consent: TEXT_SCAN_CONSENT_VERSION } })
+    .catch(() => null);
+  if (!featureOn('email_ai') || !current || current.key !== m.key) return;
+  render(m, local, normalizeEmailScanResult(res), false, true);
 }
 
 /** Called (throttled) whenever the webmail DOM changes. */
@@ -357,4 +331,8 @@ export function updateEmailInsight(host: string, customConfig?: any): void {
     autoRan.add(m.key);
     void runAi(m, local, 'auto');
   }
+}
+
+export function clearEmailInsight(): void {
+  current?.host.remove(); current = null;
 }

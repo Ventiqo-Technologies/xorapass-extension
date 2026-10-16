@@ -1,3 +1,4 @@
+import { automaticTextScansAllowed } from '../utils/textScanPrivacy';
 // XoraPass Content Script (Manifest V3)
 //
 // Responsibilities are deliberately narrow: detect login fields, ask the
@@ -15,6 +16,38 @@
 // and a warning is shown. All detection is on-device -- the pasted text is
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
+import { isAutofillSuppressed, isExtensionUiElement, onAutofillSuppressed } from '../utils/autofillSurface';
+import { acceptsTabRiskUpdate, createRiskDocumentToken, sameRiskDocument, type PageRiskContext } from '../utils/tabRiskContext';
+const riskDocumentToken = createRiskDocumentToken();
+const pageRiskContext = (): PageRiskContext => ({url:window.location.href,documentToken:riskDocumentToken});
+let warningRiskContext: PageRiskContext | null = null;
+
+// Node identities prevent a replacement form with the same URL from inheriting
+// a grant. No field values are read or transmitted by this scope.
+const approvalNodes = new WeakMap<Element, string>();
+function credentialApprovalContext() {
+  const formScope = querySelectorAllDeep<HTMLElement>(document, 'form, button[formaction], input[formaction]').map(node => {
+    let id = approvalNodes.get(node);
+    if (!id) { id = createRiskDocumentToken(); approvalNodes.set(node, id); }
+    const raw = node.getAttribute(node.tagName === 'FORM' ? 'action' : 'formaction') || window.location.href;
+    let action = raw;
+    try { action = new URL(raw, document.baseURI).href; } catch { /* retain invalid action identity */ }
+    return [id, action, node.getAttribute('method') || node.getAttribute('formmethod') || 'get'];
+  });
+  return { ...pageRiskContext(), formScope: JSON.stringify(formScope) };
+}
+async function requestCredentialSecret(id: string): Promise<any> {
+  const before = credentialApprovalContext();
+  const result = await browser.runtime.sendMessage({ type: 'GET_CREDENTIAL_SECRET',
+    payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() } });
+  const after = credentialApprovalContext();
+  if (!sameRiskDocument(before, after) || before.formScope !== after.formScope) return { error: 'page_changed' };
+  return result;
+}
+
+const notifyTabRiskChanged = () => {
+  if (window === window.top) void browser.runtime.sendMessage({type:'TAB_RISK_CHANGED'}).catch(() => {});
+};
 import {
   looksLikeUsername,
   looksLikeEmailField,
@@ -72,6 +105,7 @@ import { scanEmailContent, checkInsecureForms, checkOpaqueOriginLogin, featureOn
 
 let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
+let shieldUserEnabled = true;
 let domainRisk: {
   decision: string;
   riskScore: number;
@@ -319,8 +353,8 @@ function loadCredentials(): void {
         return;
       }
 
-      lookalikeWarning = response.lookalike || null;
-      domainRisk = response.risk || null;
+      lookalikeWarning = shieldUserEnabled ? response.lookalike || null : null;
+      domainRisk = shieldUserEnabled ? response.risk || null : null;
       activeCredentials = response.credentials || [];
 
       maybeShowProactiveRiskWarning();
@@ -353,6 +387,7 @@ function emailFieldAttrs(el: HTMLInputElement) {
 }
 
 async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
+  if (isAutofillSuppressed() || isExtensionUiElement(input)) return;
   if (domainRisk?.decision === 'block') {
     showToast('Masked email', 'Email fill is blocked on this site for security.');
     return;
@@ -364,8 +399,11 @@ async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
   if (response.error) { showToast('Masked email', response.error); return; }
   if (!input.isConnected) return;
   const options: OverlayCredential[] = [{
-    id: '__generate_masked_email__', label: 'Generate masked email',
-    username: `Create an alias for ${window.location.hostname}`, category: 'email_alias', hasTotp: false,
+    id: '__generate_masked_email__', label: 'Generate website-based email',
+    username: `Includes the name of ${window.location.hostname}`, category: 'email_alias', hasTotp: false,
+  }, {
+    id: '__generate_random_masked_email__', label: 'Generate random email',
+    username: 'Random address without the website name', category: 'email_alias', hasTotp: false,
   }];
   if (response.primaryEmail) options.push({
     id: '__primary_email__', label: 'Use primary email', username: response.primaryEmail,
@@ -382,9 +420,10 @@ async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
     credentials: options,
     warning: null,
     onPick: async (id) => {
-      if (id === '__generate_masked_email__') {
+      if (id === '__generate_masked_email__' || id === '__generate_random_masked_email__') {
+        const format = id === '__generate_random_masked_email__' ? 'random_uuid' : 'brand_prefix';
         const generated = await browser.runtime.sendMessage({
-          type: 'GENERATE_EMAIL_ALIAS', payload: { label: window.location.hostname, format: 'brand_prefix' },
+          type: 'GENERATE_EMAIL_ALIAS', payload: { label: window.location.hostname, format },
         }).catch(() => null) as any;
         if (!generated?.alias?.alias_email) {
           showToast('Masked email', generated?.error || 'Could not generate a masked email');
@@ -411,6 +450,7 @@ async function openEmailAliasDropdown(input: HTMLInputElement): Promise<void> {
 }
 
 function scanForEmailFields(): void {
+  if (isAutofillSuppressed()) return;
   if (window !== window.top) return;
   const inputs = querySelectorAllDeep<HTMLInputElement>(document, 'input')
     .filter((el) => isFillable(el) && looksLikeEmailField(emailFieldAttrs(el)) && !hasIcon(el));
@@ -454,6 +494,8 @@ function scheduleAiScan(): void {
 }
 
 async function maybeRunAiScan(href: string): Promise<void> {
+  if (!shieldUserEnabled) return;
+  if (!(await automaticTextScansAllowed(browser.storage.local))) return;
   if (aiScannedHref === href || window.location.href.split('#')[0] !== href) return;
   aiScannedHref = href;
   const nav = (window as unknown as { __xoraShieldNav?: { shown: boolean } }).__xoraShieldNav;
@@ -483,7 +525,7 @@ async function maybeRunAiScan(href: string): Promise<void> {
       },
     })
     .catch(() => null);
-  if (!res || typeof res.risk_score !== 'number' || res.risk_score < 45) return;
+  if (!shieldUserEnabled || !res || typeof res.risk_score !== 'number' || res.risk_score < 45) return;
   if (window.location.href.split('#')[0] !== href || isInterstitialOpen()) return;
   // Never downgrade or replace a stronger warning that is already showing.
   if (isRiskWarningOpen() && domainRisk?.decision === 'block') return;
@@ -539,6 +581,7 @@ async function maybeRunAiScan(href: string): Promise<void> {
 }
 
 function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): void {
+  if (!shieldUserEnabled) return;
   closeRiskWarning();
   const currentHostname = window.location.hostname;
   const expectedDomain = domainRisk?.matchedTarget || lookalikeWarning?.target || null;
@@ -548,6 +591,7 @@ function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): 
     'XoraPass Shield blocked this site: Confirmed phishing or malware domain.';
   const reasons = opts?.reasons || domainRisk?.reasons || ['Domain confirmed blocked by security policy.'];
 
+  const approvalContext = credentialApprovalContext();
   showPhishingInterstitial({
     advisory: webRiskAdvisoryFromSignals(domainRisk?.threatIntelSignals),
     currentDomain: currentHostname,
@@ -582,7 +626,7 @@ function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): 
         .catch(() => ({ success: false, reason: 'network' })),
     onProceedAnyway: () =>
       browser.runtime
-        .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname } })
+        .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname, approvalContext } })
         .then((res: any) => ({ success: !!res?.success }))
         .catch(() => ({ success: false })),
   });
@@ -593,6 +637,8 @@ function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): 
 // on hostname+decision so repeated loadCredentials() calls (tab focus,
 // visibility change, SPA route watchers) don't re-pop an already-seen alert.
 async function maybeShowProactiveRiskWarning(): Promise<void> {
+  if (!shieldUserEnabled) return;
+  const warningContext = pageRiskContext();
   // The document_start navigation guard (shieldNav.ts) may already have
   // shown the full-page warning for this page — never stack a second one,
   // and if the user chose to continue there, don't re-block them here.
@@ -602,11 +648,13 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   if (navHandled && nav!.action === 'block') return;
   const decision = domainRisk?.decision;
   const isRisky = decision === 'block' || decision === 'warn' || decision === 'require_approval';
-  const key = `${window.location.hostname}|${decision || ''}`;
+  const key = `${window.location.href}|${decision || ''}`;
 
   if (!isRisky) {
+    warningRiskContext = null;
     lastWarnedRiskKey = null;
     closeRiskWarning();
+    notifyTabRiskChanged();
     if (isInterstitialOpen()) closePhishingInterstitial();
     return;
   }
@@ -619,8 +667,10 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // block instead of a corner banner: at that point letting the user read and
   // interact with the page at all is the risk being managed.
   if ((domainRisk?.showInterstitial || (domainRisk as any)?.show_interstitial || domainRisk?.decision === 'block') && !navHandled) {
+    warningRiskContext = warningContext;
     lastWarnedRiskKey = key;
     triggerFullPageBlock();
+    notifyTabRiskChanged();
     return;
   }
 
@@ -653,12 +703,14 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // The risky-decision key can change (or this can go stale) while the
   // lookup above was in flight — a page navigation, or the risk clearing.
   // Bail rather than showing a warning for a state that's no longer current.
-  if (lastWarnedRiskKey !== key) return;
+  if (lastWarnedRiskKey !== key || !sameRiskDocument(warningContext, pageRiskContext())) return;
 
   const isMalware = (domainRisk?.reasons || []).some((r) => /malware/i.test(r)) ||
     Object.values(domainRisk?.threatIntelSignals || {}).some((s) => s === 'malware_hit');
   const blockTitle = isMalware ? 'Dangerous Malware Site Blocked' : 'Likely Phishing Site Blocked';
 
+  warningRiskContext = warningContext;
+  const approvalContext = credentialApprovalContext();
   showRiskWarning({
     severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
     title: decision === 'block' ? blockTitle : 'Suspicious Site Detected',
@@ -728,7 +780,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
       decision === 'require_approval'
         ? () =>
             browser.runtime
-              .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname } })
+              .sendMessage({ type: 'RISK_APPROVE_DOMAIN', payload: { hostname: currentHostname, approvalContext } })
               .then((res: any) => {
                 if (res?.success) {
                   // Re-request the credential list: the background withheld it
@@ -741,6 +793,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
               .catch(() => ({ success: false }))
         : undefined,
   });
+  notifyTabRiskChanged();
 }
 
 /**
@@ -784,26 +837,41 @@ browser.runtime.onMessage.addListener((message: any) => {
     renderAiBanner(message.payload as AiFillOffer);
   } else if (message.type === 'SHORTCUT_AUTOFILL') {
     void handleShortcutAutofill();
+  } else if (message.type === 'GET_CREDENTIAL_APPROVAL_CONTEXT') {
+    return window === window.top ? Promise.resolve(credentialApprovalContext()) : undefined;
+  } else if (message.type === 'GET_TAB_RISK_CONTEXT') {
+    return window === window.top ? Promise.resolve(pageRiskContext()) : undefined;
   } else if (message.type === 'TAB_RISK_UPDATE') {
-    const risk = message.payload?.risk || message.risk;
-    if (risk) {
-      domainRisk = risk;
-      lastWarnedRiskKey = null; // force fresh evaluation
-      maybeShowProactiveRiskWarning();
+    if (shieldUserEnabled && acceptsTabRiskUpdate(window === window.top, pageRiskContext(), message)) {
+      domainRisk = message.payload?.risk || message.risk;
+      lastWarnedRiskKey = null;
+      void maybeShowProactiveRiskWarning().then(notifyTabRiskChanged);
     }
   } else if (message.type === 'POPUP_STATE_CHANGED') {
     setPopupSuppressed(Boolean(message.payload?.open ?? message.payload?.isOpen));
   } else if (message.type === 'GET_ACTIVE_TAB_WARNING') {
-    return Promise.resolve(getActiveRiskWarning());
+    if (window !== window.top || !sameRiskDocument(message.pageContext, pageRiskContext())) return undefined;
+    if (!sameRiskDocument(warningRiskContext, pageRiskContext())) return Promise.resolve(null);
+    const warning = getActiveRiskWarning();
+    // Full-page blocks do not create a corner warning, but the popup still
+    // needs their effective decision rather than displaying "Autofill on".
+    return Promise.resolve(domainRisk?.decision === 'block' ? {
+      severity: 'block', title: 'Dangerous Site Blocked',
+      message: domainRisk.safeWarningMessage || getRiskWarningMessage() || 'Shield blocks autofill on this page.',
+      currentDomain: window.location.hostname, expectedDomain: domainRisk.matchedTarget,
+      riskLevel: domainRisk.riskLevel,
+    } : warning);
   } else if (message.type === 'GET_PAGE_SIGNALS') {
-    return Promise.resolve({ pageSignals: worthAssessingSignals() || collectPageSignals() });
+    if (window !== window.top) return undefined;
+    return Promise.resolve({ pageSignals: worthAssessingSignals() || collectPageSignals(), pageContext: pageRiskContext() });
   } else if (message.type === 'DISMISS_TAB_RISK_WARNING') {
-    closeRiskWarning();
+    if (window === window.top && sameRiskDocument(message.pageContext, pageRiskContext())) closeRiskWarning();
   }
   return undefined;
 });
 
 async function handleShortcutAutofill(): Promise<void> {
+  if (isAutofillSuppressed()) return;
   // If credentials are not loaded yet or empty, try a fast reload
   if (activeCredentials.length === 0) {
     loadCredentials();
@@ -906,6 +974,9 @@ function isClippedByAncestor(el: HTMLElement): boolean {
 
 // An input is fillable if it's visible and user-editable.
 function isFillable(el: HTMLInputElement): boolean {
+  // Risk collection also uses this predicate. Keep assessing the underlying
+  // form while the overlay/scanner entry points suppress its autofill UI.
+  if (isExtensionUiElement(el)) return false;
   if (!el || el.type === 'hidden' || el.disabled || el.readOnly) return false;
   if (el.offsetParent === null && el.offsetWidth === 0 && el.offsetHeight === 0) return false;
 
@@ -934,6 +1005,7 @@ function isFillable(el: HTMLInputElement): boolean {
  * idempotent, so the MutationObserver can call it freely.
  */
 function scanForLoginFields(): void {
+  if (isAutofillSuppressed()) return;
   const passwordInputs = querySelectorAllDeep<HTMLInputElement>(
     document,
     'input[type="password"]'
@@ -1060,11 +1132,7 @@ function scanForLoginFields(): void {
             const confirmed = await confirmFillIfNeeded(cred);
             if (!confirmed) return;
 
-            const res = (await browser.runtime
-              .sendMessage({
-                type: 'GET_CREDENTIAL_SECRET',
-                payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
-              })
+            const res = (await requestCredentialSecret(id)
               .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
 
             if (!res || res.error) {
@@ -1106,11 +1174,7 @@ function scanForLoginFields(): void {
             if (!confirmed) return;
 
             // Fetch the secret which includes the account ID / alias (stored in accountId)
-            const res = (await browser.runtime
-              .sendMessage({
-    type: 'GET_CREDENTIAL_SECRET',
-    payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
-  })
+            const res = (await requestCredentialSecret(id)
               .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
 
             if (!res || res.error) {
@@ -1191,6 +1255,8 @@ try {
 let paymentFieldsInSubframe = false;
 
 function scanForPaymentFields(): void {
+  if (!shieldUserEnabled) return;
+  if (isAutofillSuppressed()) return;
   if (!checkoutGuardEnabled || hasWarnedCheckoutOnPage) return;
 
   const isInsecure = isInsecureContext();
@@ -1261,6 +1327,7 @@ function scanForPaymentFields(): void {
 const warnedSendersOnPage = new Set<string>();
 
 function scanWebmailMessages(): void {
+  if (!shieldUserEnabled) return;
   if (window === window.top) {
     checkInsecureForms();
     checkOpaqueOriginLogin();
@@ -1423,6 +1490,7 @@ function isAiSessionRisk(): boolean {
 // state, shared by the in-dropdown banner (activate()) and the proactive
 // unprompted alert (maybeShowProactiveRiskWarning()).
 function getRiskWarningMessage(): string | null {
+  if (!shieldUserEnabled) return null;
   // Prefer the backend's explanation (static fallback table or OpenAI-
   // generated) — it's already tailored to the specific reason codes,
   // including the AI-session and org-policy cases below, so when present it
@@ -1456,6 +1524,7 @@ let preferredSuggestionLength = 20;
 // the user actually clicked or focused, so the menu appears where they are
 // looking. On a sign-up field the menu leads with a generated password.
 function activate(passInput: HTMLInputElement, anchor: HTMLInputElement): void {
+  if (isAutofillSuppressed() || isExtensionUiElement(anchor)) return;
   // The email field shares the signup icon with its password pair. Route this
   // activation to email masking, leaving password generation on the password.
   if (anchor !== passInput && newPasswordFields.get(passInput) === true && looksLikeEmailField(emailFieldAttrs(anchor))) {
@@ -1557,6 +1626,7 @@ function applyGeneratedPassword(passInput: HTMLInputElement, password: string): 
 }
 
 async function handlePick(id: string, passInput: HTMLInputElement): Promise<void> {
+  if (isAutofillSuppressed()) return;
   const cred = activeCredentials.find((c) => c.id === id);
   if (!cred) return;
 
@@ -1564,11 +1634,7 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
   if (!confirmed) return;
 
   // Fetch the secret only now, for this one entry.
-  const res = (await browser.runtime
-    .sendMessage({
-    type: 'GET_CREDENTIAL_SECRET',
-    payload: { id, formContext: collectFormContext(), pageSignals: worthAssessingSignals() },
-  })
+  const res = (await requestCredentialSecret(id)
     .catch(() => null)) as { username?: string; value?: string; accountId?: string; totpCode?: string; error?: string } | null;
 
   if (!res || res.error || typeof res.value !== 'string') {
@@ -1724,6 +1790,7 @@ function removeAiBanner() {
 }
 
 function renderAiBanner(offer: AiFillOffer) {
+  if (isAutofillSuppressed()) { removeAiBanner(); return; }
   // Don't stack duplicate banners for the same session, and don't downgrade
   // an already-shown banner for a different offer without replacing it.
   if (aiBanner && aiBanner.dataset.sessionId === offer.sessionId) return;
@@ -1906,6 +1973,7 @@ async function confirmFillIfNeeded(cred: OverlayCredential): Promise<boolean> {
  * plain `el.value = x` is silently reverted by React's controlled inputs.
  */
 function autofillField(el: HTMLInputElement, value: string): void {
+  if (isAutofillSuppressed() || isExtensionUiElement(el)) return;
   // Use the native setter to bypass React/Vue's value tracking so the
   // internal state and the DOM value are both updated.
   const nativeSetter = Object.getOwnPropertyDescriptor(
@@ -2826,6 +2894,8 @@ function initPasteGuard(): void {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
+onAutofillSuppressed(() => { clearAll(); closeSavePrompt(); removeAiBanner(); });
+
 const frame = assessFrame();
 if (frame.isTop || !frame.isCrossOriginFrame) {
   // Only run in the top frame or in a same-origin (first-party) sub-frame.
@@ -2933,11 +3003,6 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     if (message?.type === 'SHOW_LINK_INSPECTION' && message.payload) {
       showLinkInspectionModal(message.payload);
     }
-    // Site Scanner (popup → background → here): structural page features
-    // only — see the privacy contract in utils/pageSignals.ts.
-    if (message?.type === 'GET_PAGE_SIGNALS') {
-      return Promise.resolve({ pageSignals: collectPageSignals() });
-    }
     // Privacy report (popup): trackers + mixed content seen by this page.
     if (message?.type === 'GET_PRIVACY_SIGNALS' && window === window.top) {
       return Promise.resolve({ privacy: collectPrivacySignals() });
@@ -2952,14 +3017,6 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
     if (message?.type === 'CARD_FIELDS_IN_FRAME') {
       paymentFieldsInSubframe = true;
       scanForPaymentFields();
-    }
-    if (message?.type === 'TAB_RISK_UPDATE' && window === window.top) {
-      if (message.risk) {
-        domainRisk = message.risk;
-        lastWarnedRiskKey = null; // force re-evaluation
-        maybeShowProactiveRiskWarning();
-      }
-      return Promise.resolve({ received: true });
     }
     return undefined;
   });
@@ -3036,3 +3093,28 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   });
 })();
 
+
+// Preferences apply to open documents, not just the next navigation.
+let shieldPreferenceVersion = 0;
+function applyContentShieldPreference(enabled: boolean): void {
+  const before = shieldUserEnabled;
+  shieldUserEnabled = enabled;
+  if (!shieldUserEnabled) {
+    domainRisk = null; lookalikeWarning = null; warningRiskContext = null; lastWarnedRiskKey = null;
+    closeRiskWarning(); closePhishingInterstitial(); closeCheckoutProtectionBanner(); closeWebmailPhishingBanner();
+    notifyTabRiskChanged();
+  }
+  if (before !== shieldUserEnabled && (frame.isTop || !frame.isCrossOriginFrame)) loadCredentials();
+}
+const initialPreferenceVersion = shieldPreferenceVersion;
+void browser.storage.local.get('shieldEntitlement').then((r: any) => {
+  if (shieldPreferenceVersion === initialPreferenceVersion) applyContentShieldPreference(r.shieldEntitlement?.userEnabled !== false);
+});
+browser.storage.onChanged.addListener((changes: any, area: string) => {
+  if (area !== 'local' || !changes.shieldEntitlement) return;
+  ++shieldPreferenceVersion;
+  applyContentShieldPreference(changes.shieldEntitlement.newValue?.userEnabled !== false);
+  if (window === window.top && ['https://app.xorapass.com', new URL(WEB_APP_URL).origin].includes(window.location.origin)) {
+    window.postMessage({ source: 'xorapass-extension-bridge', type: 'SHIELD_SETTINGS_CHANGED' }, window.location.origin);
+  }
+});

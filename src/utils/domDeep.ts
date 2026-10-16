@@ -1,3 +1,5 @@
+import { isExtensionUiElement } from './autofillSurface';
+
 /**
  * domDeep.ts
  *
@@ -36,7 +38,7 @@ export function querySelectorAllDeep<T extends Element = Element>(
       if (typeof node.querySelectorAll === 'function') {
         const matched = node.querySelectorAll<T>(selector);
         for (let i = 0; i < matched.length; i++) {
-          results.push(matched[i]);
+          if (!isExtensionUiElement(matched[i])) results.push(matched[i]);
         }
       }
     } catch {
@@ -50,6 +52,7 @@ export function querySelectorAllDeep<T extends Element = Element>(
         const allDescendants = node.querySelectorAll('*');
         for (let i = 0; i < allDescendants.length; i++) {
           const el = allDescendants[i];
+          if (isExtensionUiElement(el)) continue;
           const sr = el.shadowRoot;
           if (sr && !seenRoots.has(sr)) {
             queue.push({ node: sr, depth: depth + 1 });

@@ -167,6 +167,9 @@ describe('Production Bundle Smoke Test: dist/shieldNav.js', () => {
         id: 'mock-xorapass-extension-id',
         sendMessage: () => Promise.resolve({ action: 'allow' }),
       },
+      storage: {
+        onChanged: { addListener: () => {}, removeListener: () => {} },
+      },
     };
     sandbox.document = {
       title: 'Test Page',

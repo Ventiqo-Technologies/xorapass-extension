@@ -167,14 +167,14 @@ describe('Shield decision pipeline', () => {
     expect(d.layer).toBe('blocklist');
   });
 
-  it('lets the user allowlist win over the blocklist', () => {
+  it('keeps a confirmed blocklist hit above the user allowlist', () => {
     const d = decideNavigation({
       ...base,
       url: 'https://intranet.example/',
       userAllowlist: ['intranet.example'],
       blocklistHit: { threatType: 'MALWARE', source: 'xorapass' },
     });
-    expect(d.action).toBe('allow');
+    expect(d.action).toBe('block');
   });
 
   it('blocks a critical lookalike only above the nav threshold', () => {

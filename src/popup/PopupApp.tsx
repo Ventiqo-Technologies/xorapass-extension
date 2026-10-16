@@ -1,6 +1,9 @@
+import { TEXT_SCAN_CONSENT_KEY, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE } from '../utils/textScanPrivacy';
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
+import { useActiveTabRisk } from './useActiveTabRisk';
+import { isCurrentRiskContext, autofillRiskIndicator } from '../utils/tabRiskContext';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import { GOOGLE_NO_GUARANTEE_NOTICE, webRiskAdvisoryFromSignals, type ThreatAdvisory } from '../utils/webRiskAttribution';
 import {
@@ -48,7 +51,7 @@ import {
   Flag,
 } from 'lucide-react';
 import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptSafety';
-import { auditInstalledExtensions, type ExtensionAuditSummary } from '../utils/extensionAudit';
+import { type ExtensionAuditSummary } from '../utils/extensionAudit';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
@@ -448,15 +451,7 @@ export const PopupApp: React.FC = () => {
   const [activeTabUrl, setActiveTabUrl] = useState<string>('');
   const [activeTabTitle, setActiveTabTitle] = useState<string>('');
   const [activeTabFavIcon, setActiveTabFavIcon] = useState<string>('');
-  const [activeThreatWarning, setActiveThreatWarning] = useState<{
-    severity: string;
-    title: string;
-    message: string;
-    currentDomain: string;
-    expectedDomain?: string | null;
-    riskLevel?: string;
-    allowlistRequestStatus?: string | null;
-  } | null>(null);
+  const { tab: activeRiskTab, warning: activeThreatWarning } = useActiveTabRisk();
   const [threatBannerDismissed, setThreatBannerDismissed] = useState(false);
 
   // XoraPass Shield - "Is This Safe?" Analyzer state
@@ -479,13 +474,24 @@ export const PopupApp: React.FC = () => {
     entitlement: { planAllows: boolean; userEnabled: boolean } | null;
     blocklistSize: number;
   } | null>(null);
+  const [shieldSettingsSaving, setShieldSettingsSaving] = useState(false);
+  const applyShieldState = (st: any) => {
+    if (!st || typeof st.active !== 'boolean') return;
+    setShieldState(st);
+    if (st.entitlement) {
+      setDomainRiskEnabled(!!st.entitlement.userEnabled);
+      setPlanAllowsDomainRisk(!!st.entitlement.planAllows);
+      setDomainRiskSettingsLoaded(true);
+    }
+  };
   useEffect(() => {
-    browser.runtime
-      .sendMessage({ type: 'SHIELD_GET_STATE' })
-      .then((st: any) => {
-        if (st && typeof st.active === 'boolean') setShieldState(st);
-      })
-      .catch(() => undefined);
+    let disposed = false;
+    const load = (refresh = false) => browser.runtime.sendMessage({ type: 'SHIELD_GET_STATE', payload: { refresh } })
+      .then((st: any) => { if (!disposed) applyShieldState(st); }).catch(() => undefined);
+    const changed = (changes: any, area: string) => { if (area === 'local' && (changes.shieldEntitlement || changes.shieldConfig)) void load(); };
+    browser.storage.onChanged.addListener(changed);
+    void load(true);
+    return () => { disposed = true; browser.storage.onChanged.removeListener(changed); };
   }, [unlocked]);
 
   // Theme preference ('dark' | 'light' | 'system')
@@ -497,11 +503,13 @@ export const PopupApp: React.FC = () => {
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 
   // XoraPass Shield Settings
+  const [automaticTextScans, setAutomaticTextScans] = useState(false);
   const [checkoutGuardEnabled, setCheckoutGuardEnabled] = useState(true);
   const [webmailGuardEnabled, setWebmailGuardEnabled] = useState(true);
 
   useEffect(() => {
-    browser.storage.local.get(['themePreference', 'checkoutGuardEnabled', 'webmailGuardEnabled']).then((res: any) => {
+    browser.storage.local.get(['themePreference', 'checkoutGuardEnabled', 'webmailGuardEnabled', TEXT_SCAN_CONSENT_KEY]).then((res: any) => {
+      setAutomaticTextScans(res[TEXT_SCAN_CONSENT_KEY] === TEXT_SCAN_CONSENT_VERSION);
       if (res?.themePreference === 'dark' || res?.themePreference === 'light' || res?.themePreference === 'system') {
         setTheme(res.themePreference);
       }
@@ -609,14 +617,6 @@ export const PopupApp: React.FC = () => {
                 setLockOnScreenLock(s.lockOnScreenLock);
               }
             });
-            browser.runtime.sendMessage({ type: 'GET_DOMAIN_RISK_SETTINGS' }).then((r: any) => {
-              const settings = r?.settings;
-              if (settings) {
-                setDomainRiskEnabled(!!settings.userEnabled);
-                setPlanAllowsDomainRisk(!!settings.planAllows);
-              }
-              setDomainRiskSettingsLoaded(true);
-            });
             browser.runtime.sendMessage({ type: 'GET_PLAN_FEATURES' }).then((r: any) => {
               setPlanAllowsPasteGuard(r?.allowPasteGuard !== false);
             });
@@ -630,42 +630,7 @@ export const PopupApp: React.FC = () => {
     };
     checkStatus();
 
-    browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-      const activeTab = tabs[0];
-      if (activeTab && activeTab.url) {
-        setActiveTabUrl(activeTab.url);
-        setActiveTabTitle(activeTab.title || '');
-        setActiveTabFavIcon(activeTab.favIconUrl || '');
-        if (activeTab.id !== undefined) {
-          browser.tabs
-            .sendMessage(activeTab.id, { type: 'GET_ACTIVE_TAB_WARNING' })
-            .then((warning: any) => {
-              if (warning && typeof warning === 'object' && warning.title) {
-                setActiveThreatWarning(warning);
-              }
-            })
-            .catch(() => {});
-        }
-        try {
-          const url = new URL(activeTab.url);
-          setCurrentHostname(url.hostname);
-          setCurrentProtocol(url.protocol);
-          browser.runtime
-            .sendMessage({ type: 'GET_SITE_SETTINGS', payload: { hostname: url.hostname } })
-            .then((res: any) => {
-              if (res && typeof res.disabled === 'boolean') setSiteDisabled(res.disabled);
-            });
-          // Load the domain allowlist for false-positive bypass rendering
-          browser.runtime
-            .sendMessage({ type: 'GET_DOMAIN_ALLOWLIST' })
-            .then((res: any) => {
-              if (res && Array.isArray(res.allowlist)) setDomainAllowlist(res.allowlist);
-            });
-        } catch (e) {
-          console.warn("Could not parse active tab URL", e);
-        }
-      }
-    });
+
   }, []);
 
   // Popup lifecycle port: notifies the background (and thereby active tab) that popup is open/closed
@@ -685,30 +650,29 @@ export const PopupApp: React.FC = () => {
     };
   }, []);
 
-  // Listen for active tab risk updates to mirror threats into popup in real time
   useEffect(() => {
-    const handleRiskUpdate = (msg: any) => {
-      if (msg?.type === 'TAB_RISK_UPDATE') {
-        browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-          if (tab?.id !== undefined) {
-            browser.tabs
-              .sendMessage(tab.id, { type: 'GET_ACTIVE_TAB_WARNING' })
-              .then((w: any) => {
-                if (w && typeof w === 'object' && w.title) {
-                  setActiveThreatWarning(w);
-                  setThreatBannerDismissed(false);
-                }
-              })
-              .catch(() => {});
-          }
-        }).catch(() => {});
-      }
-    };
-    browser.runtime.onMessage.addListener(handleRiskUpdate);
-    return () => {
-      browser.runtime.onMessage.removeListener(handleRiskUpdate);
-    };
+    setActiveTabUrl(activeRiskTab?.url || '');
+    setActiveTabTitle(activeRiskTab?.title || '');
+    setActiveTabFavIcon(activeRiskTab?.favIconUrl || '');
+    setRemoteDomainRisk(null); setThreatBannerDismissed(false); setSiteDisabled(false);
+    let cancelled = false;
+    try {
+      const url = new URL(activeRiskTab?.url || '');
+      setCurrentHostname(url.hostname); setCurrentProtocol(url.protocol);
+      browser.runtime.sendMessage({type:'GET_SITE_SETTINGS',payload:{hostname:url.hostname}}).then((res:any) => {
+        if (!cancelled && typeof res?.disabled === 'boolean') setSiteDisabled(res.disabled);
+      }).catch(() => {});
+    } catch { setCurrentHostname(''); setCurrentProtocol(''); }
+    return () => { cancelled = true; };
+  }, [activeRiskTab]);
+
+  useEffect(() => {
+    browser.runtime.sendMessage({type:'GET_DOMAIN_ALLOWLIST'}).then((res:any) => {
+      if (Array.isArray(res?.allowlist)) setDomainAllowlist(res.allowlist);
+    }).catch(() => {});
   }, []);
+
+  useEffect(() => { if (activeThreatWarning) setThreatBannerDismissed(false); }, [activeThreatWarning]);
 
   const updateGenOptions = (patch: Partial<GeneratorOptions>) => {
     const next = { ...genOptions, ...patch };
@@ -864,20 +828,6 @@ export const PopupApp: React.FC = () => {
     setIsAuditingExtensions(true);
     setExtensionAuditDenied(false);
     try {
-      // 1. First try direct audit in popup window context (active DOM window)
-      const localApi = (globalThis as any).chrome?.management || (browser as any)?.management;
-      if (localApi && typeof localApi.getAll === 'function') {
-        try {
-          const directSummary = await auditInstalledExtensions(undefined, localApi);
-          if (directSummary && directSummary.totalExtensions > 0) {
-            setExtensionAudit(directSummary);
-            return;
-          }
-        } catch (e) {
-          console.warn('[XoraPass Popup] Direct audit in popup failed, attempting fallback:', e);
-        }
-      }
-
       // 2. Ensure permission if dynamically requested
       if (browser.permissions?.request) {
         await browser.permissions.request({ permissions: ['management'] }).catch(() => false);
@@ -887,7 +837,7 @@ export const PopupApp: React.FC = () => {
       const res = await browser.runtime.sendMessage({ type: 'AUDIT_EXTENSIONS' });
       if (res?.permissionDenied) {
         setExtensionAuditDenied(true);
-      } else if (res && typeof res.overallHealthScore === 'number') {
+      } else if (res && ['available', 'unavailable'].includes(res.inspection)) {
         setExtensionAudit(res);
       }
     } catch (err) {
@@ -907,14 +857,12 @@ export const PopupApp: React.FC = () => {
     browser.runtime.sendMessage({ type: 'SET_LOCK_ON_SCREEN_LOCK', payload: { enabled } });
   };
 
-  const changeDomainRiskEnabled = (enabled: boolean) => {
-    setDomainRiskEnabled(enabled); // optimistic; reverted below on failure
-    browser.runtime
-      .sendMessage({ type: 'SET_DOMAIN_RISK_SETTINGS', payload: { enabled } })
-      .then((r: any) => {
-        if (!r?.success) setDomainRiskEnabled(!enabled);
-      })
-      .catch(() => setDomainRiskEnabled(!enabled));
+  const changeDomainRiskEnabled = async (enabled: boolean) => {
+    if (shieldSettingsSaving) return;
+    setShieldSettingsSaving(true);
+    try { const result: any = await browser.runtime.sendMessage({ type: 'SET_DOMAIN_RISK_SETTINGS', payload: { enabled } }); applyShieldState(result?.state); }
+    catch { /* retain the last confirmed switch/banner state */ }
+    finally { setShieldSettingsSaving(false); }
   };
 
   const changeCheckoutGuardEnabled = (enabled: boolean) => {
@@ -1592,7 +1540,8 @@ export const PopupApp: React.FC = () => {
   // telemetry as a side effect, same as before.
   useEffect(() => {
     setRemoteDomainRisk(null);
-    if (!currentHostname || siteDisabled || isLocalHost) return;
+    const context = activeRiskTab?.context;
+    if (!context || !currentHostname || siteDisabled || isLocalHost) return;
     let cancelled = false;
     const isLegitLocal =
       localDomainRisk?.signals?.isSameRegistrableDomain ||
@@ -1603,35 +1552,23 @@ export const PopupApp: React.FC = () => {
         type: 'CHECK_DOMAIN_RISK',
         payload: {
           currentDomain: currentHostname,
-          currentUrl: `${currentProtocol}//${currentHostname}`,
+          currentUrl: context.url,
           savedDomain: isLegitLocal ? '' : (localDomainRisk?.matchedTarget || lookalike?.target || ''),
         },
       })
-      .then((res: any) => {
-        if (!cancelled && res?.risk) {
-          setRemoteDomainRisk(res.risk);
-          // Broadcast verdict to the active tab so in-page overlay displays immediately
-          try {
-            browser.tabs.query({ active: true, currentWindow: true }).then((tabs: any[]) => {
-              const activeTabId = tabs?.[0]?.id;
-              if (activeTabId) {
-                const base = localDomainRisk || disabledDomainRiskAssessment(currentHostname);
-                const merged = mergeLocalAndRemoteRisk(base, res.risk);
-                browser.tabs.sendMessage(activeTabId, {
-                  type: 'TAB_RISK_UPDATE',
-                  risk: merged,
-                }).catch(() => {});
-              }
-            }).catch(() => {});
-          } catch {}
-        }
+      .then(async (res: any) => {
+        if (cancelled || !res?.risk || !await isCurrentRiskContext(browser.tabs, context)) return;
+        const [active] = await browser.tabs.query({active:true,currentWindow:true});
+        if (!cancelled && active?.id === context.tabId) setRemoteDomainRisk(res.risk);
+        // Page-aware verdict publication belongs to the background. A popup's
+        // URL-only lookup must not overwrite the content script's richer scan.
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentHostname, siteDisabled, isLocalHost]);
+  }, [activeRiskTab?.context, currentHostname, currentProtocol, siteDisabled, isLocalHost]);
 
   const health = computeVaultHealth(vaultItems.map((i) => ({ category: i.category, value: i.value })));
   const tier = scoreTier(health.score);
@@ -1642,10 +1579,9 @@ export const PopupApp: React.FC = () => {
   // Cross-sync threat dismiss and allowlist review with content script on active tab
   const handleDismissThreatWarning = () => {
     setThreatBannerDismissed(true);
-    setActiveThreatWarning(null);
     browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
       if (tab?.id !== undefined) {
-        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING' }).catch(() => {});
+        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING', pageContext: activeRiskTab?.context }, { frameId: 0 }).catch(() => {});
       }
     }).catch(() => {});
   };
@@ -1655,7 +1591,7 @@ export const PopupApp: React.FC = () => {
     // Dismiss in-page alert upon submitting allowlist review
     browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
       if (tab?.id !== undefined) {
-        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING' }).catch(() => {});
+        browser.tabs.sendMessage(tab.id, { type: 'DISMISS_TAB_RISK_WARNING', pageContext: activeRiskTab?.context }, { frameId: 0 }).catch(() => {});
       }
     }).catch(() => {});
   };
@@ -1680,6 +1616,8 @@ export const PopupApp: React.FC = () => {
     riskLevel: activeThreatWarning?.riskLevel || domainRiskAssessment?.riskLevel || (isDangerousSite ? 'critical' : 'medium'),
     allowlistRequestStatus: activeThreatWarning?.allowlistRequestStatus || null,
   } : null;
+
+  const autofillIndicator = autofillRiskIndicator(siteDisabled, activeThreatWarning?.severity, domainRiskAssessment?.decision);
 
   const renderActiveThreatBanner = () => {
     if (!activeThreat || threatBannerDismissed) return null;
@@ -2720,14 +2658,17 @@ export const PopupApp: React.FC = () => {
                         </div>
                         <button
                           onClick={toggleSiteDisabled}
-                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider border transition cursor-pointer shrink-0 ${siteDisabled
-                              ? 'bg-brand-ruby/10 border-brand-ruby/25 text-brand-ruby hover:bg-brand-ruby/20'
+                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider border transition cursor-pointer shrink-0 ${autofillIndicator.tone === 'block' || autofillIndicator.tone === 'off'
+                              ? 'bg-rose-50 border-rose-300 text-rose-800 dark:bg-rose-950/60 dark:border-rose-500/40 dark:text-rose-200'
+                              : autofillIndicator.tone === 'warn' ? 'bg-amber-50 border-amber-300 text-amber-900 dark:bg-amber-950/60 dark:border-amber-500/40 dark:text-amber-200'
                               : 'bg-brand-emerald/10 border-brand-emerald/25 text-brand-emerald hover:bg-brand-emerald/20'
                             }`}
-                          title={siteDisabled ? 'Autofill is disabled on this site' : 'Disable autofill on this site'}
+                          title={`${autofillIndicator.detail} Click to ${siteDisabled ? 'enable' : 'disable'} your site preference.`}
+                          aria-label={`${siteDisabled ? 'Enable' : 'Disable'} autofill preference for ${currentHostname}`}
+                          aria-pressed={!siteDisabled}
                         >
-                          {siteDisabled ? <ShieldOff className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-                          <span>{siteDisabled ? 'Autofill Off' : 'Autofill On'}</span>
+                          {autofillIndicator.tone === 'block' || autofillIndicator.tone === 'off' ? <ShieldOff className="w-3.5 h-3.5" /> : autofillIndicator.tone === 'warn' ? <AlertTriangle className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                          <span>{autofillIndicator.label}</span>
                         </button>
                       </div>
 
@@ -3314,7 +3255,7 @@ export const PopupApp: React.FC = () => {
                       role="switch"
                       aria-checked={domainRiskEnabled}
                       aria-label="Enable Phishing & Lookalike Shield"
-                      disabled={!planAllowsDomainRisk || !domainRiskSettingsLoaded}
+                      disabled={shieldSettingsSaving || !planAllowsDomainRisk || !domainRiskSettingsLoaded}
                       onClick={() => changeDomainRiskEnabled(!domainRiskEnabled)}
                       className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                         domainRiskEnabled && planAllowsDomainRisk ? 'bg-brand-cyan' : 'bg-slate-300'
@@ -3508,27 +3449,27 @@ export const PopupApp: React.FC = () => {
             {tab === 'ai' && (
               <div className="space-y-3 animate-fade-in flex-1 flex flex-col">
                 {/* XoraPass Shield Banner Card */}
-                <div className="p-3 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 text-white rounded-xl shadow-xs space-y-1.5 relative overflow-hidden border border-slate-800">
+                <div data-shield-active={shieldState?.active === true} className={`p-3 rounded-xl shadow-xs space-y-1.5 relative overflow-hidden border ${shieldState?.active ? 'bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 text-white border-slate-800' : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:border-slate-700'}`}>
                   <div className="flex items-center justify-between relative z-10">
                     <div className="flex items-center gap-2">
-                      <div className="w-7 h-7 rounded-lg bg-brand-cyan/20 border border-brand-cyan/30 flex items-center justify-center text-brand-cyan">
+                      <div className={`w-7 h-7 rounded-lg border flex items-center justify-center ${shieldState?.active ? 'bg-brand-cyan/20 border-brand-cyan/30 text-brand-cyan' : 'bg-slate-200 border-slate-300 text-slate-500 dark:bg-slate-800 dark:border-slate-600 dark:text-slate-400'}`}>
                         <ShieldCheck className="w-4 h-4" />
                       </div>
                       <div>
-                        <h3 className="text-sm font-black tracking-tight text-white leading-none">XoraPass Shield</h3>
-                        <span className="text-[10px] text-brand-cyan font-bold tracking-wide uppercase">Active Browsing Defense</span>
+                        <h3 className="text-sm font-black tracking-tight leading-none">XoraPass Shield</h3>
+                        <span className={`text-[10px] font-bold tracking-wide uppercase ${shieldState?.active ? 'text-brand-cyan' : 'text-slate-600 dark:text-slate-400'}`}>{shieldState?.active ? 'Active browsing defense' : shieldState ? 'Automatic protection off' : 'Checking protection…'}</span>
                       </div>
                     </div>
                     <button
-                      onClick={() => { scanCurrentSite(); scanActiveAiTabs(); }}
-                      className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-                      title="Re-scan current website and tabs"
+                      onClick={async () => { const st = await browser.runtime.sendMessage({ type: 'SHIELD_REFRESH' }); applyShieldState(st); scanCurrentSite(); scanActiveAiTabs(); }}
+                      className={`p-1 rounded-lg transition cursor-pointer ${shieldState?.active ? 'hover:bg-white/10 text-slate-400 hover:text-white' : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'}`}
+                      title="Refresh protection status and scan website and tabs"
                     >
                       <RefreshCw className={`w-4 h-4 ${isScanningSite || scanningTabs ? 'animate-spin' : ''}`} />
                     </button>
                   </div>
-                  <p className="text-xs text-slate-300 leading-snug relative z-10">
-                    Continuous zero-knowledge phishing defense, lookalike detection, and credential guard.
+                  <p className={`text-xs leading-snug relative z-10 ${shieldState?.active ? 'text-slate-300' : 'text-slate-600 dark:text-slate-400'}`}>
+                    {shieldState?.active ? 'Continuous phishing defense, lookalike detection, and credential guard.' : shieldState ? 'Automatic phishing checks and credential warnings are paused. You can still run a manual site scan.' : 'Checking your account protection setting.'}
                   </p>
                   {shieldState && (
                     <p className="text-[11px] leading-snug relative z-10 font-semibold">
@@ -3537,15 +3478,15 @@ export const PopupApp: React.FC = () => {
                           Always-on protection: active{shieldState.blocklistSize > 0 ? ` · ${shieldState.blocklistSize.toLocaleString()} known threats` : ''} · keeps working while locked
                         </span>
                       ) : shieldState.killSwitch ? (
-                        <span className="text-amber-300">Always-on protection is temporarily paused by XoraPass.</span>
+                        <span className="text-amber-700 dark:text-amber-300">Always-on protection is temporarily paused by XoraPass.</span>
                       ) : shieldState.entitlement && !shieldState.entitlement.planAllows ? (
-                        <span className="text-slate-400">Always-on protection (works while locked) is included in paid plans.</span>
+                        <span className="text-slate-600 dark:text-slate-400">Always-on protection (works while locked) is included in paid plans.</span>
                       ) : shieldState.entitlement && !shieldState.entitlement.userEnabled ? (
-                        <span className="text-slate-400">Always-on protection is off — turn on Phishing &amp; Lookalike Shield in Settings.</span>
+                        <span className="text-slate-600 dark:text-slate-400">Automatic protection is off. Manual site scans are still available.</span>
                       ) : unlocked ? (
-                        <span className="text-slate-400">Always-on protection is rolling out to accounts.</span>
+                        <span className="text-slate-600 dark:text-slate-400">Always-on protection is rolling out to accounts.</span>
                       ) : (
-                        <span className="text-slate-400">Sign in to enable always-on protection.</span>
+                        <span className="text-slate-600 dark:text-slate-400">Sign in to enable always-on protection.</span>
                       )}
                     </p>
                   )}
@@ -4017,6 +3958,19 @@ export const PopupApp: React.FC = () => {
                   </div>
                 </div>
 
+                <div className="p-3.5 bg-white dark:bg-[#0c1615] border border-slate-900/10 dark:border-white/10 rounded-xl space-y-2">
+                  <label className="flex items-center justify-between gap-3 text-sm font-bold text-slate-900 dark:text-slate-100">
+                    Automatic AI text analysis
+                    <input type="checkbox" checked={automaticTextScans} onChange={async e => {
+                      const enabled = e.target.checked;
+                      if (enabled && !window.confirm(TEXT_SCAN_NOTICE)) return;
+                      await browser.storage.local.set({ [TEXT_SCAN_CONSENT_KEY]: enabled ? TEXT_SCAN_CONSENT_VERSION : null });
+                      setAutomaticTextScans(enabled);
+                    }} className="accent-teal-600 w-4 h-4" />
+                  </label>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Off by default. Sends redacted page and email excerpts to OpenAI when local checks find warning signs. Redaction cannot remove every secret. Local checks continue when off.</p>
+                </div>
+
                 {/* Privacy report, secure browsing, Is it Safe */}
                 <ShieldExtras />
 
@@ -4041,7 +3995,7 @@ export const PopupApp: React.FC = () => {
                   </div>
 
                   <p className="text-xs text-slate-500 dark:text-slate-400 leading-snug">
-                    Audits other installed browser extensions for broad or elevated permissions (e.g. reading all website traffic or clipboard access).
+                    Reviews installed extensions for broad permissions and known threats. Unknown reputation is not a safe verdict.
                   </p>
 
                   {extensionAudit ? (
@@ -4053,14 +4007,14 @@ export const PopupApp: React.FC = () => {
                             className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs ${
                               extensionAudit.highRiskCount > 0
                                 ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 dark:border dark:border-amber-700/50'
-                                : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border dark:border-emerald-700/50'
+                                : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
                             }`}
                           >
-                            {extensionAudit.overallHealthScore}%
+                            {extensionAudit.inspection === 'available' ? extensionAudit.totalExtensions : '—'}
                           </div>
                           <div>
                             <div className="text-xs font-bold text-slate-900 dark:text-white">
-                              {extensionAudit.highRiskCount > 0 ? 'Review Recommended' : 'Extension Health Good'}
+                              {extensionAudit.inspection === 'unavailable' ? 'Inspection unavailable' : extensionAudit.highRiskCount > 0 ? 'Review permissions' : 'Permission review complete'}
                             </div>
                             <div className="text-[11px] text-slate-500 dark:text-slate-400">
                               {extensionAudit.totalExtensions} scanned ({extensionAudit.enabledExtensions} active)
@@ -4074,16 +4028,17 @@ export const PopupApp: React.FC = () => {
                               {extensionAudit.highRiskCount} Elevated
                             </span>
                           )}
-                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border dark:border-emerald-700/50">
-                            {extensionAudit.safeCount} Low/Safe
+                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                            {extensionAudit.unknownCount} Unknown reputation
                           </span>
                         </div>
                       </div>
 
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">{extensionAudit.reputationSource === 'current' ? 'Known-threat list checked. Unlisted extensions remain unknown.' : extensionAudit.reputationSource === 'stale' ? 'Threat list is out of date. Cached warnings remain visible; other reputation is unknown.' : 'Threat list unavailable. Permission findings cannot establish safety.'}</p>
                       {/* Extensions List (Top 6) */}
                       <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar pr-0.5">
                         {extensionAudit.extensions.length === 0 ? (
-                          <p className="text-xs text-slate-400 dark:text-slate-500 text-center py-2">No other extensions installed.</p>
+                          <p className="text-xs text-slate-400 dark:text-slate-500 text-center py-2">{extensionAudit.inspection === 'unavailable' ? 'Could not inspect extensions. Check browser permission and retry.' : 'No other extensions were listed. This is not a safety certification.'}</p>
                         ) : (
                           extensionAudit.extensions.slice(0, 6).map((ext) => (
                             <div
@@ -4110,7 +4065,7 @@ export const PopupApp: React.FC = () => {
                                     {ext.threatReasons[0]}
                                   </p>
                                 ) : (
-                                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-0.5">Normal permissions</p>
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">No elevated permissions detected; reputation unknown</p>
                                 )}
                               </div>
 
@@ -4123,7 +4078,7 @@ export const PopupApp: React.FC = () => {
                                     : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:border dark:border-slate-700/60'
                                 }`}
                               >
-                                {ext.riskLevel === 'high' ? 'Elevated' : ext.riskLevel === 'low' ? 'Moderate' : 'Safe'}
+                                {ext.reputation === 'known_malicious' ? 'Known malicious' : ext.riskLevel === 'high' ? 'Elevated access' : ext.riskLevel === 'low' ? 'Some access' : 'Unknown'}
                               </span>
                             </div>
                           ))
@@ -4138,7 +4093,7 @@ export const PopupApp: React.FC = () => {
                       <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
                         {extensionAuditDenied
                           ? 'The checkup needs permission to list your installed extensions. Click "Audit Extensions" and allow it to continue.'
-                          : 'Click "Audit Extensions" to verify other installed addons.'}
+                          : 'Click "Audit Extensions" to review permissions and known threats. This cannot verify extension safety.'}
                       </p>
                     </div>
                   )}

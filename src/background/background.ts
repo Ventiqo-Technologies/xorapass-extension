@@ -1,4 +1,8 @@
+import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION } from '../utils/textScanPrivacy';
+import { RiskApprovals, readApprovalContext, sameApprovalContext } from '../utils/riskApproval';
+import { readTabRiskContext, publishTabRisk, type TabRiskContext } from '../utils/tabRiskContext';
 import browser from 'webextension-polyfill';
+import { normalizeEmailScanResult } from '../utils/emailScanResult';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
 import { disabledDomainRiskAssessment, assessWithCatalog, type DomainRiskAssessment } from '../utils/domainRisk';
 import {
@@ -33,6 +37,7 @@ import {
   getShieldState,
   refreshShieldConfig,
   refreshShieldEntitlement,
+  applyShieldPreference,
   refreshBlocklist,
 } from './shield';
 import {
@@ -41,7 +46,7 @@ import {
   getTabBehavior,
   getPrivacySettings,
   setPrivacySettings,
-  getMaliciousExtensionIds,
+  getMaliciousExtensionReputation,
 } from './shieldPrivacy';
 import { decideNavigation, isTrustedHost, isAllowlistedHost, shouldEscalateRemote, threatReason } from '../utils/shieldEngine';
 import { sanitizeUrlForRiskCheck, authHeaderValue } from '../utils/domainRiskService';
@@ -51,6 +56,9 @@ import { mergeExtraBrands } from '../utils/brandCatalog';
 import { scorePageSignals, applyPageRisk } from '../utils/pageRisk';
 import { auditInstalledExtensions } from '../utils/extensionAudit';
 import { validateMessage } from '../utils/messageGuard';
+import { credentialRequestUrl } from '../utils/credentialOrigin';
+import { VaultSession } from '../utils/vaultSession';
+import { applyCredentialFormRisk } from '../utils/credentialFormRisk';
 import { isSupportedWebmail } from '../utils/webmailGuard';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import {
@@ -62,7 +70,7 @@ import {
   deriveSharedSecret,
   type EncryptedPayload,
 } from '../utils/crypto';
-import { API_BASE_URL } from '../utils/config';
+import { API_BASE_URL, WEB_APP_URL } from '../utils/config';
 import {
   CLIPBOARD_PLACEHOLDER,
   clearDelayInMinutes,
@@ -89,9 +97,8 @@ browser.runtime.onUpdateAvailable?.addListener((details) => {
 // session — surviving any number of worker restarts. Chrome only drops it when
 // the browser itself shuts down.
 //
-// So a mid-session lock is never the worker respawning. It is one of exactly
-// two things, and both are ours: the auto-lock alarm, or an explicit
-// LOCK_VAULT. Those are the only callers of storage.session.clear().
+// A worker restart is not a lock. All actual lock and sign-out paths below
+// invalidate pending credential requests before clearing session storage.
 // console.debug('[XoraPass] service worker started at', new Date().toISOString());
 
 const DISABLED_SITES_KEY = 'disabledSites';
@@ -113,6 +120,7 @@ const AUTO_LOCK_ALARM = 'xorapass-auto-lock';
  * The shorter intervals remain available for anyone who wants them.
  */
 const DEFAULT_AUTO_LOCK_MINUTES = 0;
+const vaultSession = new VaultSession();
 let lastCopiedSecret = '';
 let lastCopiedId = '';
 let lastCopiedField = '';
@@ -174,18 +182,19 @@ async function getLockOnScreenLock(): Promise<boolean> {
 }
 
 async function lockVaultNow(): Promise<void> {
-  const session = await browser.storage.session.get(['unlocked']);
-  if (!session.unlocked) return; // already locked — nothing to clear or log
-  // console.debug('[XoraPass] locking vault:', reason);
-  await browser.alarms.clear(AUTO_LOCK_ALARM);
-  await clearAiHeartbeat();
-  await clearTokenRefresh();
+  const generation = vaultSession.invalidate();
   dismissedByTab.clear();
   clearRiskApprovals();
+  // Preserve the lock across a worker restart while clipboard cleanup waits.
+  // Keep the clipboard marker/key until cleanup, but stop stored vault access.
+  if (!await vaultSession.commit(generation, () => browser.storage.session.set({ unlocked: false }), false)) return;
+  await Promise.allSettled([
+    browser.alarms.clear(AUTO_LOCK_ALARM), clearAiHeartbeat(), clearTokenRefresh(),
+  ]);
   // Same ordering as the auto-lock alarm: drain the clipboard before the
   // pending marker is wiped along with the rest of the session.
   await clearClipboard().catch(() => undefined);
-  await browser.storage.session.clear();
+  await vaultSession.commit(generation, () => browser.storage.session.clear(), false);
 }
 
 // "locked" fires when the OS screen locks or the machine suspends. "idle" is
@@ -334,18 +343,7 @@ browser.alarms.onAlarm.addListener((alarm) => {
   if (handleShieldAlarm(alarm.name)) return;
   // When the idle timer fires, purge the decrypted vault from session storage.
   if (alarm.name === AUTO_LOCK_ALARM) {
-    // console.debug('[XoraPass] auto-lock fired -> clearing session');
-    void clearAiHeartbeat();
-    // Otherwise this alarm keeps firing every 20 minutes after an idle lock,
-    // calling apiRefresh() against a session storage.session.clear() below is
-    // about to wipe -- harmless (doTokenRefresh checks `unlocked` and
-    // no-ops), but a stray wakeup for nothing, and inconsistent with the
-    // explicit LOCK_VAULT path, which already clears this.
-    void clearTokenRefresh();
-    // Locking must not leave a password sitting in the clipboard, so clear it
-    // first — storage.session.clear() would otherwise drop the pending marker
-    // and make the clear a no-op.
-    void clearClipboard().finally(() => browser.storage.session.clear());
+    void lockVaultNow();
     return;
   }
   if (alarm.name === CLIPBOARD_ALARM) {
@@ -373,6 +371,27 @@ interface VaultItem {
   accountId?: string;
   totpSecret?: string;
   customFields?: Record<string, string>;
+}
+
+async function credentialReleaseError(
+  generation: number,
+  session: Record<string, unknown>,
+  item: VaultItem,
+  sender: browser.Runtime.MessageSender,
+  senderUrl: string
+): Promise<string | null> {
+  const [current, tab] = await Promise.all([
+    browser.storage.session.get(['unlocked', 'vaultItems', 'email', 'encKey']),
+    browser.tabs.get(sender.tab!.id!).catch(() => null),
+  ]);
+  if (!vaultSession.isCurrent(generation) || !current.unlocked ||
+      current.email !== session.email || current.encKey !== session.encKey) return 'locked';
+  if (!tab || tab.url !== sender.tab?.url ||
+      credentialRequestUrl({ ...sender, tab }) !== senderUrl) return 'navigation_changed';
+  const currentItem = (current.vaultItems as VaultItem[] | undefined)?.find((i) => i.id === item.id);
+  const securityFields = ['username', 'value', 'url', 'category', 'accountId', 'totpSecret'] as const;
+  if (!currentItem || securityFields.some((field) => currentItem[field] !== item[field])) return 'credential_changed';
+  return null;
 }
 
 interface EmailAliasSummary {
@@ -538,9 +557,7 @@ async function apiJwt(
   // only help and never turn a working call into a failing one.
   const renewed = await apiRefresh();
   if (!renewed) {
-    void clearAiHeartbeat();
-    void clearTokenRefresh();
-    void clearClipboard().finally(() => browser.storage.session.clear());
+    void lockVaultNow();
     return first;
   }
   return callApiJwt(method, path, body, renewed);
@@ -679,9 +696,7 @@ async function doTokenRefresh(): Promise<string> {
       console.debug('[XoraPass] token refresh failed:', resp.status);
       if (resp.status === 401 || resp.status === 403) {
         console.warn('[XoraPass] server session ended (401/403) -> clearing session');
-        void clearAiHeartbeat();
-        void clearTokenRefresh();
-        void clearClipboard().finally(() => browser.storage.session.clear());
+        void lockVaultNow();
       }
       return '';
     }
@@ -999,49 +1014,18 @@ async function getDomainAllowlist(): Promise<string[]> {
 // `warn` and throws away the whole distinction, so it is enforced here exactly
 // like `block` until the user has explicitly approved THIS host in THIS tab.
 //
-// Approvals are deliberately narrow: keyed by tab id + hostname, capped at
-// APPROVAL_TTL_MS, dropped when the vault locks, and never persisted beyond
-// the browser session.
-interface RiskApproval {
-  hostname: string;
-  expiresAt: number;
-}
-
+// Approval grants are ephemeral and bound to the full URL, isolated document
+// token, and current form identities/destinations. Every navigation revokes.
 const APPROVAL_TTL_MS = 5 * 60 * 1000;
-const riskApprovalsByTab = new Map<number, RiskApproval>();
-
-function grantRiskApproval(tabId: number, hostname: string): void {
-  if (tabId === undefined || !hostname) return;
-  riskApprovalsByTab.set(tabId, { hostname, expiresAt: Date.now() + APPROVAL_TTL_MS });
-}
-
-function hasRiskApproval(tabId: number | undefined, hostname: string): boolean {
-  if (tabId === undefined || !hostname) return false;
-  const entry = riskApprovalsByTab.get(tabId);
-  if (!entry) return false;
-  if (Date.now() > entry.expiresAt) {
-    riskApprovalsByTab.delete(tabId);
-    return false;
-  }
-  return entry.hostname === hostname;
-}
-
-function clearRiskApprovals(): void {
-  riskApprovalsByTab.clear();
-}
-
-// A tab that navigates away loses its approval: the approval was for one host,
-// and reusing it after a redirect is exactly the case it must not cover.
+const riskApprovals = new RiskApprovals(Date.now, APPROVAL_TTL_MS);
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.shieldEntitlement) { clearRemoteRiskCache(); riskApprovals.clear(); }
+});
+function clearRiskApprovals(): void { riskApprovals.clear(); }
 browser.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
-  if (!changeInfo.url) return;
-  const entry = riskApprovalsByTab.get(tabId);
-  if (entry && entry.hostname !== extractHostname(changeInfo.url)) {
-    riskApprovalsByTab.delete(tabId);
-  }
+  if (changeInfo.url !== undefined || changeInfo.status === 'loading') riskApprovals.revoke(tabId);
 });
-browser.tabs?.onRemoved?.addListener((tabId) => {
-  riskApprovalsByTab.delete(tabId);
-});
+browser.tabs?.onRemoved?.addListener(tabId => riskApprovals.revoke(tabId));
 
 /**
  * Maps a vault category to the credential sensitivity the backend scores with.
@@ -1113,7 +1097,7 @@ interface AiScanResult {
  */
 async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload: any): Promise<AiScanResult> {
   const none: AiScanResult = { verdict: 'unavailable', risk_score: 0 };
-  if (sender.frameId !== 0) return none;
+  if (sender.frameId !== 0 || !(await automaticTextScansAllowed(browser.storage.local))) return none;
   const url = sender.url || sender.tab?.url || '';
   if (!/^https?:\/\//i.test(url) || isLocalOrPrivateHost(extractHostname(url))) return none;
   const cfg = await getShieldConfig();
@@ -1148,7 +1132,7 @@ async function handleShieldAiScan(sender: browser.Runtime.MessageSender, payload
     const res = await fetch(`${API_BASE_URL}/api/shield/ai-scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
-      body: JSON.stringify({ url: cleanUrl, page, page_signals: payload?.pageSignals }),
+      body: JSON.stringify({ url: cleanUrl, page, page_signals: payload?.pageSignals, consent: TEXT_SCAN_CONSENT_VERSION }),
     });
     if (!res.ok) return none;
     const data = (await res.json()) as Partial<AiScanResult>;
@@ -1182,7 +1166,8 @@ const emailScanCache = new Map<string, { res: unknown; expires: number }>();
 async function handleShieldEmailScan(
   sender: browser.Runtime.MessageSender,
   email: any,
-  trigger: 'auto' | 'button' = 'button'
+  trigger: 'auto' | 'button' = 'button',
+  consent?: string
 ): Promise<unknown> {
   const none = { verdict: 'unavailable' };
   const senderUrl = sender.url || sender.tab?.url || '';
@@ -1198,6 +1183,7 @@ async function handleShieldEmailScan(
   if (!cfg.shield_enabled || !cfg.email_scan.enabled || !(await shieldFeature('email_ai'))) {
     return { verdict: 'unavailable', reason: 'not_available' };
   }
+  if (trigger === 'auto' ? !(await automaticTextScansAllowed(browser.storage.local)) : consent !== TEXT_SCAN_CONSENT_VERSION) return none;
   const key = JSON.stringify(email);
   const hit = emailScanCache.get(key);
   if (hit && hit.expires > Date.now()) return hit.res;
@@ -1207,11 +1193,11 @@ async function handleShieldEmailScan(
     const res = await fetch(`${API_BASE_URL}/api/shield/email-scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
-      body: JSON.stringify({ ...email, trigger: trigger === 'auto' ? 'auto' : 'button' }),
+      body: JSON.stringify({ ...email, trigger: trigger === 'auto' ? 'auto' : 'button', consent: TEXT_SCAN_CONSENT_VERSION }),
     });
     if (!res.ok) return none;
-    const data = await res.json();
-    if (data?.verdict && data.verdict !== 'unavailable') {
+    const data = normalizeEmailScanResult(await res.json());
+    if (data.verdict !== 'unavailable') {
       emailScanCache.set(key, { res: data, expires: Date.now() + 60 * 60 * 1000 });
       if (emailScanCache.size > 200) emailScanCache.delete(emailScanCache.keys().next().value as string);
     }
@@ -1228,15 +1214,15 @@ function blocklistAssessment(base: DomainRiskAssessment, threatType: string): Do
     riskScore: 100,
     riskLevel: 'critical',
     decision: 'block',
+    confirmedThreat: true,
     reasons: Array.from(new Set([threatReason(threatType), ...base.reasons])),
     safeWarningMessage: threatReason(threatType),
   };
 }
 
 /**
- * Navigation guard (L0 → L1 → L2) for a top-level page that is still
- * loading. Fast and local; the server is only contacted to confirm a
- * blocklist prefix hit.
+ * Navigation guard for a top-level page that is still loading. Domain trust
+ * does not skip confirmed-threat or enabled remote policy checks.
  */
 async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
   const cfg = await getShieldConfig();
@@ -1251,7 +1237,6 @@ async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
   const host = extractHostname(url);
   // Gradual rollout: MAIN-world behaviour hooks (ClickFix, wallets, lock-in).
   const hooks = await shieldFeature('page_hooks');
-  if (hasRiskApproval(sender.tab?.id, host)) return { ...allow, layer: 'allowlist', hooks };
 
   const [allowlist, session] = await Promise.all([
     getDomainAllowlist(),
@@ -1267,7 +1252,9 @@ async function handleShieldNavCheck(sender: browser.Runtime.MessageSender) {
 
   const blocklistHit = await checkBlocklist(url);
   // Saved sites + built-in brand catalog, so this works while locked too.
-  const local = assessWithCatalog(host, knownHosts, allowlist, url, shieldAssessOptions(cfg), mergeExtraBrands(cfg.extra_brands));
+  const local = await evaluateDomainRisk({
+    hostname: host, currentUrl: url, knownHosts, allowlist, savedDomain: '', sensitivity: 'standard', locked: true,
+  });
   const decision = decideNavigation({ url, config: cfg, active, userAllowlist: allowlist, knownHosts, blocklistHit, local });
   return { ...decision, typingGuardMs, hooks };
 }
@@ -1291,41 +1278,21 @@ async function evaluateDomainRisk(opts: {
     : await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
   if (!domainRiskOn || isLocalOrPrivateHost(opts.hostname)) return disabledDomainRiskAssessment(opts.hostname);
 
-  // Layer-0 Global Trusted Domains (admin panel) & user allowlist integration:
-  // Trusted platforms & admin-allowlisted hosts must not be flagged by local lookalike heuristics.
-  const effectiveAllowlist = Array.from(new Set([...opts.allowlist, ...(cfg.trusted_domains || [])]));
-  if (isTrustedHost(opts.hostname, opts.knownHosts, cfg.trusted_domains || [])) {
-    return {
-      pageHostname: opts.hostname,
-      registrableDomain: registrableDomain(opts.hostname),
-      riskScore: 0,
-      riskLevel: 'safe',
-      decision: 'allow',
-      reasons: ['Domain is verified as a trusted platform or globally allowlisted'],
-      matchedTarget: null,
-      isAllowlisted: true,
-      signals: {
-        isExactMatch: false,
-        isSubdomainMatch: false,
-        isSameRegistrableDomain: true,
-        hasPunycode: false,
-        isHomograph: false,
-        suspiciousKeywords: [],
-        isInsecureTransport: false,
-        isHighRiskTld: false,
-        subdomainCount: opts.hostname.split('.').length,
-      },
-    };
-  }
+  // Trust suppresses hostname heuristics, never form, threat or policy checks.
+  const trusted = isTrustedHost(opts.hostname, opts.knownHosts, cfg.trusted_domains || []);
+  const effectiveAllowlist = Array.from(new Set([...opts.allowlist, ...(cfg.trusted_domains || []), ...(trusted ? [opts.hostname] : [])]));
 
   const brands = mergeExtraBrands(cfg.extra_brands);
   let risk = assessWithCatalog(opts.hostname, opts.knownHosts, effectiveAllowlist, opts.currentUrl, shieldAssessOptions(cfg), brands);
   // Page structure (brand shown vs. real domain, password field, hosting,
   // fake windows), scored locally — works offline and without the server.
   risk = applyPageRisk(risk, scorePageSignals(opts.pageSignals, opts.hostname, brands), shieldAssessOptions(cfg));
+  risk = applyCredentialFormRisk(risk, opts.currentUrl, opts.formContext, opts.pageSignals);
+  const hit = await checkBlocklist(opts.currentUrl);
+  if (hit) risk = blocklistAssessment(risk, hit.threatType);
 
   // Remote kill switch applies to every path; the gate only to the listing.
-  if (!cfg.remote.enabled || (opts.remoteGate && !opts.remoteGate(risk, cfg))) return risk;
+  if (!cfg.remote.enabled || (!trusted && !risk.isAllowlisted && opts.remoteGate && !opts.remoteGate(risk, cfg))) return risk;
 
   const remoteRisk = await checkDomainRiskRemote(
     opts.currentUrl,
@@ -1335,7 +1302,8 @@ async function evaluateDomainRisk(opts: {
     opts.sensitivity,
     globalThis.fetch,
     getShieldCredential,
-    opts.pageSignals
+    opts.pageSignals,
+    true // Mandatory policy checks must reach the server, not a client cache.
   );
 
   // Always merge. mergeLocalAndRemoteRisk owns the allowlist rule — it returns
@@ -1344,7 +1312,10 @@ async function evaluateDomainRisk(opts: {
   // the call for allowlisted domains (as this used to) made that guard dead
   // code and let a user-level allowlist toggle silently override an org
   // blocklist — precisely what the policy_enforced flag exists to prevent.
-  return remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
+  const merged = remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
+  // A domain allow policy does not authorize an unsafe credential destination.
+  // A locally confirmed blocklist hit is also independent of trust/policy hints.
+  return hit ? blocklistAssessment(merged, hit.threatType) : applyCredentialFormRisk(merged, opts.currentUrl, opts.formContext, opts.pageSignals);
 }
 
 /**
@@ -1357,15 +1328,13 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
   if (!hostname || isLocalOrPrivateHost(hostname)) return;
 
   try {
-    const [disabled, allowlist, isShieldOn, cfg] = await Promise.all([
+    const [disabled, allowlist, isShieldOn] = await Promise.all([
       isSiteDisabled(hostname),
       getDomainAllowlist(),
       isShieldActive(),
-      getShieldConfig(),
     ]);
 
     if (disabled || !isShieldOn) return;
-    if (hasRiskApproval(tabId, hostname)) return;
 
     const res = await browser.storage.session.get(['unlocked', 'vaultItems']);
     const items = (res as Record<string, unknown>).unlocked
@@ -1376,17 +1345,13 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
       .map((i) => extractHostname(i.url!))
       .filter(Boolean);
 
-    // Layer-0 Global Trusted Domains or user allowlist: bypass proactive tab warnings
-    if (isAllowlistedHost(hostname, allowlist) || isTrustedHost(hostname, knownHosts, cfg.trusted_domains || [])) {
-      return;
-    }
-
     const matching = (items || []).filter(
       (item) => !!item.url && isFillableCategory(item.category) && isDomainMatch(hostname, item.url!)
     );
 
     // Query page signals from the content script so brand impersonation,
     // suspicious forms, and phishing cues are evaluated proactively on navigation.
+    const pageContext = await readTabRiskContext(browser.tabs, tabId, url);
     let pageSignals: PageSignals | undefined;
     try {
       const r: any = await browser.tabs.sendMessage(tabId, { type: 'GET_PAGE_SIGNALS' }, { frameId: 0 });
@@ -1406,15 +1371,8 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
       remoteGate: listingRemoteGate(hostname, knownHosts, undefined, pageSignals),
     });
 
-    if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
-      browser.tabs
-        .sendMessage(tabId, {
-          type: 'TAB_RISK_UPDATE',
-          payload: { risk },
-          risk,
-        })
-        .catch(() => {});
-    }
+    await publishTabRisk(browser.tabs, pageContext, risk);
+
   } catch (err) {
     console.debug('[XoraPass] checkAndPushTabRisk error:', err);
   }
@@ -1424,10 +1382,15 @@ async function checkAndPushTabRisk(tabId: number, url?: string): Promise<void> {
  * Whether this verdict withholds credentials. `block` always does;
  * `require_approval` does until the user approves this host in this tab.
  */
-function isFillWithheld(risk: DomainRiskAssessment, tabId: number | undefined, hostname: string): boolean {
+async function isFillWithheld(risk: DomainRiskAssessment, sender: browser.Runtime.MessageSender): Promise<boolean> {
   if (risk.decision === 'block') return true;
-  if (risk.decision === 'require_approval') return !hasRiskApproval(tabId, hostname);
-  return false;
+  if (risk.decision !== 'require_approval') return false;
+  // A child frame cannot inherit an approval granted to the top document.
+  const tabId = sender.tab?.id;
+  const url = credentialRequestUrl(sender);
+  if (sender.frameId !== 0 || tabId == null || !url) return true;
+  const context = await readApprovalContext(browser.tabs, tabId, url);
+  return !context || !riskApprovals.has(tabId, context);
 }
 
 async function setDomainAllowlist(hostname: string, allowlisted: boolean): Promise<string[]> {
@@ -1463,7 +1426,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const msg = message as { type: string; payload?: any };
 
   if (typeof type === 'string' && type.startsWith('WEB_BRIDGE_')) {
-    return handleWebBridgeMessage(type, msg.payload);
+    return handleWebBridgeMessage(type, msg.payload, sender);
   }
 
   if (type === 'GET_STATUS') {
@@ -1476,6 +1439,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'UNLOCK_VAULT') {
+    const generation = vaultSession.invalidate();
+    clearRiskApprovals();
     // jwt is optional for backward compatibility, but the popup always sends
     // it now -- without it, the AI Access checks below simply find nothing
     // (getJwt() returns '' and apiJwt() fails closed), never an error state.
@@ -1518,9 +1483,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // Offline unlock: keep the login proof (memory-only, cleared on lock) so
     // the session can sign in to the server once it is reachable again.
     if (offline && offlineAuthHash) sessionData.offlineReauth = { email, clientAuthHash: offlineAuthHash };
-    return browser.storage.session
-      .set(sessionData)
-      .then(() => {
+    return vaultSession
+      .commit(generation, () => browser.storage.session.set(sessionData), true)
+      .then((applied) => {
+        if (!applied) return { error: 'session_changed' };
         void scheduleAutoLock();
         void scheduleAiHeartbeat();
         void scheduleTokenRefresh();
@@ -1532,18 +1498,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'LOCK_VAULT') {
-    // console.debug('[XoraPass] LOCK_VAULT -> clearing session');
-    void browser.alarms.clear(AUTO_LOCK_ALARM);
-    void clearAiHeartbeat();
-    void clearTokenRefresh();
-    dismissedByTab.clear();
-    clearRiskApprovals();
-    // Same ordering as auto-lock: drain the clipboard before the pending
-    // marker is wiped along with the rest of the session.
-    return clearClipboard()
-      .catch(() => undefined)
-      .then(() => browser.storage.session.clear())
-      .then(() => ({ success: true }));
+    return lockVaultNow().then(() => ({ success: true }));
   }
 
   if (type === 'REFRESH_TOKEN') {
@@ -1580,10 +1535,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const enabled = !!msg.payload?.enabled;
     clearRemoteRiskCache();
     clearRiskApprovals();
-    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then((success) => {
-      // The user's own toggle is part of the always-on Shield entitlement.
-      void refreshShieldEntitlement();
-      return { success };
+    return updateDomainRiskSettings(enabled, globalThis.fetch, getJwt).then(async success => {
+      if (success) { await applyShieldPreference(enabled); await refreshShieldEntitlement(true); }
+      return { success, state: await getShieldState() };
     });
   }
 
@@ -1677,8 +1631,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'GET_MATCHING_CREDENTIALS') {
-    const hostname: string = msg.payload.hostname || '';
-    const currentUrl: string = msg.payload.currentUrl || `https://${hostname}`;
+    const generation = vaultSession.capture();
+    const currentUrl = credentialRequestUrl(sender);
+    if (!currentUrl) {
+      return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null, error: 'unauthorized_frame' });
+    }
+    const hostname = extractHostname(currentUrl);
     // Shape of the login form as the content script sees it: iframe embedding,
     // a cross-origin form action, MFA fields. These are the backend's
     // highest-value signals (CROSS_ORIGIN_FORM_ACTION, IFRAME_LOGIN_EMBEDDING)
@@ -1690,7 +1648,6 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const scamCues: string[] | undefined = Array.isArray(msg.payload.scamCues)
       ? msg.payload.scamCues.filter((c: unknown): c is string => typeof c === 'string')
       : undefined;
-    const senderTabId = sender.tab?.id;
     if (!hostname) {
       return Promise.resolve({ credentials: [], disabled: false, lookalike: null, risk: null });
     }
@@ -1702,7 +1659,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         getDomainAllowlist(),
       ]);
 
-      if (!res.unlocked || !res.vaultItems) {
+      if (generation === null || !vaultSession.isCurrent(generation) || !res.unlocked || !res.vaultItems) {
         // Locked: nothing to fill, but always-on Shield still protects the
         // page (paid entitlement; device-token auth). With no saved sites to
         // compare against, detection comes from the blocklist, the server's
@@ -1766,6 +1723,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       });
 
       // Maintain legacy lookalike compatibility for existing UI callers
+      if (!vaultSession.isCurrent(generation)) {
+        return { credentials: [], disabled: false, lookalike: null, risk: null, locked: true };
+      }
       let lookalike = matching.length === 0 ? findLookalikeTarget(hostname, knownHosts, allowlist) : null;
       if (!lookalike && (risk.decision === 'block' || risk.decision === 'require_approval') && risk.matchedTarget) {
         lookalike = {
@@ -1778,7 +1738,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
       // Withhold credentials on `block`, and on `require_approval` until the
       // user has explicitly approved this host in this tab. See isFillWithheld.
-      const withheld = isFillWithheld(risk, senderTabId, hostname);
+      const withheld = await isFillWithheld(risk, sender);
       const credentialsToOffer = withheld ? [] : matching;
 
       return {
@@ -1810,22 +1770,24 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'GET_CREDENTIAL_SECRET') {
     const id: string = msg.payload.id;
+    const generation = vaultSession.capture();
+    if (generation === null) return Promise.resolve({ error: 'locked' });
 
-    // The hostname is taken from the sender tab, never from the message
-    // payload: a compromised content script must not be able to name a
-    // different site and pull that site's password.
-    const senderUrl = sender.tab?.url || sender.url || '';
+    // Authorize the requesting document before looking up any vault data.
+    // The top tab is context, never a substitute for a frame's own authority.
+    const senderUrl = credentialRequestUrl(sender);
+    if (!senderUrl) return Promise.resolve({ error: 'unauthorized_frame' });
     const hostname = extractHostname(senderUrl);
     if (!hostname) {
       return Promise.resolve({ error: 'unknown_origin' });
     }
 
     return Promise.all([
-      browser.storage.session.get(['unlocked', 'vaultItems']),
+      browser.storage.session.get(['unlocked', 'vaultItems', 'email', 'encKey']),
       isSiteDisabled(hostname),
       getDomainAllowlist(),
     ]).then(async ([res, disabled, allowlist]) => {
-      if (!res.unlocked || !res.vaultItems) return { error: 'locked' };
+      if (!vaultSession.isCurrent(generation) || !res.unlocked || !res.vaultItems) return { error: 'locked' };
       if (disabled) return { error: 'site_disabled' };
 
       const item = (res.vaultItems as VaultItem[]).find((i) => i.id === id);
@@ -1841,7 +1803,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         return { error: 'not_fillable' };
       }
 
-      // Re-authorize: the item must still match the tab's real hostname.
+      // Re-authorize: the item must match the authorized requesting hostname.
       if (!isDomainMatch(hostname, item.url)) {
         console.warn('[XoraPass] Refused secret for non-matching domain:', hostname);
         return { error: 'domain_mismatch' };
@@ -1868,12 +1830,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
         sensitivity: sensitivityForItems([item]),
       });
 
-      if (isFillWithheld(risk, sender.tab?.id, hostname)) {
+      if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
+
+      if (await isFillWithheld(risk, sender)) {
         console.warn('[XoraPass] Refused secret for risk domain:', hostname, risk.decision, risk.reasons);
         return { error: risk.decision === 'block' ? 'risk_blocked' : 'risk_approval_required', risk };
       }
-
-      void scheduleAutoLock(); // filling counts as activity
 
       let totpCode: string | undefined;
       if (item.totpSecret) {
@@ -1888,6 +1850,16 @@ browser.runtime.onMessage.addListener((message, sender) => {
         }
       }
 
+      // Last asynchronous boundary: re-read live session/item and tab state.
+      // The synchronous generation check after it also catches lock -> unlock
+      // of the same account, including while this read was still in flight.
+      const releaseError = await credentialReleaseError(generation, res, item, sender, senderUrl);
+      if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
+      if (releaseError) return { error: releaseError };
+      if (await isFillWithheld(risk, sender)) return { error: 'risk_approval_required', risk };
+      if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
+
+      void scheduleAutoLock(); // Only a successful, still-authorized fill is activity.
       return {
         username: item.username,
         value: item.value,
@@ -2018,11 +1990,15 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (type === 'AI_CHECK_TAB') {
     const hostname: string = msg.payload.hostname;
     const tabId = sender.tab?.id;
-    if (tabId === undefined) return Promise.resolve({ offer: null });
+    if (tabId == null) return Promise.resolve({ offer: null });
     return getAiFillForHostname(hostname, tabId).then((offer) => ({ offer }));
   }
 
   if (type === 'AI_FILL_CONFIRM') {
+    const generation = vaultSession.capture();
+    if (generation === null) return Promise.resolve({ error: 'locked' });
+    const senderUrl = credentialRequestUrl(sender);
+    if (!senderUrl) return Promise.resolve({ error: 'unauthorized_frame' });
     // Re-verify against the LIVE server state at the moment of the click --
     // the banner may have been sitting open for a while, and the session
     // could have expired or been revoked (from the popup, the web app,
@@ -2040,7 +2016,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
         return { error: 'This AI session is no longer active.' };
       }
       return (async () => {
-        const res = await browser.storage.session.get(['vaultItems']);
+        const res = await browser.storage.session.get(['unlocked', 'vaultItems', 'email', 'encKey']);
+        if (!vaultSession.isCurrent(generation) || !res.unlocked) return { error: 'locked' };
         const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
         const item = items?.find((i) => i.id === session.vault_entry_id);
         if (!item) return { error: 'Credential not found in this session -- try unlocking again.' };
@@ -2052,7 +2029,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         // approved for the real one. The AI context is what raises the
         // backend's scrutiny (AI_SESSION_ELEVATED_SCRUTINY, +35) and turns a
         // medium score into require_approval rather than a warning.
-        const aiHostname = extractHostname(sender.tab?.url || sender.url || '');
+        const aiHostname = extractHostname(senderUrl);
         if (!aiHostname) return { error: 'Could not determine this page -- try again.' };
 
         const allowlist = await getDomainAllowlist();
@@ -2063,7 +2040,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
         const risk = await evaluateDomainRisk({
           hostname: aiHostname,
-          currentUrl: sender.tab?.url || sender.url || `https://${aiHostname}`,
+          currentUrl: senderUrl,
           knownHosts,
           allowlist,
           savedDomain: item.url ? extractHostname(item.url) : '',
@@ -2083,6 +2060,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
           };
         }
 
+        const releaseError = await credentialReleaseError(generation, res, item, sender, senderUrl);
+        if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
+        if (releaseError) return { error: releaseError };
         return { username: item.username, value: item.value };
       })();
     });
@@ -2206,7 +2186,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     // whether the merchant page is suspicious. Ignore top-frame senders — the
     // main content script already scans its own document.
     const tabId = sender.tab?.id;
-    if (tabId === undefined || !sender.frameId) return Promise.resolve({ success: false });
+    if (tabId == null || !sender.frameId) return Promise.resolve({ success: false });
     return browser.tabs
       .sendMessage(tabId, { type: 'CARD_FIELDS_IN_FRAME' }, { frameId: 0 })
       .then(() => ({ success: true }))
@@ -2224,7 +2204,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'SHIELD_GET_STATE') {
-    return getShieldState();
+    return (async () => { if (msg.payload?.refresh) await refreshShieldEntitlement(); return getShieldState(); })();
   }
 
   if (type === 'SHIELD_REFRESH') {
@@ -2237,11 +2217,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'SHIELD_SIGN_OUT') {
-    return shieldSignOut().then(() => ({ success: true }));
+    // Stop vault access before device-token revocation can wait on the network.
+    return lockVaultNow().then(() => shieldSignOut()).then(() => ({ success: true }));
   }
 
   if (type === 'SHIELD_EMAIL_SCAN') {
-    return handleShieldEmailScan(sender, msg.payload?.email, msg.payload?.trigger);
+    return handleShieldEmailScan(sender, msg.payload?.email, msg.payload?.trigger, msg.payload?.consent);
   }
 
   if (type === 'SHIELD_BEHAVIOR') {
@@ -2335,6 +2316,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // Page shape, straight from the tab's own content script. The popup
       // can't collect it, and without it the backend's page classifier (and
       // the report's script/form indicators) have nothing to work with.
+      const [scanTab] = await browser.tabs.query({active:true,currentWindow:true});
+      const pageContext: TabRiskContext | null = scanTab?.id !== undefined && scanTab.url === targetUrl
+        ? await readTabRiskContext(browser.tabs, scanTab.id, targetUrl) : null;
       let pageSignals: PageSignals | undefined = msg.payload?.pageSignals;
       if (!pageSignals) {
         try {
@@ -2390,36 +2374,27 @@ browser.runtime.onMessage.addListener((message, sender) => {
         extraBrands: brands,
       });
 
-      // If the scan produced a risk assessment that warrants warning/blocking,
-      // notify the tab directly so its proactive risk alert triggers immediately.
-      if (risk && (risk.decision === 'warn' || risk.decision === 'block' || risk.decision === 'require_approval')) {
-        browser.tabs.query({ active: true, currentWindow: true }).then(([activeTab]) => {
-          if (activeTab?.id && activeTab.url === targetUrl) {
-            browser.tabs.sendMessage(activeTab.id, {
-              type: 'TAB_RISK_UPDATE',
-              payload: { risk },
-            }).catch(() => {});
-          }
-        }).catch(() => {});
-      }
+      await publishTabRisk(browser.tabs, pageContext, risk);
 
       return { report };
     })();
   }
 
   if (type === 'RISK_APPROVE_DOMAIN') {
-    // The hostname is taken from the sender tab, never the payload — the same
-    // discipline GET_CREDENTIAL_SECRET uses. A caller naming some other host
-    // must not be able to pre-approve it. The payload host is only used to
-    // confirm the overlay and the tab still agree on where they are.
-    const tabId = sender.tab?.id;
-    const realHost = extractHostname(sender.tab?.url || sender.url || '');
-    const claimedHost = extractHostname(msg.payload?.hostname || '');
-    if (tabId === undefined || !realHost || realHost !== claimedHost) {
-      return Promise.resolve({ success: false, error: 'unknown_origin' });
-    }
-    grantRiskApproval(tabId, realHost);
-    return Promise.resolve({ success: true, expiresInSeconds: APPROVAL_TTL_MS / 1000 });
+    return (async () => {
+      const tabId = sender.tab?.id;
+      const url = credentialRequestUrl(sender);
+      const claimedHost = extractHostname(msg.payload?.hostname || '');
+      if (sender.frameId !== 0 || tabId == null || !url || extractHostname(url) !== claimedHost) {
+        return { success: false, error: 'unknown_origin' };
+      }
+      const generation = vaultSession.capture();
+      if (generation === null) return { success: false, error: 'locked' };
+      const context = await readApprovalContext(browser.tabs, tabId, url);
+      if (!context || !sameApprovalContext(context, msg.payload?.approvalContext) || !vaultSession.isCurrent(generation)) return { success: false, error: 'page_changed' };
+      riskApprovals.grant(tabId, context);
+      return { success: true, expiresInSeconds: APPROVAL_TTL_MS / 1000 };
+    })();
   }
 
   if (type === 'REPORT_PHISHING') {
@@ -2502,9 +2477,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'AUDIT_EXTENSIONS') {
     return (async () => {
-      const malicious = await getMaliciousExtensionIds().catch(() => new Set<string>());
+      const reputation = await getMaliciousExtensionReputation().catch(() => ({ ids: new Set<string>(), source: 'unavailable' as const }));
       const api = (globalThis as any).chrome?.management || (browser as any)?.management;
-      return auditInstalledExtensions(malicious, api);
+      return auditInstalledExtensions(reputation.source === 'unavailable' ? undefined : reputation.ids, api, reputation.source);
     })();
   }
 
@@ -2649,6 +2624,8 @@ async function applyBridgedSession(
   email: string,
   refreshToken?: string
 ): Promise<void> {
+  const generation = vaultSession.invalidate();
+  clearRiskApprovals();
   const res = await fetch(`${API_BASE_URL}/api/vault`, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -2696,7 +2673,8 @@ async function applyBridgedSession(
     offline: false,
   };
   if (refreshToken) sessionData.refreshToken = refreshToken;
-  await browser.storage.session.set(sessionData);
+  const applied = await vaultSession.commit(generation, () => browser.storage.session.set(sessionData), true);
+  if (!applied) throw new Error('Vault session changed during bridge login');
 
   void scheduleAutoLock();
   void scheduleAiHeartbeat();
@@ -2768,7 +2746,14 @@ async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   return { deviceId, publicKey: pair.publicKey, privateKey: pair.privateKey };
 }
 
-async function handleWebBridgeMessage(type: string, payload: any): Promise<any> {
+async function handleWebBridgeMessage(type: string, payload: any, sender?: browser.Runtime.MessageSender): Promise<any> {
+  if (type === 'WEB_BRIDGE_SHIELD_SETTINGS_CHANGED') {
+    // A hint only: refresh using this extension's credential, never a page
+    // supplied enabled flag or account. Both native and fallback bridges use it.
+    let origin = ''; try { origin = new URL(sender?.url || '').origin; } catch {}
+    if (!['https://app.xorapass.com', new URL(WEB_APP_URL).origin].includes(origin)) return { success: false };
+    await refreshShieldEntitlement(true); return { success: true };
+  }
   if (type === 'WEB_BRIDGE_LOGIN') {
     const { token, encKey, email } = payload || {};
     let derivedEncBytes: Uint8Array;
@@ -2857,19 +2842,10 @@ async function handleWebBridgeMessage(type: string, payload: any): Promise<any> 
     browser.tabs.query({}).then((tabs) => {
       for (const tab of tabs) {
         if (tab.id !== undefined && tab.url && extractHostname(tab.url) === hostname) {
-          browser.tabs.sendMessage(tab.id, {
-            type: 'TAB_RISK_UPDATE',
-            payload: {
-              risk: {
-                decision: 'block',
-                showInterstitial: true,
-                riskScore: 100,
-                riskLevel: 'critical',
-                reasons: ['Domain blocked by platform administrator policy.'],
-                matchedTarget: null,
-              },
-            },
-          }).catch(() => {});
+          void readTabRiskContext(browser.tabs, tab.id, tab.url).then(context => publishTabRisk(browser.tabs, context, {
+            pageHostname: hostname, decision:'block', showInterstitial:true,
+            riskScore:100, riskLevel:'critical', reasons:['Domain blocked by platform administrator policy.'], matchedTarget:null,
+          }));
         }
       }
     }).catch(() => {});
@@ -2898,7 +2874,7 @@ if (api?.runtime?.onMessageExternal) {
       return;
     }
 
-    handleWebBridgeMessage(guard.type as string, message.payload)
+    handleWebBridgeMessage(guard.type as string, message.payload, sender)
       .then(sendResponse)
       .catch((err) => sendResponse({ error: 'bridge_failed', detail: String(err) }));
 
@@ -3132,7 +3108,7 @@ browser.runtime.onConnect.addListener((port) => {
           .sendMessage(tab.id, {
             type: 'POPUP_STATE_CHANGED',
             payload: { open: true, isOpen: true },
-          })
+          }, { frameId: 0 })
           .catch(() => {});
       }
     }).catch(() => {});
@@ -3143,7 +3119,7 @@ browser.runtime.onConnect.addListener((port) => {
           .sendMessage(openedTabId, {
             type: 'POPUP_STATE_CHANGED',
             payload: { open: false, isOpen: false },
-          })
+          }, { frameId: 0 })
           .catch(() => {});
       }
       browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
@@ -3152,7 +3128,7 @@ browser.runtime.onConnect.addListener((port) => {
             .sendMessage(tab.id, {
               type: 'POPUP_STATE_CHANGED',
               payload: { open: false, isOpen: false },
-            })
+            }, { frameId: 0 })
             .catch(() => {});
         }
       }).catch(() => {});

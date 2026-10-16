@@ -1,16 +1,9 @@
 // XoraPass Shield decision pipeline (pure).
 //
-// Layers, cheapest first:
-//   L0  user allowlist / trusted — the user's explicit allowlist, their own
-//       saved sites, platform-trusted domains (server config) and the built-in
-//       list of major legitimate platforms. Allowed without further checks,
-//       EXCEPT that a confirmed blocklist hit still wins over "trusted"
-//       (a compromised page on a well-known host is exactly what lists catch).
-//   L1  blocklist — local hash-prefix set, confirmed by full hash on a hit.
-//   L2  local heuristics — lookalike/typosquat/homograph engine (domainRisk.ts)
-//       plus the page-shape signals collected by the content script.
-//   L3  server — threat-intel feeds + page classifier, ONLY when L2 found
-//       something, or the page asks for a credential/card and isn't trusted.
+// Confirmed threats and administrator policies are evaluated before domain
+// trust. Trust suppresses hostname heuristics; it does not authorize a form's
+// password destination or skip the server's policy checks when enabled.
+// The background supplies local blocklist, heuristic and remote assessments.
 //
 // Everything here is side-effect free; background/shield.ts supplies inputs.
 
@@ -19,7 +12,7 @@ import { KNOWN_LEGITIMATE_DOMAINS, type DomainRiskAssessment } from './domainRis
 import type { ShieldConfig } from './shieldConfig';
 import type { PageSignals } from './pageSignals';
 
-export type ShieldLayer = 'disabled' | 'unsupported' | 'allowlist' | 'blocklist' | 'trusted' | 'heuristic' | 'none';
+export type ShieldLayer = 'disabled' | 'unsupported' | 'allowlist' | 'blocklist' | 'trusted' | 'heuristic' | 'policy' | 'none';
 
 export interface NavDecision {
   action: 'allow' | 'warn' | 'block';
@@ -34,7 +27,7 @@ export interface BlocklistHit {
   source: string;
 }
 
-/** L0: is this host one we trust without asking anyone? */
+/** Domain trust suppresses hostname heuristics, not mandatory checks. */
 export function isTrustedHost(host: string, knownHosts: readonly string[], trustedDomains: readonly string[]): boolean {
   const h = extractHostname(host);
   if (!h) return false;
@@ -89,8 +82,6 @@ export function decideNavigation(input: {
   const host = extractHostname(url);
   if (!host) return { action: 'allow', layer: 'unsupported', reasons: [] };
 
-  if (isAllowlistedHost(host, input.userAllowlist)) return { action: 'allow', layer: 'allowlist', reasons: [] };
-
   if (input.blocklistHit) {
     return {
       action: 'block',
@@ -100,11 +91,17 @@ export function decideNavigation(input: {
     };
   }
 
+  const local = input.local;
+  if (local?.confirmedThreat) return { action: 'block', layer: 'blocklist', reasons: local.reasons };
+  if (local?.policyEnforced) {
+    return { action: local.decision === 'block' ? 'block' : local.decision === 'allow' ? 'allow' : 'warn', layer: 'policy', reasons: local.reasons, matchedTarget: local.matchedTarget };
+  }
+  if (isAllowlistedHost(host, input.userAllowlist)) return { action: 'allow', layer: 'allowlist', reasons: [] };
+
   if (isTrustedHost(host, input.knownHosts, config.trusted_domains)) {
     return { action: 'allow', layer: 'trusted', reasons: [] };
   }
 
-  const local = input.local;
   if (local && local.decision === 'block' && local.riskScore >= config.nav_guard.block_score) {
     return { action: 'block', layer: 'heuristic', reasons: local.reasons, matchedTarget: local.matchedTarget };
   }
@@ -131,6 +128,7 @@ export function shouldEscalateRemote(input: {
 }): boolean {
   const { config, local } = input;
   if (!config.shield_enabled || !config.remote.enabled) return false;
+  if (input.crossOriginFormAction || input.pageSignals?.form_action_insecure || input.pageSignals?.form_action_cross_origin) return true;
   if (local.isAllowlisted) return false;
   if (input.trusted) {
     // A trusted site posting credentials elsewhere is still worth a look.

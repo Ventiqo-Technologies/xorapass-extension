@@ -13,6 +13,7 @@
 // cannot reach our nodes (closed mode leaves element.shadowRoot === null).
 
 import browser from 'webextension-polyfill';
+import { isAutofillSuppressed, isExtensionUiElement, onAutofillSuppressed, suppressAutofill } from '../utils/autofillSurface';
 import {
   computeIconPosition,
   computeTrailingOffset,
@@ -1494,6 +1495,7 @@ function ensureHost(): HTMLDivElement {
 
   const host = document.createElement('div');
   host.id = HOST_ID;
+  host.setAttribute('data-xorapass-ui', '');
   // Keep the host itself inert and unstyleable from the page.
   host.setAttribute('style', 'all: initial; position: static;');
 
@@ -1525,6 +1527,7 @@ function ensureHost(): HTMLDivElement {
  * created, false when the input already had one.
  */
 export function attachIcon(input: HTMLInputElement, onActivate: () => void): boolean {
+  if (isAutofillSuppressed() || isExtensionUiElement(input)) return false;
   if (registrations.some((r) => r.input === input)) return false;
 
   const root = ensureHost();
@@ -1581,6 +1584,7 @@ function trailingControls(input: HTMLInputElement, fieldRect: DOMRect): Rect[] {
 
 /** Re-syncs every icon (and any open menu) to its input's current rect. */
 export function reposition(): void {
+  if (isAutofillSuppressed()) { clearAll(); return; }
   const viewport = { width: window.innerWidth, height: window.innerHeight };
 
   // Drop registrations whose input left the DOM, so long-lived SPAs don't leak.
@@ -1763,6 +1767,7 @@ function buildSuggestionBox(
 }
 
 export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): void {
+  if (isAutofillSuppressed() || isExtensionUiElement(anchor)) return;
   closeDropdown();
   const root = ensureHost();
 
@@ -2083,6 +2088,7 @@ const SUCCESS_SVG =
   '</svg>';
 
 export function showSavePrompt(opts: SavePromptOptions): void {
+  if (isAutofillSuppressed()) return;
   closeSavePrompt();
   const root = ensureHost();
 
@@ -2580,6 +2586,7 @@ export interface InterstitialOptions {
 
 let interstitialEl: HTMLElement | null = null;
 let interstitialGuard: MutationObserver | null = null;
+let releaseInterstitialSuppression: (() => void) | null = null;
 
 /** Seconds the escape hatch stays disabled. Long enough to be read, not so long it is rage-inducing. */
 const PROCEED_DELAY_SECONDS = 5;
@@ -2591,7 +2598,10 @@ const PROCEED_DELAY_SECONDS = 5;
  * delete it, which a phishing page has every reason to attempt.
  */
 export function showPhishingInterstitial(opts: InterstitialOptions): void {
+  // Another bundle or the parent frame already owns the blocking surface.
+  if (!interstitialEl && isAutofillSuppressed()) return;
   closePhishingInterstitial();
+  releaseInterstitialSuppression = suppressAutofill();
   const root = ensureHost();
 
   const shell = document.createElement('div');
@@ -2801,6 +2811,8 @@ export function closePhishingInterstitial(): void {
     interstitialEl.remove();
     interstitialEl = null;
   }
+  releaseInterstitialSuppression?.();
+  releaseInterstitialSuppression = null;
 }
 
 export function isInterstitialOpen(): boolean {
@@ -2880,6 +2892,10 @@ export function clearAll(): void {
   for (const reg of registrations) reg.icon.remove();
   registrations = [];
 }
+
+// Runs in each independently built overlay, so a document_start block also
+// clears icons and menus owned by the document_idle bundle (and vice versa).
+onAutofillSuppressed(() => { clearAll(); closeSavePrompt(); });
 
 /** True when the input already carries an overlay icon. */
 export function hasIcon(input: HTMLInputElement): boolean {

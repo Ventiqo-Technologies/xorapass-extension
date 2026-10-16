@@ -3,6 +3,7 @@ import {
   normalizeHostname,
   extractHostname,
   registrableDomain,
+  stripPublicSuffix,
   isSubdomainOf,
   isDomainMatch,
   levenshtein,
@@ -10,7 +11,9 @@ import {
   findLookalikeTarget,
   isThirdPartyFrame,
   isUserContentHost,
+  FREE_HOSTING_SUFFIXES,
 } from './siteTrust';
+import { isTrustedHost } from './shieldEngine';
 
 describe('normalizeHostname', () => {
   it('lowercases, trims, strips trailing dot and leading www', () => {
@@ -81,6 +84,64 @@ describe('isDomainMatch — attack rejection (regression for substring bug)', ()
   it('rejects empty inputs', () => {
     expect(isDomainMatch('', 'https://example.com')).toBe(false);
     expect(isDomainMatch('example.com', '')).toBe(false);
+  });
+});
+
+describe('SHIELD-001 — registrable tenant credential authorization', () => {
+  it.each(FREE_HOSTING_SUFFIXES)('separates credentials and saved trust across %s tenants', (suffix) => {
+    const saved = `victim.${suffix}`;
+    const other = `evil.${suffix}`;
+    expect(isDomainMatch(other, `https://${saved}/login`)).toBe(false);
+    expect(isDomainMatch(saved, `https://${other}/login`)).toBe(false);
+    expect(isDomainMatch(saved, `https://${saved}/login`)).toBe(true);
+    expect(isTrustedHost(other, [saved], [])).toBe(false);
+  });
+
+  it.each(['framer.app', 'github.io', 'pages.dev', 'vercel.app', 'awsapps.com'])(
+    'does not authorize a %s tenant through a saved provider suffix', (suffix) => {
+      expect(isDomainMatch(`victim.${suffix}`, `https://${suffix}`)).toBe(false);
+      expect(isDomainMatch(suffix, `https://victim.${suffix}`)).toBe(false);
+    }
+  );
+
+  it('preserves normal subdomain logins within one shared-hosting tenant', () => {
+    expect(isDomainMatch('docs.victim.framer.app', 'https://victim.framer.app')).toBe(true);
+    expect(isDomainMatch('victim.framer.app', 'https://login.victim.framer.app')).toBe(true);
+    expect(isDomainMatch('docs.victim.region.run.app', 'https://victim.region.run.app')).toBe(true);
+    expect(isDomainMatch('evil.region.run.app', 'https://victim.region.run.app')).toBe(false);
+  });
+
+  it('honors three-label ICANN suffixes and PSL wildcard/exception boundaries', () => {
+    expect(registrableDomain('login.school.act.edu.au')).toBe('school.act.edu.au');
+    expect(isDomainMatch('evil.act.edu.au', 'https://victim.act.edu.au')).toBe(false);
+    expect(registrableDomain('a.b.ck')).toBe('a.b.ck');
+    expect(isDomainMatch('evil.b.ck', 'https://victim.b.ck')).toBe(false);
+    expect(registrableDomain('login.www.ck')).toBe('www.ck');
+    expect(isDomainMatch('login.www.ck', 'https://www.ck')).toBe(true);
+  });
+
+  it('never normalizes a www hosting tenant into the provider hostname', () => {
+    expect(normalizeHostname('WWW.Framer.APP.')).toBe('www.framer.app');
+    expect(extractHostname('https://www.framer.app/login')).toBe('www.framer.app');
+    expect(isDomainMatch('www.framer.app', 'https://framer.app')).toBe(false);
+    expect(isDomainMatch('framer.app', 'https://www.framer.app')).toBe(false);
+    expect(normalizeHostname('www.victim.framer.app')).toBe('victim.framer.app');
+    expect(isDomainMatch('www.victim.framer.app', 'https://victim.framer.app')).toBe(true);
+  });
+
+  it('uses the same private/wildcard boundary for brand stripping', () => {
+    expect(stripPublicSuffix('evil.framer.app')).toBe('evil');
+    expect(stripPublicSuffix('login.school.act.edu.au')).toBe('login.school');
+    expect(stripPublicSuffix('a.b.ck')).toBe('a');
+    expect(stripPublicSuffix('login.www.ck')).toBe('login.www');
+  });
+
+  it('does not release AWS portal credentials to a different organization or realm', () => {
+    expect(isDomainMatch('evil.awsapps.com', 'https://victim.awsapps.com')).toBe(false);
+    expect(isDomainMatch('evil.signin.aws', 'https://victim.signin.aws')).toBe(false);
+    expect(isDomainMatch('victim.signin.aws', 'https://victim.awsapps.com')).toBe(false);
+    expect(isDomainMatch('console.aws.amazon.com', 'https://victim.awsapps.com')).toBe(false);
+    expect(isDomainMatch('victim.awsapps.com', 'https://victim.awsapps.com/start')).toBe(true);
   });
 });
 
