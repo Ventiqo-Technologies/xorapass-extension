@@ -3,29 +3,29 @@ import process from 'node:process';
 
 const steps = [
   {
-    name: 'Tier 1: Unit & Logic Regressions (Vitest)',
+    name: 'Tier 1: Production Compilation & Bundle Generation (Vite + Rollup + Tailwind v4)',
+    cmd: 'node',
+    args: ['scripts/build-prod.mjs'],
+  },
+  {
+    name: 'Tier 2: Unit & Bundle Isolation Regressions (Vitest)',
     cmd: 'npx',
     args: ['vitest', 'run'],
   },
   {
-    name: 'Tier 2A: Chromium Webmail Reading Pane & SPA Mutation Regressions',
+    name: 'Tier 3A: Chromium Webmail Reading Pane & SPA Mutation Regressions',
     cmd: 'node',
     args: ['scripts/test-webmail-mutations.mjs'],
   },
   {
-    name: 'Tier 2B: Chromium Outlook Header Sender Extraction Fixtures',
+    name: 'Tier 3B: Chromium Outlook Header Sender Extraction Fixtures',
     cmd: 'node',
     args: ['scripts/test-outlook-headers.mjs'],
   },
   {
-    name: 'Tier 2C: Chromium Email Panel Render & Viewport Fixtures',
+    name: 'Tier 3C: Chromium Email Panel Render & Viewport Fixtures',
     cmd: 'node',
     args: ['scripts/test-email-panel-results.mjs'],
-  },
-  {
-    name: 'Tier 3: Production Build (Vite + Rollup + Tailwind v4)',
-    cmd: 'node',
-    args: ['scripts/build-prod.mjs'],
   },
   {
     name: 'Tier 4: Production Smoke, Manifest & Isolation Verifications',
