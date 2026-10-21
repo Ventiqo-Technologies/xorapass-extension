@@ -2,7 +2,7 @@ import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION } from '../utils/t
 import { RiskApprovals, readApprovalContext, sameApprovalContext } from '../utils/riskApproval';
 import { readTabRiskContext, publishTabRisk, type TabRiskContext } from '../utils/tabRiskContext';
 import browser from 'webextension-polyfill';
-import { normalizeEmailScanResult } from '../utils/emailScanResult';
+import { normalizeEmailScanResult, emailScanHttpFailure } from '../utils/emailScanResult';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
 import { disabledDomainRiskAssessment, assessWithCatalog, type DomainRiskAssessment } from '../utils/domainRisk';
 import {
@@ -1169,7 +1169,6 @@ async function handleShieldEmailScan(
   trigger: 'auto' | 'button' = 'button',
   consent?: string
 ): Promise<unknown> {
-  const none = { verdict: 'unavailable' };
   const senderUrl = sender.url || sender.tab?.url || '';
   const host = extractHostname(senderUrl);
   let path = '/';
@@ -1178,32 +1177,35 @@ async function handleShieldEmailScan(
   } catch {
     /* keep '/' */
   }
-  if (sender.frameId !== 0 || !isSupportedWebmail(host, path)) return none;
+  if (sender.frameId !== 0 || !isSupportedWebmail(host, path)) return { verdict: 'unavailable', reason: 'not_available' };
   const cfg = await getShieldConfig();
   if (!cfg.shield_enabled || !cfg.email_scan.enabled || !(await shieldFeature('email_ai'))) {
     return { verdict: 'unavailable', reason: 'not_available' };
   }
-  if (trigger === 'auto' ? !(await automaticTextScansAllowed(browser.storage.local)) : consent !== TEXT_SCAN_CONSENT_VERSION) return none;
+  if (trigger === 'auto' ? !(await automaticTextScansAllowed(browser.storage.local)) : consent !== TEXT_SCAN_CONSENT_VERSION) return { verdict: 'unavailable', reason: 'consent_required' };
   const key = JSON.stringify(email);
   const hit = emailScanCache.get(key);
   if (hit && hit.expires > Date.now()) return hit.res;
   const cred = await getShieldCredential();
-  if (!cred) return none;
+  if (!cred) return { verdict: 'unavailable', reason: 'auth_required' };
   try {
     const res = await fetch(`${API_BASE_URL}/api/shield/email-scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authHeaderValue(cred) },
       body: JSON.stringify({ ...email, trigger: trigger === 'auto' ? 'auto' : 'button', consent: TEXT_SCAN_CONSENT_VERSION }),
     });
-    if (!res.ok) return none;
-    const data = normalizeEmailScanResult(await res.json());
-    if (data.verdict !== 'unavailable') {
+    if (!res.ok) return emailScanHttpFailure(res.status);
+    let payload: unknown;
+    try { payload = await res.json(); }
+    catch { return { verdict: 'unavailable', reason: 'invalid_response' }; }
+    const data = normalizeEmailScanResult(payload, email?.sender_email);
+    if (data.verdict !== 'unavailable' && data.verdict !== 'inconclusive' && !data.validation_issue) {
       emailScanCache.set(key, { res: data, expires: Date.now() + 60 * 60 * 1000 });
       if (emailScanCache.size > 200) emailScanCache.delete(emailScanCache.keys().next().value as string);
     }
     return data;
   } catch {
-    return none;
+    return { verdict: 'unavailable', reason: 'network_error' };
   }
 }
 

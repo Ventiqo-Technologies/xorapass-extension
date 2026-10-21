@@ -16,6 +16,7 @@ import { showRiskWarning, showConfirmDialog, closeWebmailPhishingBanner } from '
 import { updateEmailInsight, clearEmailInsight } from './emailInsight';
 import { analyzeEmailLink, analyzeAttachmentName, type EmailFinding } from '../utils/emailGuard';
 import { findEmailRoots, attachmentNames } from './webmailProviders';
+import { removeEmailBadges } from '../utils/emailBadgeLifecycle';
 import { trackerFor } from '../utils/trackerList';
 import { registrableDomain } from '../utils/siteTrust';
 
@@ -144,6 +145,13 @@ export function scanEmailContent(host: string): void {
 const hookedDocs = new WeakSet<Document>();
 
 function scanEmailNow(host: string): void {
+  // Gmail and other SPAs replace message links while rendering. WeakSet
+  // identity alone cannot recognize the replacement, so clear stale badges
+  // and rescan the current DOM to keep one warning per visible link.
+  removeEmailBadges(document);
+  seenLinks = new WeakSet<Element>();
+  seenAttachments = new WeakSet<Element>();
+  linkFindings = new WeakMap<Element, EmailFinding>();
   try {
     updateEmailInsight(host, currentShieldConfig);
   } catch {

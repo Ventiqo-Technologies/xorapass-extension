@@ -33,10 +33,10 @@ export const BRAND_DOMAINS: Record<string, string[]> = {
   visa: ['visa.com'],
 
   // Big Tech, Cloud & Identity
-  microsoft: ['microsoft.com', 'office.com', 'live.com', 'outlook.com', 'microsoftemail.com', 'microsoftsupport.com'],
+  microsoft: ['microsoft.com', 'office.com', 'live.com', 'outlook.com', 'microsoftemail.com', 'microsoftsupport.com', 'cloud.microsoft', 'office365.com'],
   apple: ['apple.com', 'icloud.com'],
-  google: ['google.com', 'gmail.com', 'googlemail.com'],
-  amazon: ['amazon.com', 'amazon.co.uk', 'amazon.de', 'amazonaws.com'],
+  google: ['google.com', 'gmail.com', 'googlemail.com', 'google.co.uk', 'google.de', 'google.fr', 'google.nl', 'google.ca', 'google.com.au', 'google.co.in', 'google.co.jp'],
+  amazon: ['amazon.com', 'amazon.co.uk', 'amazon.de', 'amazonaws.com', 'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.ca', 'amazon.in', 'amazon.co.jp', 'amazon.com.au', 'amazon.nl', 'amazon.ae', 'amazon.sa', 'amazon.com.br', 'amazon.com.mx', 'amazon.sg', 'amazon.pl', 'amazon.se', 'amazonpay.com', 'primevideo.com'],
   meta: ['meta.com', 'facebook.com', 'instagram.com', 'metamail.com', 'facebookmail.com', 'instagrammail.com', 'meta.ai', 'threads.net'],
   linkedin: ['linkedin.com', 'linkedinmail.com'],
   whatsapp: ['whatsapp.com'],
@@ -121,20 +121,6 @@ export function isSameBrandOrAlias(d1: string, d2: string): boolean {
   const reg2 = (registrableDomain(d2) || d2).toLowerCase();
   if (reg1 === reg2) return true;
 
-  const stem1 = reg1.split('.')[0];
-  const stem2 = reg2.split('.')[0];
-  if (stem1 === stem2 && stem1.length >= 3) {
-    return true;
-  }
-  if (
-    stem2 === stem1 + 'mail' ||
-    stem2 === stem1 + 'email' ||
-    stem1 === stem2 + 'mail' ||
-    stem1 === stem2 + 'email'
-  ) {
-    return true;
-  }
-
   for (const allowed of Object.values(BRAND_DOMAINS)) {
     const has1 = allowed.some((d) => (registrableDomain(d) || d).toLowerCase() === reg1);
     const has2 = allowed.some((d) => (registrableDomain(d) || d).toLowerCase() === reg2);
@@ -142,6 +128,15 @@ export function isSameBrandOrAlias(d1: string, d2: string): boolean {
   }
 
   return false;
+}
+
+/** Literal catalog association only, not SPF/DKIM/DMARC authentication. */
+export function senderDomainMatchesBrand(brand: string, host: string): boolean {
+  const domain = host.toLowerCase().trim();
+  const token = brand.toLowerCase().trim();
+  const domains = Object.prototype.hasOwnProperty.call(BRAND_DOMAINS, token) ? BRAND_DOMAINS[token] : [];
+  return !!domain && domains.some(allowed =>
+    domain === allowed || domain.endsWith('.' + allowed));
 }
 
 function displayTokens(displayName: string): string[] {
@@ -210,7 +205,6 @@ export function analyzeEmailSender(rawSender: string): EmailSenderAnalysis {
   let riskScore = 0;
 
   const normalizedDisplay = displayName.toLowerCase();
-  const regDomain = registrableDomain(domain) || domain;
 
   // Check if display name claims to be one of the high-target brands
   for (const [brand, allowedDomains] of Object.entries(BRAND_DOMAINS)) {
@@ -218,14 +212,7 @@ export function analyzeEmailSender(rawSender: string): EmailSenderAnalysis {
       claimedBrand = brand;
       expectedDomains = allowedDomains;
 
-      const isAllowed = allowedDomains.some((d) => {
-        const allowedReg = registrableDomain(d) || d;
-        // Check exact match, subdomain, or base brand match on valid ccTLDs (e.g. paypal.co.uk)
-        if (domain === d || domain.endsWith('.' + d) || regDomain === allowedReg) return true;
-        const brandLabel = allowedReg.split('.')[0];
-        if (regDomain.split('.')[0] === brandLabel) return true;
-        return false;
-      });
+      const isAllowed = senderDomainMatchesBrand(brand, domain);
 
       if (!isAllowed) {
         riskScore = 85;

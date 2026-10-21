@@ -1,8 +1,63 @@
 import { describe, expect, it } from 'vitest';
-import { emailInsightSummary, normalizeEmailScanResult } from './emailScanResult';
+import { emailInsightSummary, normalizeEmailScanResult, emailScanHttpFailure, emailAIWarningCopy, emailScanFailureText, emailInconclusiveText, emailScanUserText, EMAIL_SCAN_FAILURE_TEXT } from './emailScanResult';
 import { summarizeEmailLocal } from './emailGuard';
+import { BRAND_DOMAINS, senderDomainMatchesBrand, isSameBrandOrAlias } from './webmailGuard';
 
 describe('email scan API validation', () => {
+  it('rejects the Google screenshot contradiction using the real sender', () => {
+    const result = { verdict: 'suspicious', risk_score: 45, impersonated_brand: 'google', sender_matches_brand: false, sender_domain: 'google.com' };
+    expect(normalizeEmailScanResult(result, 'noreply-accounts@google.com')).toEqual({ verdict: 'unavailable', reason: 'inconsistent_evidence', validation_issue: 'sender_brand_contradiction' });
+    expect(EMAIL_SCAN_FAILURE_TEXT.inconsistent_evidence).toContain('On-device');
+  });
+  it('checks contradictions for every cataloged brand and domain, not just Google', () => {
+    for (const [brand, domains] of Object.entries(BRAND_DOMAINS)) {
+      for (const domain of domains) {
+        expect(senderDomainMatchesBrand(brand, `notify.${domain}`)).toBe(true);
+        expect(senderDomainMatchesBrand(brand, `${domain}.evil.example`)).toBe(false);
+        const result = { verdict: 'scam', risk_score: 90, impersonated_brand: brand, sender_matches_brand: false };
+        expect(normalizeEmailScanResult(result, `notice@notify.${domain}`).reason).toBe('inconsistent_evidence');
+      }
+    }
+  });
+  it('cannot authenticate a sender or erase a grounded warning through a matching domain', () => {
+    const result = { verdict: 'scam', risk_score: 90, impersonated_brand: 'google', sender_matches_brand: true, sender_domain: 'google.com', red_flags: ['Threat or blackmail'] };
+    expect(normalizeEmailScanResult(result, 'notice@google.com')).toEqual(result);
+  });
+  it('rejects stale or fabricated sender-domain metadata', () => {
+    expect(normalizeEmailScanResult({ verdict: 'legit', risk_score: 0, sender_domain: 'google.com' }, 'notice@evil.example').reason).toBe('inconsistent_evidence');
+  });
+  it('preserves an independent confirmed threat even when model sender metadata contradicts the catalog', () => {
+    const result = { verdict: 'phishing', risk_score: 90, confirmed_threat: true, impersonated_brand: 'google', sender_matches_brand: false, links: [{ index: 0, host: 'evil.example', reason: 'Known phishing site (threat intelligence)' }] };
+    const normalized = normalizeEmailScanResult(result, 'notice@google.com');
+    expect(normalized.verdict).toBe('phishing');
+    expect(emailAIWarningCopy(normalized.verdict, normalized.confirmed_threat).title).toBe('Known dangerous link');
+    expect(emailInsightSummary({ danger: false, cautions: 0, findings: [] }, normalized).summary).toContain('Known dangerous link');
+  });
+  it('never guesses brand ownership from a shared stem or mail suffix', () => {
+    expect(isSameBrandOrAlias('paypal.com', 'paypalmail.com')).toBe(false);
+    expect(isSameBrandOrAlias('google.com', 'google.xyz')).toBe(false);
+    expect(senderDomainMatchesBrand('paypal', 'paypal.xyz')).toBe(false);
+    for (const token of ['__proto__', 'constructor', 'toString']) {
+      expect(senderDomainMatchesBrand(token, 'google.com')).toBe(false);
+    }
+  });
+  it.each(['scam', 'phishing', 'suspicious'] as const)('labels %s as an email AI assessment, not confirmed fraud on a page', verdict => {
+    const copy = emailAIWarningCopy(verdict);
+    expect(copy.title).toContain('AI assessment');
+    expect(copy.message).toContain('not proof');
+    expect(copy.message).not.toMatch(/this page|is a scam|verified sender$/i);
+  });
+  it.each([[401, 'auth_required'], [403, 'not_available'], [429, 'rate_limited'], [500, 'service_unavailable'], [503, 'service_unavailable'], [400, 'error']] as const)('preserves the failure category for HTTP %s', (status, reason) => {
+    const result = emailScanHttpFailure(status);
+    expect(normalizeEmailScanResult(result)).toEqual({ verdict: 'unavailable', reason });
+    expect(EMAIL_SCAN_FAILURE_TEXT[reason]).toMatch(/On-device/);
+  });
+  it('keeps missing-model, consent and metering failures actionable', () => {
+    for (const reason of ['no_model', 'consent_required', 'metering_unavailable', 'network_error', 'auth_required']) {
+      expect(EMAIL_SCAN_FAILURE_TEXT[reason]).toBeTruthy();
+      expect(EMAIL_SCAN_FAILURE_TEXT[reason]).toMatch(/On-device/);
+    }
+  });
   it.each([
     null, [], {}, { verdict: 'trusted', risk_score: 0 }, { verdict: 'legit' },
     { verdict: 'legit', risk_score: '0' }, { verdict: 'legit', risk_score: NaN },
@@ -12,6 +67,9 @@ describe('email scan API validation', () => {
     { verdict: 'legit', risk_score: 0, red_flags: 'safe' },
     { verdict: 'legit', risk_score: 0, links: [null] },
     { verdict: 'legit', risk_score: 0, sender_matches_brand: 'true' },
+    { verdict: 'phishing', risk_score: 90, confirmed_threat: 'true' },
+    { verdict: 'legit', risk_score: 0, confirmed_threat: true },
+    { verdict: 'phishing', risk_score: 90, confirmed_threat: true, links: [] },
     { verdict: 'legit', risk_score: 0, red_flags: ['Asks for payment'] },
     { verdict: 'phishing', risk_score: 90, links: [{ index: 20, host: 'evil.example', reason: 'bad' }] },
   ])('rejects malformed or inconsistent data: %j', value => {
@@ -33,7 +91,7 @@ describe('email findings cannot be downgraded by AI', () => {
   ])('preserves deterministic danger: %j', input => {
     const local = summarizeEmailLocal(input);
     expect(local.danger).toBe(true);
-    for (const ai of [legit, normalizeEmailScanResult({}), { verdict: 'unavailable' } as const]) {
+    for (const ai of [legit, normalizeEmailScanResult({}), { verdict: 'unavailable' } as const, { verdict: 'inconclusive', risk_score: 0 } as const]) {
       expect(emailInsightSummary(local, ai).level).toBe('danger');
       expect(emailInsightSummary(local, ai).summary).not.toMatch(/verified|no scam|nothing suspicious/i);
     }
@@ -45,12 +103,101 @@ describe('email findings cannot be downgraded by AI', () => {
   });
   it('shows inconclusive rather than a green assurance on a failed check', () => {
     const local = summarizeEmailLocal({ sender: 'Team <team@example.com>', links: [], attachments: [] });
-    expect(emailInsightSummary(local, normalizeEmailScanResult({}))).toEqual({ level: 'neutral', summary: 'AI check inconclusive — on-device checks still apply' });
-    expect(emailInsightSummary(local, legit).summary).toContain('sender not authenticated');
+    expect(emailInsightSummary(local, normalizeEmailScanResult({}))).toEqual({ level: 'neutral', summary: 'AI analysis unavailable' });
+    expect(emailScanUserText(legit)).toContain('not the sender');
   });
   it('allows an AI warning to raise a clean local result', () => {
     const local = summarizeEmailLocal({ sender: 'Team <team@example.com>', links: [], attachments: [] });
     expect(emailInsightSummary(local, { verdict: 'scam', risk_score: 90 }).level).toBe('danger');
     expect(emailInsightSummary(local, { verdict: 'suspicious', risk_score: 45 }).level).toBe('caution');
+  });
+});
+
+describe('completed uncertainty and weak promotional cues', () => {
+  const clean = { danger: false, cautions: 0, findings: [] };
+  it.each(['weak_indicators', 'insufficient_evidence', 'low_confidence'])('keeps %s neutral without calling it safe or a service error', reason => {
+    const result = normalizeEmailScanResult({ verdict: 'inconclusive', risk_score: 0, reason });
+    expect(result.verdict).toBe('inconclusive');
+    expect(emailInsightSummary(clean, result)).toEqual({ level: 'neutral', summary: 'AI couldn’t assess this email' });
+    expect(emailInconclusiveText(result)).toContain('not a safe-email verdict');
+    expect(emailInconclusiveText(result)).not.toMatch(/retry|unavailable|diagnostic code/i);
+  });
+  it.each([
+    { verdict: 'inconclusive', risk_score: 90 },
+    { verdict: 'inconclusive', risk_score: 0, red_flags: ['Scam'] },
+    { verdict: 'inconclusive', risk_score: 0, links: [{ index: 0, host: 'example.com', reason: 'bad' }] },
+    { verdict: 'inconclusive', risk_score: 0, confirmed_threat: true },
+  ])('rejects contradictory neutral responses: %j', value => {
+    expect(normalizeEmailScanResult(value).reason).toBe('invalid_response');
+  });
+  it.each(['Offer that is too good to be true', 'Generic greeting instead of your name', 'Pressure to act immediately', 'Contains a suspicious link'])('does not accept an older API red warning based only on %s', flag => {
+    const result = normalizeEmailScanResult({ verdict: 'scam', risk_score: 90, red_flags: [flag] });
+    expect(result).toEqual({ verdict: 'inconclusive', risk_score: 0, reason: 'weak_indicators' });
+    expect(emailInsightSummary(clean, result).level).toBe('neutral');
+  });
+  it('does not let weak-label handling erase a confirmed threat', () => {
+    const result = normalizeEmailScanResult({ verdict: 'phishing', risk_score: 90, confirmed_threat: true, red_flags: ['Offer that is too good to be true'], links: [{ index: 0, host: 'evil.example', reason: 'Known phishing site' }] });
+    expect(emailInsightSummary(clean, result).level).toBe('danger');
+  });
+  it('does not treat a loose AI link index as corroboration of a weak warning', () => {
+    expect(normalizeEmailScanResult({ verdict: 'scam', risk_score: 90, red_flags: ['Offer that is too good to be true'], links: [{ index: 0, host: 'mailer.example', reason: 'Flagged by AI analysis' }] }).verdict).toBe('inconclusive');
+  });
+  it('never renders arbitrary provider reasons in neutral explanations', () => {
+    expect(emailInconclusiveText({ verdict: 'inconclusive', reason: '<script>private@example.com</script>' })).not.toContain('private@example.com');
+  });
+});
+
+describe('privacy-safe email diagnostics', () => {
+  it.each(['model_output_shape', 'model_low_confidence', 'sender_brand_contradiction', 'sender_metadata_mismatch',
+    'sender_mismatch_unproven', 'link_mismatch_unproven', 'evidence_quote_length', 'evidence_quote_not_found',
+    'link_without_evidence', 'weak_indicators_only', 'warning_without_evidence', 'unknown_indicator'])('preserves the fixed %s code across both normalization passes', issue => {
+    const result = { verdict: 'unavailable', reason: 'inconsistent_evidence', validation_issue: issue };
+    const normalized = normalizeEmailScanResult(normalizeEmailScanResult(result));
+    expect(normalized).toEqual(result);
+    const copy = emailScanFailureText(normalized);
+    expect(copy).toContain(`diagnostic code ${issue}`);
+    expect(copy).toContain('On-device warnings are unchanged');
+    expect(copy).toContain('not classified as safe or malicious');
+  });
+  it.each(['<script>alert(1)</script>', 'private@example.com', 'constructor', '__proto__', '', null, {}, 'a'.repeat(10000)])('discards unknown diagnostic values: %j', issue => {
+    const normalized = normalizeEmailScanResult({ verdict: 'unavailable', reason: 'inconsistent_evidence', validation_issue: issue });
+    expect(normalized.validation_issue).toBeUndefined();
+    expect(emailScanFailureText(normalized)).toBe(EMAIL_SCAN_FAILURE_TEXT.inconsistent_evidence);
+  });
+  it('explains unknown failures without echoing server/provider text', () => {
+    const result = normalizeEmailScanResult({ verdict: 'unavailable', reason: 'private@example.com', validation_issue: 'secret' });
+    expect(emailScanFailureText(result)).toBe(EMAIL_SCAN_FAILURE_TEXT.invalid_response);
+  });
+  it('distinguishes client sender metadata rejection from server evidence rejection', () => {
+    const result = normalizeEmailScanResult({ verdict: 'legit', risk_score: 0, sender_domain: 'other.example' }, 'notice@example.com');
+    expect(result.validation_issue).toBe('sender_metadata_mismatch');
+    expect(emailScanFailureText(result)).toContain('different sender domain');
+  });
+});
+
+describe('concise scan guidance', () => {
+  it.each(['model_output_shape', 'evidence_quote_not_found', 'unknown_evidence_reference'])('keeps %s out of the primary message', issue => {
+    const result = normalizeEmailScanResult({ verdict: 'unavailable', reason: 'inconsistent_evidence', validation_issue: issue });
+    expect(emailScanUserText(result)).toContain('Try again');
+    expect(emailScanUserText(result)).not.toMatch(/diagnostic|quote|provider|schema|model_output/);
+    expect(emailScanFailureText(result)).toContain(issue);
+  });
+  it('does not portray local warnings as a successful AI assessment', () => {
+    const result = normalizeEmailScanResult({ verdict: 'suspicious', risk_score: 45, reason: 'low_confidence', validation_issue: 'model_low_confidence', red_flags: ['Has a risky attachment'] });
+    expect(result.verdict).toBe('inconclusive');
+    const local = { danger: true, cautions: 0, findings: [{ level: 'danger' as const, reasons: ['Dangerous attachment'] }] };
+    expect(emailInsightSummary(local, result).level).toBe('danger');
+    expect(emailScanUserText(result, local)).toContain('Verify');
+  });
+  it.each([
+    ['quota', 'month'], ['daily_limit', 'daily'], ['auth_required', 'sign in'],
+    ['budget', 'paused'], ['consent_required', 'sharing notice'],
+  ])('keeps %s actionable', (reason, action) => {
+    expect(emailScanUserText({ verdict: 'unavailable', reason })).toContain(action);
+  });
+  it('keeps the sender limitation without exposing technical metadata', () => {
+    expect(emailScanUserText({ verdict: 'legit' })).toContain('not the sender');
+    expect(emailScanUserText({ verdict: 'inconclusive' })).toContain('not a safe-email verdict');
+    expect(emailScanUserText({ verdict: 'phishing', confirmed_threat: true })).toContain('Do not open');
   });
 });

@@ -20,19 +20,121 @@ export interface HeaderInfo {
   senderName: string;
   senderEmail: string;
   subject: string;
+  /** A provider-specific attempt must not fall back to arbitrary recipients. */
+  senderLookupComplete?: boolean;
 }
 
 type Provider = {
   test: (host: string) => boolean;
   body?: string;
+  /** The provider renders a standalone full-message document on a special route. */
+  fullPage?: boolean;
   frame?: string;
   attachments?: string;
   container?: string;
-  header?: (container: Element, doc: Document) => Partial<HeaderInfo>;
+  header?: (container: Element, doc: Document, root?: Element) => Partial<HeaderInfo>;
   generic?: boolean;
 };
 
 const txt = (el: Element | null | undefined) => ((el as HTMLElement | null)?.innerText || el?.textContent || '').trim();
+
+/** Only the header before To/Cc/Bcc can supply a sender, never its recipients. */
+export function parseOutlookSender(text: string): Pick<HeaderInfo, 'senderName' | 'senderEmail'> {
+  const header = text.split(/\b(?:to|cc|bcc)\s*:/i)[0].replace(/^\s*from\s*:\s*/i, '');
+  const addresses = [...new Set(header.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [])];
+  if (addresses.length !== 1) return { senderName: '', senderEmail: '' };
+  const senderEmail = addresses[0];
+  const before = header.slice(0, header.indexOf(senderEmail)).replace(/[<>]/g, '').trim();
+  return { senderEmail, senderName: before.split(/\n/).filter(Boolean).at(-1)?.trim() || '' };
+}
+
+/**
+ * Gmail's "View entire message" link opens a legacy, static document at
+ * ?view=lg&permmsgid=... rather than the normal Gmail application DOM.
+ * Keep the route check explicit so we never treat the whole Gmail app page as
+ * an email body.
+ */
+export function isGmailFullMessagePage(host: string, search: string): boolean {
+  if (host.toLowerCase() !== 'mail.google.com') return false;
+  const params = new URLSearchParams(search);
+  return params.get('view') === 'lg' && params.has('permmsgid');
+}
+
+/** Header format used by Gmail's standalone full-message document. */
+export function parseGmailFullMessageHeader(text: string): Partial<HeaderInfo> {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const subjectIndex = lines.findIndex((line) => /^subject\s*:/i.test(line));
+  const subject = subjectIndex >= 0
+    ? lines[subjectIndex].replace(/^subject\s*:\s*/i, '').trim()
+    : '';
+
+  // The legacy page also prints the signed-in account near the top. The
+  // actual sender is the last address before the recipient's To: line.
+  // This remains correct if the browser collapses some visual line breaks.
+  const beforeRecipients = text.split(/\b(?:to|cc|bcc)\s*:/i)[0];
+  const angleAddresses = [...beforeRecipients.matchAll(/([^<\n]{0,160})<\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\s*>/g)];
+  const lastAngle = angleAddresses.at(-1);
+  const fallbackAddresses = [...beforeRecipients.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)];
+  const senderEmail = lastAngle?.[2] || fallbackAddresses.at(-1)?.[0] || '';
+  const rawSenderName = lastAngle?.[1]?.replace(/^.*>\s*/s, '').replace(/[<>]/g, '').trim() || '';
+  // If all visual line breaks were collapsed, the subject can run into the
+  // sender name. Keep the address (reliable evidence) but omit an unreliable
+  // display name rather than showing the subject as the sender.
+  const senderName = /\bsubject\s*:/i.test(rawSenderName) ? '' : rawSenderName;
+  return {
+    senderName,
+    senderEmail,
+    subject,
+    senderLookupComplete: true,
+  };
+}
+
+function fragmentText(fragment: Node, doc: Document): string {
+  const walker = doc.createTreeWalker(fragment, 4 /* SHOW_TEXT */);
+  const parts: string[] = [];
+  while (walker.nextNode()) parts.push(walker.currentNode.textContent || '');
+  return parts.join('\n');
+}
+
+/** Restrict Outlook's heuristic to the actual header, excluding message HTML. */
+export function outlookHeader(container: Element, doc: Document, root?: Element): Partial<HeaderInfo> {
+  const missing = { senderName: '', senderEmail: '', senderLookupComplete: true };
+  if (!root || !container.contains(root)) return missing;
+  const range = doc.createRange();
+  range.selectNodeContents(container);
+  range.setEndBefore(root);
+  const header = range.cloneContents();
+  header.querySelectorAll('[data-xorapass-email-insight], [contenteditable], [data-private], [hidden], [aria-label="Message body"], [role="document"].allowTextSelection, div[id^="UniqueMessageBody"]').forEach(el => el.remove());
+  const isRecipient = (element: Element): boolean => {
+    if (element.closest('[data-testid*="recipient" i], [data-test-id*="recipient" i], [aria-label^="To:" i], [aria-label^="Cc:" i], [aria-label^="Bcc:" i]')) return true;
+    const before = doc.createRange();
+    before.selectNodeContents(header);
+    before.setEndBefore(element);
+    return /\b(?:to|cc|bcc)\s*:/i.test(fragmentText(before.cloneContents(), doc));
+  };
+  const explicit = header.querySelectorAll('[data-testid*="sender" i], [data-test-id*="sender" i], [aria-label^="From:" i], [aria-label^="Sender:" i]');
+  const candidates: string[] = [];
+  for (const element of explicit) {
+    if (isRecipient(element)) continue;
+    candidates.push(element.getAttribute('aria-label')?.replace(/^Sender:\s*/i, '') || '', txt(element), element.getAttribute('title') || '', element.getAttribute('email') || '');
+  }
+  // A visible From line is preferable to unrelated title/aria attributes.
+  const visibleHeader = header.cloneNode(true) as DocumentFragment;
+  visibleHeader.querySelectorAll('[data-testid*="recipient" i], [data-test-id*="recipient" i], [aria-label^="To:" i], [aria-label^="Cc:" i], [aria-label^="Bcc:" i]').forEach(el => el.remove());
+  candidates.push(fragmentText(visibleHeader, doc));
+  for (const candidate of candidates) {
+    const sender = parseOutlookSender(candidate);
+    if (sender.senderEmail) return { ...sender, senderLookupComplete: true };
+  }
+  const attributeSenders = new Map<string, Pick<HeaderInfo, 'senderName' | 'senderEmail'>>();
+  for (const element of header.querySelectorAll('[email], [data-email-address], [title*="@"], [aria-label*="@"]')) {
+    if (isRecipient(element)) continue;
+    const sender = parseOutlookSender(element.getAttribute('email') || element.getAttribute('data-email-address') || element.getAttribute('title') || element.getAttribute('aria-label') || '');
+    if (sender.senderEmail) attributeSenders.set(sender.senderEmail, { ...sender, senderName: txt(element).replace(sender.senderEmail, '').replace(/[<>]/g, '').trim() || sender.senderName });
+  }
+  if (attributeSenders.size === 1) return { ...attributeSenders.values().next().value, senderLookupComplete: true };
+  return missing;
+}
 
 const GENERIC_BODY =
   '[class*="message-body" i], [class*="messagebody" i], [class*="mail-body" i], [class*="mailbody" i], [class*="message__body" i], [class*="MessageBody"], [data-testid*="message-body" i], [role="document"]';
@@ -41,9 +143,13 @@ const PROVIDERS: Provider[] = [
   {
     test: (h) => h === 'mail.google.com',
     body: '.a3s',
+    fullPage: true,
     attachments: '.aV3, .aQA span[title]',
     container: '.adn, .gs',
-    header: (c, doc) => {
+    header: (c, doc, root) => {
+      if (isGmailFullMessagePage(doc.defaultView?.location.hostname || '', doc.defaultView?.location.search || '')) {
+        return parseGmailFullMessageHeader(txt(root || c));
+      }
       const s = c.querySelector('span.gD[email], span[email]');
       return { senderEmail: s?.getAttribute('email') || '', senderName: s?.getAttribute('name') || txt(s), subject: txt(doc.querySelector('h2.hP')) };
     },
@@ -53,6 +159,7 @@ const PROVIDERS: Provider[] = [
     body: '[aria-label="Message body"], [role="document"].allowTextSelection, div[id^="UniqueMessageBody"]',
     attachments: '[data-testid="AttachmentCard"] [title]',
     container: '[role="region"], [role="main"]',
+    header: outlookHeader,
   },
   {
     test: (h) => h === 'mail.yahoo.com' || h.endsWith('.mail.yahoo.com') || h === 'mail.aol.com',
@@ -132,6 +239,16 @@ export function findEmailRoots(host: string): EmailRoot[] {
   const p = providerFor(host);
   if (!p) return [];
   const out: EmailRoot[] = [];
+  if (p.fullPage && isGmailFullMessagePage(host, window.location.search)) {
+    const body = document.body;
+    if (body && visible(body) && txt(body).length >= 40) {
+      // Insert the panel inside <body>; inserting before <body> is not
+      // reliably rendered by browsers for this legacy standalone document.
+      const anchor = body.firstElementChild || body;
+      out.push({ anchor, root: body, container: body });
+    }
+    return out;
+  }
   if (p.generic) {
     genericRoots(document, 0, out);
     return out;
@@ -160,12 +277,12 @@ export function findOpenEmailRoot(host: string): EmailRoot | null {
   return roots[roots.length - 1];
 }
 
-export function providerHeader(host: string, container: Element): Partial<HeaderInfo> {
+export function providerHeader(host: string, container: Element, root?: Element): Partial<HeaderInfo> {
   const p = providerFor(host);
   try {
-    return p?.header ? p.header(container, container.ownerDocument || document) : {};
+    return p?.header ? p.header(container, container.ownerDocument || document, root) : {};
   } catch {
-    return {};
+    return p?.header === outlookHeader ? { senderName: '', senderEmail: '', senderLookupComplete: true } : {};
   }
 }
 

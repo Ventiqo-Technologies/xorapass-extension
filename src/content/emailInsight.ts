@@ -12,7 +12,7 @@ import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE 
 // removed. Arbitrary confidential text may remain; consent is required.
 
 import browser from 'webextension-polyfill';
-import { normalizeEmailScanResult, emailInsightSummary, type EmailScanResult as AiResult } from '../utils/emailScanResult';
+import { normalizeEmailScanResult, emailInsightSummary, emailAIWarningCopy, emailScanFailureText, emailInconclusiveText, emailScanUserText, type EmailScanResult as AiResult } from '../utils/emailScanResult';
 import { summarizeEmailLocal, findReplyTo, type EmailLocalSummary } from '../utils/emailGuard';
 import { unwrapLink } from '../utils/linkInspect';
 import { extractHostname } from '../utils/siteTrust';
@@ -60,12 +60,12 @@ export function extractOpenEmail(host: string): OpenEmail | null {
   const r = findOpenEmailRoot(host);
   if (!r) return null;
   const { container, root } = r;
-  const h = providerHeader(host, container);
+  const h = providerHeader(host, container, root);
   let senderEmail = (h.senderEmail || '').trim();
   let senderName = (h.senderName || '').trim();
   const subjectFromProvider = (h.subject || '').trim();
 
-  if (!senderEmail) {
+  if (!senderEmail && !h.senderLookupComplete) {
     // Generic: an element carrying the address in an attribute, else the
     // header text above the body.
     const attrEl = container.querySelector('[email], [title*="@"], [aria-label*="@"]');
@@ -121,9 +121,13 @@ const CSS = `
 :host { all: initial; display: block; margin: 0 0 10px; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #0f172a; }
 .card { border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; overflow: hidden; }
 .card.danger { border-color: #fecaca; } .card.caution { border-color: #fde68a; }
-.bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; }
 .logo { width: 16px; height: 16px; flex: none; }
-.summary { flex: 1; min-width: 0; font-weight: 600; }
+.summary { flex: 1 1 180px; min-width: 0; font-weight: 600; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.overview { padding: 0 12px 10px; display: grid; gap: 6px; overflow-wrap: anywhere; }
+[hidden] { display: none !important; }
+button:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
 .summary.danger { color: #b42318; } .summary.caution { color: #8a5300; } .summary.ok { color: #0f766e; }
 button { font: 600 12px system-ui, sans-serif; border-radius: 8px; padding: 5px 10px; cursor: pointer; border: 1px solid #cbd5e1; background: #fff; color: #0f172a; }
 button.primary { background: #0f172a; color: #fff; border-color: #0f172a; }
@@ -141,7 +145,7 @@ ul { margin: 0; padding-left: 16px; } li { margin: 2px 0; }
 a { color: inherit; }
 `;
 
-let current: { key: string; host: HTMLElement; root: ShadowRoot } | null = null;
+let current: { key: string; host: HTMLElement; root: ShadowRoot; detailsOpen?: boolean } | null = null;
 const autoRan = new Set<string>();
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -187,38 +191,68 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   logo.src = browser.runtime.getURL('icons/icon16.png');
   logo.alt = 'XoraPass';
   bar.appendChild(logo);
-  bar.appendChild(el('div', `summary ${level}`, summary));
+  bar.appendChild(el('div', `summary ${level}`, busy && !local.danger ? 'Analyzing email…' : summary));
+  const actions = el('div', 'actions');
   const toggle = el('button', '', 'Details');
-  bar.appendChild(toggle);
+  toggle.setAttribute('aria-controls', 'email-scan-details');
+  actions.appendChild(toggle);
   const blocked = ['quota', 'daily_limit', 'budget', 'not_available'];
   const retryable = !!ai && ai.verdict === 'unavailable' && !blocked.includes(ai.reason || '');
-  if (aiAllowed && (!ai || retryable)) {
-    const btn = el('button', 'primary', busy ? 'Analyzing…' : retryable && ai?.reason !== 'auto_limit' ? 'Retry AI analysis' : 'Analyze with AI');
+  if (aiAllowed && (!ai || retryable || ai.verdict === 'inconclusive')) {
+    const btn = el('button', ai?.verdict === 'inconclusive' ? '' : 'primary', busy ? 'Analyzing…' : ai?.verdict === 'inconclusive' ? 'Analyze again' : retryable && ai?.reason !== 'auto_limit' ? 'Retry AI analysis' : 'Analyze with AI');
     btn.disabled = busy;
     btn.title = 'Uses 1 AI check';
     btn.addEventListener('click', () => void runAi(m, local, 'button'));
-    bar.appendChild(btn);
+    actions.appendChild(btn);
   }
+  bar.appendChild(actions);
   card.appendChild(bar);
 
+  const overview = el('div', 'overview');
+  const guidance = busy ? '' : emailScanUserText(ai, local);
+  if (guidance) overview.appendChild(el('div', '', guidance));
+  const important = new Set<string>();
+  if (ai?.confirmed_threat) for (const link of ai.links || []) important.add(`Known dangerous link: ${link.host}`);
+  for (const finding of local.findings.filter(f => f.level === 'danger')) for (const reason of finding.reasons) important.add(reason);
+  if (aiBad) for (const flag of ai?.red_flags || []) important.add(flag);
+  for (const finding of local.findings.filter(f => f.level !== 'danger')) for (const reason of finding.reasons) important.add(reason);
+  if (aiWarn) for (const flag of ai?.red_flags || []) important.add(flag);
+  if (important.size) {
+    const list = el('ul');
+    for (const reason of [...important].slice(0, 2)) list.appendChild(el('li', '', reason));
+    overview.appendChild(list);
+  }
+  if (overview.childElementCount) card.appendChild(overview);
+
   const details = el('div', 'details');
-  details.style.display = level === 'ok' && !ai ? 'none' : 'grid';
+  details.id = 'email-scan-details';
+  details.hidden = !current.detailsOpen;
+  details.setAttribute('role', 'region');
+  details.setAttribute('aria-label', 'Email scan details');
+  toggle.setAttribute('aria-expanded', String(!details.hidden));
+  toggle.textContent = details.hidden ? 'Details' : 'Hide details';
   toggle.addEventListener('click', () => {
-    details.style.display = details.style.display === 'none' ? 'grid' : 'none';
+    details.hidden = !details.hidden;
+    if (current?.key === m.key) current.detailsOpen = !details.hidden;
+    toggle.setAttribute('aria-expanded', String(!details.hidden));
+    toggle.textContent = details.hidden ? 'Details' : 'Hide details';
   });
 
   if (ai && ai.verdict !== 'unavailable' && (aiBad || aiWarn)) {
     const box = el('div', `ai ${aiBad ? 'danger' : 'caution'}`);
-    box.appendChild(el('h4', aiBad ? 'bad' : 'warn', ai.title || 'Suspicious email'));
-    if (ai.message) box.appendChild(el('div', '', ai.message));
+    const copy = emailAIWarningCopy(ai.verdict, ai.confirmed_threat);
+    box.appendChild(el('h4', aiBad ? 'bad' : 'warn', copy.title));
+    box.appendChild(el('div', '', copy.message));
     if (ai.red_flags?.length) {
       const ul = el('ul');
-      for (const f of ai.red_flags) ul.appendChild(el('li', '', f));
+      for (const f of ai.red_flags) ul.appendChild(el('li', '', `AI reported: ${f}`));
       box.appendChild(ul);
     }
     details.appendChild(box);
-  } else if (ai?.verdict === 'unavailable' && ai.reason && AI_LIMIT_TEXT[ai.reason]) {
-    details.appendChild(el('div', 'muted', AI_LIMIT_TEXT[ai.reason]));
+  } else if (ai?.verdict === 'inconclusive') {
+    details.appendChild(el('div', 'muted', emailInconclusiveText(ai)));
+  } else if (ai?.verdict === 'unavailable') {
+    details.appendChild(el('div', 'muted', emailScanFailureText(ai)));
   }
 
   const row = (k: string, v: Node | string) => {
@@ -234,9 +268,7 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   const from = el('span');
   from.appendChild(el('span', '', m.senderName ? `${m.senderName} ` : ''));
   from.appendChild(el('span', 'mono', m.senderEmail ? `<${m.senderEmail}>` : 'address not found'));
-  if (ai?.impersonated_brand && ai.sender_matches_brand === false) {
-    from.appendChild(el('div', 'bad', `Pretends to be ${cap(ai.impersonated_brand)}, but sent from ${ai.sender_domain || 'another domain'}`));
-  } else if (local.claimedBrand && local.flags.includes('sender_brand_mismatch')) {
+  if (local.claimedBrand && local.flags.includes('sender_brand_mismatch')) {
     from.appendChild(el('div', 'bad', `Name says ${cap(local.claimedBrand)}, but sent from ${local.senderDomain || 'another domain'}`));
   }
   row('From', from);
@@ -266,7 +298,7 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   }
   if (ai && ai.verdict !== 'unavailable') {
     details.appendChild(
-      el('div', 'muted', 'AI analysis (OpenAI) checked the supplied sender, subject, links and redacted excerpt. Sender authentication was not verified. Redaction may leave confidential text; analyze only content you choose to share.')
+      el('div', 'muted', ai.confirmed_threat ? 'Threat-intelligence checks found a known dangerous link. Sender authentication was not verified.' : 'AI analysis (OpenAI) checked the supplied sender, subject, links and redacted excerpt. Sender authentication was not verified. Redaction may leave confidential text; analyze only content you choose to share.')
     );
   } else if (aiAllowed) {
     details.appendChild(el('div', 'muted', 'Checked on your device. "Analyze with AI" sends the sender, subject, link addresses and a redacted excerpt. Redaction cannot remove every secret.'));
@@ -274,16 +306,6 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   card.appendChild(details);
   root.appendChild(card);
 }
-
-/** Why an AI check didn't run (the on-device checks above still apply). */
-const AI_LIMIT_TEXT: Record<string, string> = {
-  quota: 'You have used this month\'s AI checks. Add more from the XoraPass popup, or wait for the monthly reset. On-device checks still run.',
-  daily_limit: 'Daily AI check limit reached. It resets at midnight UTC. On-device checks still run.',
-  budget: 'AI checks are paused for today. On-device checks still run.',
-  invalid_response: 'AI returned an invalid result. On-device warnings are unchanged; you can retry the analysis.',
-  low_confidence: 'AI could not reach a confident result. On-device warnings are unchanged.',
-  error: 'AI analysis is unavailable. On-device warnings are unchanged; you can retry.',
-};
 
 /** trigger: 'auto' when XoraPass ran it on its own (free, fair-use limit),
  *  'button' when the user asked (uses 1 AI check). */
@@ -298,7 +320,7 @@ async function runAi(m: OpenEmail, local: EmailLocalSummary, trigger: 'auto' | '
     .sendMessage({ type: 'SHIELD_EMAIL_SCAN', payload: { email: payloadFor(m, local), trigger, consent: TEXT_SCAN_CONSENT_VERSION } })
     .catch(() => null);
   if (!featureOn('email_ai') || !current || current.key !== m.key) return;
-  render(m, local, normalizeEmailScanResult(res), false, true);
+  render(m, local, normalizeEmailScanResult(res, m.senderEmail), false, true);
 }
 
 /** Called (throttled) whenever the webmail DOM changes. */
