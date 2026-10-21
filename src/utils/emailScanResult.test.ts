@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { emailInsightSummary, normalizeEmailScanResult } from './emailScanResult';
+import { emailInsightSummary, normalizeEmailScanResult, emailScanHttpFailure, EMAIL_SCAN_FAILURE_TEXT } from './emailScanResult';
 import { summarizeEmailLocal } from './emailGuard';
 
 describe('email scan API validation', () => {
+  it.each([[401, 'auth_required'], [403, 'not_available'], [429, 'rate_limited'], [500, 'service_unavailable'], [503, 'service_unavailable'], [400, 'error']] as const)('preserves the failure category for HTTP %s', (status, reason) => {
+    const result = emailScanHttpFailure(status);
+    expect(normalizeEmailScanResult(result)).toEqual({ verdict: 'unavailable', reason });
+    expect(EMAIL_SCAN_FAILURE_TEXT[reason]).toMatch(/On-device/);
+  });
+  it('keeps missing-model, consent and metering failures actionable', () => {
+    for (const reason of ['no_model', 'consent_required', 'metering_unavailable', 'network_error', 'auth_required']) {
+      expect(EMAIL_SCAN_FAILURE_TEXT[reason]).toBeTruthy();
+      expect(EMAIL_SCAN_FAILURE_TEXT[reason]).toMatch(/On-device/);
+    }
+  });
   it.each([
     null, [], {}, { verdict: 'trusted', risk_score: 0 }, { verdict: 'legit' },
     { verdict: 'legit', risk_score: '0' }, { verdict: 'legit', risk_score: NaN },

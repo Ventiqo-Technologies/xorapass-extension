@@ -12,7 +12,7 @@ import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE 
 // removed. Arbitrary confidential text may remain; consent is required.
 
 import browser from 'webextension-polyfill';
-import { normalizeEmailScanResult, emailInsightSummary, type EmailScanResult as AiResult } from '../utils/emailScanResult';
+import { normalizeEmailScanResult, emailInsightSummary, EMAIL_SCAN_FAILURE_TEXT as AI_LIMIT_TEXT, type EmailScanResult as AiResult } from '../utils/emailScanResult';
 import { summarizeEmailLocal, findReplyTo, type EmailLocalSummary } from '../utils/emailGuard';
 import { unwrapLink } from '../utils/linkInspect';
 import { extractHostname } from '../utils/siteTrust';
@@ -60,12 +60,12 @@ export function extractOpenEmail(host: string): OpenEmail | null {
   const r = findOpenEmailRoot(host);
   if (!r) return null;
   const { container, root } = r;
-  const h = providerHeader(host, container);
+  const h = providerHeader(host, container, root);
   let senderEmail = (h.senderEmail || '').trim();
   let senderName = (h.senderName || '').trim();
   const subjectFromProvider = (h.subject || '').trim();
 
-  if (!senderEmail) {
+  if (!senderEmail && !h.senderLookupComplete) {
     // Generic: an element carrying the address in an attribute, else the
     // header text above the body.
     const attrEl = container.querySelector('[email], [title*="@"], [aria-label*="@"]');
@@ -274,16 +274,6 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   card.appendChild(details);
   root.appendChild(card);
 }
-
-/** Why an AI check didn't run (the on-device checks above still apply). */
-const AI_LIMIT_TEXT: Record<string, string> = {
-  quota: 'You have used this month\'s AI checks. Add more from the XoraPass popup, or wait for the monthly reset. On-device checks still run.',
-  daily_limit: 'Daily AI check limit reached. It resets at midnight UTC. On-device checks still run.',
-  budget: 'AI checks are paused for today. On-device checks still run.',
-  invalid_response: 'AI returned an invalid result. On-device warnings are unchanged; you can retry the analysis.',
-  low_confidence: 'AI could not reach a confident result. On-device warnings are unchanged.',
-  error: 'AI analysis is unavailable. On-device warnings are unchanged; you can retry.',
-};
 
 /** trigger: 'auto' when XoraPass ran it on its own (free, fair-use limit),
  *  'button' when the user asked (uses 1 AI check). */

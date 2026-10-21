@@ -17,6 +17,31 @@ export interface EmailScanResult {
 const invalid = (): EmailScanResult => ({ verdict: 'unavailable', reason: 'invalid_response' });
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** Fixed copy only: never render raw server errors or provider responses. */
+export const EMAIL_SCAN_FAILURE_TEXT: Record<string, string> = {
+  quota: 'You have used this month\'s AI checks. Add more from the XoraPass popup, or wait for the monthly reset. On-device checks still run.',
+  daily_limit: 'Daily AI check limit reached. It resets at midnight UTC. On-device checks still run.',
+  auto_limit: 'Automatic AI check limit reached. You can request a manual analysis. On-device checks still run.',
+  budget: 'AI checks are paused for today. On-device checks still run.',
+  metering_unavailable: 'The AI usage service is unavailable. Your email was not analyzed. On-device checks still run; retry later.',
+  auth_required: 'Your AI session needs reconnecting. Open XoraPass and sign in again. On-device checks still run.',
+  consent_required: 'Confirm the text-sharing notice before requesting AI analysis. On-device checks still run.',
+  not_available: 'AI email analysis is not enabled for this account. On-device checks still run.',
+  disabled: 'AI email analysis is disabled. On-device checks still run.',
+  no_model: 'The server has no AI model configured. On-device checks still run; contact XoraPass support.',
+  network_error: 'Could not reach the AI analysis service. On-device checks still run; check your connection and retry.',
+  rate_limited: 'Too many AI requests. Wait a moment and retry. On-device checks still run.',
+  service_unavailable: 'The AI analysis service is temporarily unavailable. On-device checks still run; retry later.',
+  invalid_response: 'AI returned an invalid result. On-device warnings are unchanged; you can retry the analysis.',
+  low_confidence: 'AI could not reach a confident result. On-device warnings are unchanged.',
+  error: 'The server could not complete AI analysis. On-device warnings are unchanged; you can retry.',
+};
+
+export function emailScanHttpFailure(status: number): EmailScanResult {
+  return { verdict: 'unavailable', reason: status === 401 ? 'auth_required' : status === 403 ? 'not_available'
+    : status === 429 ? 'rate_limited' : status >= 500 ? 'service_unavailable' : 'error' };
+}
+
 /** Validate API data before it is cached or allowed to affect the email panel. */
 export function normalizeEmailScanResult(value: unknown): EmailScanResult {
   if (!record(value)) return invalid();
