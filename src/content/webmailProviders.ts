@@ -27,6 +27,8 @@ export interface HeaderInfo {
 type Provider = {
   test: (host: string) => boolean;
   body?: string;
+  /** The provider renders a standalone full-message document on a special route. */
+  fullPage?: boolean;
   frame?: string;
   attachments?: string;
   container?: string;
@@ -44,6 +46,33 @@ export function parseOutlookSender(text: string): Pick<HeaderInfo, 'senderName' 
   const senderEmail = addresses[0];
   const before = header.slice(0, header.indexOf(senderEmail)).replace(/[<>]/g, '').trim();
   return { senderEmail, senderName: before.split(/\n/).filter(Boolean).at(-1)?.trim() || '' };
+}
+
+/**
+ * Gmail's "View entire message" link opens a legacy, static document at
+ * ?view=lg&permmsgid=... rather than the normal Gmail application DOM.
+ * Keep the route check explicit so we never treat the whole Gmail app page as
+ * an email body.
+ */
+export function isGmailFullMessagePage(host: string, search: string): boolean {
+  if (host.toLowerCase() !== 'mail.google.com') return false;
+  const params = new URLSearchParams(search);
+  return params.get('view') === 'lg' && params.has('permmsgid');
+}
+
+/** Header format used by Gmail's standalone full-message document. */
+export function parseGmailFullMessageHeader(text: string): Partial<HeaderInfo> {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const subjectIndex = lines.findIndex((line) => /^subject\s*:/i.test(line));
+  const subject = subjectIndex >= 0
+    ? lines[subjectIndex].replace(/^subject\s*:\s*/i, '').trim()
+    : '';
+  const senderText = lines.slice(subjectIndex >= 0 ? subjectIndex + 1 : 0).join('\n');
+  return {
+    ...parseOutlookSender(senderText),
+    subject,
+    senderLookupComplete: true,
+  };
 }
 
 function fragmentText(fragment: Node, doc: Document): string {
@@ -100,9 +129,13 @@ const PROVIDERS: Provider[] = [
   {
     test: (h) => h === 'mail.google.com',
     body: '.a3s',
+    fullPage: true,
     attachments: '.aV3, .aQA span[title]',
     container: '.adn, .gs',
-    header: (c, doc) => {
+    header: (c, doc, root) => {
+      if (isGmailFullMessagePage(doc.defaultView?.location.hostname || '', doc.defaultView?.location.search || '')) {
+        return parseGmailFullMessageHeader(txt(root || c));
+      }
       const s = c.querySelector('span.gD[email], span[email]');
       return { senderEmail: s?.getAttribute('email') || '', senderName: s?.getAttribute('name') || txt(s), subject: txt(doc.querySelector('h2.hP')) };
     },
@@ -192,6 +225,16 @@ export function findEmailRoots(host: string): EmailRoot[] {
   const p = providerFor(host);
   if (!p) return [];
   const out: EmailRoot[] = [];
+  if (p.fullPage && isGmailFullMessagePage(host, window.location.search)) {
+    const body = document.body;
+    if (body && visible(body) && txt(body).length >= 40) {
+      // Insert the panel inside <body>; inserting before <body> is not
+      // reliably rendered by browsers for this legacy standalone document.
+      const anchor = body.firstElementChild || body;
+      out.push({ anchor, root: body, container: body });
+    }
+    return out;
+  }
   if (p.generic) {
     genericRoots(document, 0, out);
     return out;

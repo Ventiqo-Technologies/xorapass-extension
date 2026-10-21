@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseOutlookSender } from './webmailProviders';
+import { isGmailFullMessagePage, parseGmailFullMessageHeader, parseOutlookSender } from './webmailProviders';
 
 describe('Outlook header sender selection', () => {
   it('never uses recipients following the actual sender', () => {
@@ -14,5 +14,29 @@ describe('Outlook header sender selection', () => {
   });
   it('reads explicitly labelled sender headers', () => {
     expect(parseOutlookSender('From: Alice <alice@example.com>')).toEqual({ senderName: 'Alice', senderEmail: 'alice@example.com' });
+  });
+});
+
+describe('Gmail standalone full-message view', () => {
+  it('recognizes only Gmail legacy full-message URLs', () => {
+    expect(isGmailFullMessagePage('mail.google.com', '?view=lg&permmsgid=msg-f:123')).toBe(true);
+    expect(isGmailFullMessagePage('mail.google.com', '?view=cv&permmsgid=msg-f:123')).toBe(false);
+    expect(isGmailFullMessagePage('evil.example', '?view=lg&permmsgid=msg-f:123')).toBe(false);
+  });
+
+  it('extracts the sender and subject without treating recipients as the sender', () => {
+    expect(parseGmailFullMessageHeader([
+      'Subject: [XoraPass TEST] Simulated phishing email',
+      'Trishane Mirando <trishane@trifinix.com>',
+      'To: Trishane Mirando <trishane@gmail.com>',
+      '',
+      'Body:',
+      'Reply with your password and verification code.',
+    ].join('\n'))).toEqual({
+      senderName: 'Trishane Mirando',
+      senderEmail: 'trishane@trifinix.com',
+      subject: '[XoraPass TEST] Simulated phishing email',
+      senderLookupComplete: true,
+    });
   });
 });
