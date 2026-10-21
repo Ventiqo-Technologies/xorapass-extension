@@ -39,4 +39,14 @@ describe('Gmail standalone full-message view', () => {
       senderLookupComplete: true,
     });
   });
+
+  it('handles the account header when Gmail collapses visual line breaks', () => {
+    expect(parseGmailFullMessageHeader(
+      'Gmail Trishane Mirando <trishane@gmail.com> Subject: [XoraPass TEST] Lookalike link Trishane Mirando <trishane@trifinix.com> To: Trishane Mirando <trishane@gmail.com>'
+    )).toMatchObject({
+      senderName: '',
+      senderEmail: 'trishane@trifinix.com',
+      senderLookupComplete: true,
+    });
+  });
 });

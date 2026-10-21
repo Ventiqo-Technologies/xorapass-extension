@@ -67,9 +67,23 @@ export function parseGmailFullMessageHeader(text: string): Partial<HeaderInfo> {
   const subject = subjectIndex >= 0
     ? lines[subjectIndex].replace(/^subject\s*:\s*/i, '').trim()
     : '';
-  const senderText = lines.slice(subjectIndex >= 0 ? subjectIndex + 1 : 0).join('\n');
+
+  // The legacy page also prints the signed-in account near the top. The
+  // actual sender is the last address before the recipient's To: line.
+  // This remains correct if the browser collapses some visual line breaks.
+  const beforeRecipients = text.split(/\b(?:to|cc|bcc)\s*:/i)[0];
+  const angleAddresses = [...beforeRecipients.matchAll(/([^<\n]{0,160})<\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\s*>/g)];
+  const lastAngle = angleAddresses.at(-1);
+  const fallbackAddresses = [...beforeRecipients.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)];
+  const senderEmail = lastAngle?.[2] || fallbackAddresses.at(-1)?.[0] || '';
+  const rawSenderName = lastAngle?.[1]?.replace(/^.*>\s*/s, '').replace(/[<>]/g, '').trim() || '';
+  // If all visual line breaks were collapsed, the subject can run into the
+  // sender name. Keep the address (reliable evidence) but omit an unreliable
+  // display name rather than showing the subject as the sender.
+  const senderName = /\bsubject\s*:/i.test(rawSenderName) ? '' : rawSenderName;
   return {
-    ...parseOutlookSender(senderText),
+    senderName,
+    senderEmail,
     subject,
     senderLookupComplete: true,
   };
