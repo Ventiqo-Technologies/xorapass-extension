@@ -15,10 +15,40 @@ export interface EmailScanResult {
   links?: { index: number; host: string; reason: string }[];
   reason?: string;
   confirmed_threat?: boolean;
+  /** Fixed diagnostic code only; never raw model text or email content. */
+  validation_issue?: string;
 }
 
 const invalid = (): EmailScanResult => ({ verdict: 'unavailable', reason: 'invalid_response' });
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+const VALIDATION_ISSUES: Readonly<Record<string, string>> = {
+  model_output_shape: 'AI returned a result in an invalid format.',
+  model_low_confidence: 'AI did not reach a confident assessment.',
+  sender_brand_contradiction: 'AI made a sender-domain claim that conflicts with the domain catalog.',
+  sender_metadata_mismatch: 'The result describes a different sender domain than the opened email.',
+  sender_mismatch_unproven: 'AI could not support its sender-impersonation claim.',
+  link_mismatch_unproven: 'AI could not establish that the displayed link and its destination are deceptive.',
+  evidence_quote_length: 'AI did not supply a usable supporting quote.',
+  evidence_quote_not_found: 'AI cited text that was not in the supplied email excerpt.',
+  link_without_evidence: 'AI flagged a link without a supporting finding.',
+  weak_indicators_only: 'AI relied only on weak cues, which are not enough to justify a scam warning.',
+  warning_without_evidence: 'AI proposed a warning without supporting findings.',
+  unknown_indicator: 'AI returned a finding this scanner does not recognize.',
+};
+
+const validationIssue = (value: unknown): string | undefined =>
+  typeof value === 'string' && Object.prototype.hasOwnProperty.call(VALIDATION_ISSUES, value) ? value : undefined;
+
+/** Render only locally authored explanations and allowlisted support codes. */
+export function emailScanFailureText(ai: EmailScanResult): string {
+  const issue = validationIssue(ai.validation_issue);
+  if (issue && ai.verdict === 'unavailable') {
+    return `${VALIDATION_ISSUES[issue]} The AI verdict was withheld, not classified as safe or malicious. On-device warnings are unchanged. Retry once; if this persists, share diagnostic code ${issue} with XoraPass support.`;
+  }
+  return Object.prototype.hasOwnProperty.call(EMAIL_SCAN_FAILURE_TEXT, ai.reason || '')
+    ? EMAIL_SCAN_FAILURE_TEXT[ai.reason!] : EMAIL_SCAN_FAILURE_TEXT.invalid_response;
+}
 
 /** Fixed copy only: never render raw server errors or provider responses. */
 export const EMAIL_SCAN_FAILURE_TEXT: Record<string, string> = {
@@ -50,7 +80,10 @@ export function emailScanHttpFailure(status: number): EmailScanResult {
 export function normalizeEmailScanResult(value: unknown, senderEmail?: string): EmailScanResult {
   if (!record(value)) return invalid();
   if (value.verdict === 'unavailable') {
-    return { verdict: 'unavailable', reason: typeof value.reason === 'string' ? value.reason.slice(0, 80) : undefined };
+    const result: EmailScanResult = { verdict: 'unavailable', reason: typeof value.reason === 'string' ? value.reason.slice(0, 80) : undefined };
+    const issue = validationIssue(value.validation_issue);
+    if (issue) result.validation_issue = issue;
+    return result;
   }
   if (!['phishing', 'scam', 'suspicious', 'legit'].includes(value.verdict as string)) return invalid();
   const score = value.risk_score;
@@ -67,7 +100,8 @@ export function normalizeEmailScanResult(value: unknown, senderEmail?: string): 
     const contradiction = (value.sender_domain && value.sender_domain !== actualDomain) ||
       (typeof value.impersonated_brand === 'string' && value.sender_matches_brand === false && senderDomainMatchesBrand(value.impersonated_brand, host));
     if (!value.confirmed_threat && contradiction) {
-      return { verdict: 'unavailable', reason: 'inconsistent_evidence' };
+      return { verdict: 'unavailable', reason: 'inconsistent_evidence', validation_issue:
+        value.sender_domain && value.sender_domain !== actualDomain ? 'sender_metadata_mismatch' : 'sender_brand_contradiction' };
     }
   }
   if (value.red_flags !== undefined && (!Array.isArray(value.red_flags) || value.red_flags.length > 5 ||

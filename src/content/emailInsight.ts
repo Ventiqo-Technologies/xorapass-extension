@@ -12,7 +12,7 @@ import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE 
 // removed. Arbitrary confidential text may remain; consent is required.
 
 import browser from 'webextension-polyfill';
-import { normalizeEmailScanResult, emailInsightSummary, emailAIWarningCopy, EMAIL_SCAN_FAILURE_TEXT as AI_LIMIT_TEXT, type EmailScanResult as AiResult } from '../utils/emailScanResult';
+import { normalizeEmailScanResult, emailInsightSummary, emailAIWarningCopy, emailScanFailureText, type EmailScanResult as AiResult } from '../utils/emailScanResult';
 import { summarizeEmailLocal, findReplyTo, type EmailLocalSummary } from '../utils/emailGuard';
 import { unwrapLink } from '../utils/linkInspect';
 import { extractHostname } from '../utils/siteTrust';
@@ -218,8 +218,8 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
       box.appendChild(ul);
     }
     details.appendChild(box);
-  } else if (ai?.verdict === 'unavailable' && ai.reason && AI_LIMIT_TEXT[ai.reason]) {
-    details.appendChild(el('div', 'muted', AI_LIMIT_TEXT[ai.reason]));
+  } else if (ai?.verdict === 'unavailable') {
+    details.appendChild(el('div', 'muted', emailScanFailureText(ai)));
   }
 
   const row = (k: string, v: Node | string) => {
