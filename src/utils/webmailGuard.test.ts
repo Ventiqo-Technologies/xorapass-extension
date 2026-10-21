@@ -137,6 +137,8 @@ describe('webmailGuard', () => {
       expect(isSupportedWebmail('outlook.live.com')).toBe(true);
       expect(isSupportedWebmail('outlook.office.com')).toBe(true);
       expect(isSupportedWebmail('outlook.office365.com')).toBe(true);
+      expect(isSupportedWebmail('outlook.cloud.microsoft')).toBe(true);
+      expect(isSupportedWebmail('outlook.cloud.microsoft', '/mail/')).toBe(true);
     });
 
     it('identifies Yahoo, AOL, Proton, and Zoho Mail', () => {
