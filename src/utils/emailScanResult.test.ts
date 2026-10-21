@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emailInsightSummary, normalizeEmailScanResult, emailScanHttpFailure, emailAIWarningCopy, emailScanFailureText, emailInconclusiveText, EMAIL_SCAN_FAILURE_TEXT } from './emailScanResult';
+import { emailInsightSummary, normalizeEmailScanResult, emailScanHttpFailure, emailAIWarningCopy, emailScanFailureText, emailInconclusiveText, emailScanUserText, EMAIL_SCAN_FAILURE_TEXT } from './emailScanResult';
 import { summarizeEmailLocal } from './emailGuard';
 import { BRAND_DOMAINS, senderDomainMatchesBrand, isSameBrandOrAlias } from './webmailGuard';
 
@@ -103,8 +103,8 @@ describe('email findings cannot be downgraded by AI', () => {
   });
   it('shows inconclusive rather than a green assurance on a failed check', () => {
     const local = summarizeEmailLocal({ sender: 'Team <team@example.com>', links: [], attachments: [] });
-    expect(emailInsightSummary(local, normalizeEmailScanResult({}))).toEqual({ level: 'neutral', summary: 'AI check inconclusive — on-device checks still apply' });
-    expect(emailInsightSummary(local, legit).summary).toContain('sender not authenticated');
+    expect(emailInsightSummary(local, normalizeEmailScanResult({}))).toEqual({ level: 'neutral', summary: 'AI analysis unavailable' });
+    expect(emailScanUserText(legit)).toContain('not the sender');
   });
   it('allows an AI warning to raise a clean local result', () => {
     const local = summarizeEmailLocal({ sender: 'Team <team@example.com>', links: [], attachments: [] });
@@ -118,7 +118,7 @@ describe('completed uncertainty and weak promotional cues', () => {
   it.each(['weak_indicators', 'insufficient_evidence', 'low_confidence'])('keeps %s neutral without calling it safe or a service error', reason => {
     const result = normalizeEmailScanResult({ verdict: 'inconclusive', risk_score: 0, reason });
     expect(result.verdict).toBe('inconclusive');
-    expect(emailInsightSummary(clean, result)).toEqual({ level: 'neutral', summary: 'AI assessment uncertain — no fraud verdict' });
+    expect(emailInsightSummary(clean, result)).toEqual({ level: 'neutral', summary: 'AI couldn’t assess this email' });
     expect(emailInconclusiveText(result)).toContain('not a safe-email verdict');
     expect(emailInconclusiveText(result)).not.toMatch(/retry|unavailable|diagnostic code/i);
   });
@@ -172,5 +172,32 @@ describe('privacy-safe email diagnostics', () => {
     const result = normalizeEmailScanResult({ verdict: 'legit', risk_score: 0, sender_domain: 'other.example' }, 'notice@example.com');
     expect(result.validation_issue).toBe('sender_metadata_mismatch');
     expect(emailScanFailureText(result)).toContain('different sender domain');
+  });
+});
+
+describe('concise scan guidance', () => {
+  it.each(['model_output_shape', 'evidence_quote_not_found', 'unknown_evidence_reference'])('keeps %s out of the primary message', issue => {
+    const result = normalizeEmailScanResult({ verdict: 'unavailable', reason: 'inconsistent_evidence', validation_issue: issue });
+    expect(emailScanUserText(result)).toContain('Try again');
+    expect(emailScanUserText(result)).not.toMatch(/diagnostic|quote|provider|schema|model_output/);
+    expect(emailScanFailureText(result)).toContain(issue);
+  });
+  it('does not portray local warnings as a successful AI assessment', () => {
+    const result = normalizeEmailScanResult({ verdict: 'suspicious', risk_score: 45, reason: 'low_confidence', validation_issue: 'model_low_confidence', red_flags: ['Has a risky attachment'] });
+    expect(result.verdict).toBe('inconclusive');
+    const local = { danger: true, cautions: 0, findings: [{ level: 'danger' as const, reasons: ['Dangerous attachment'] }] };
+    expect(emailInsightSummary(local, result).level).toBe('danger');
+    expect(emailScanUserText(result, local)).toContain('Verify');
+  });
+  it.each([
+    ['quota', 'month'], ['daily_limit', 'daily'], ['auth_required', 'sign in'],
+    ['budget', 'paused'], ['consent_required', 'sharing notice'],
+  ])('keeps %s actionable', (reason, action) => {
+    expect(emailScanUserText({ verdict: 'unavailable', reason })).toContain(action);
+  });
+  it('keeps the sender limitation without exposing technical metadata', () => {
+    expect(emailScanUserText({ verdict: 'legit' })).toContain('not the sender');
+    expect(emailScanUserText({ verdict: 'inconclusive' })).toContain('not a safe-email verdict');
+    expect(emailScanUserText({ verdict: 'phishing', confirmed_threat: true })).toContain('Do not open');
   });
 });

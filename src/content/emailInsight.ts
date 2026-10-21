@@ -12,7 +12,7 @@ import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE 
 // removed. Arbitrary confidential text may remain; consent is required.
 
 import browser from 'webextension-polyfill';
-import { normalizeEmailScanResult, emailInsightSummary, emailAIWarningCopy, emailScanFailureText, emailInconclusiveText, type EmailScanResult as AiResult } from '../utils/emailScanResult';
+import { normalizeEmailScanResult, emailInsightSummary, emailAIWarningCopy, emailScanFailureText, emailInconclusiveText, emailScanUserText, type EmailScanResult as AiResult } from '../utils/emailScanResult';
 import { summarizeEmailLocal, findReplyTo, type EmailLocalSummary } from '../utils/emailGuard';
 import { unwrapLink } from '../utils/linkInspect';
 import { extractHostname } from '../utils/siteTrust';
@@ -121,9 +121,13 @@ const CSS = `
 :host { all: initial; display: block; margin: 0 0 10px; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #0f172a; }
 .card { border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; overflow: hidden; }
 .card.danger { border-color: #fecaca; } .card.caution { border-color: #fde68a; }
-.bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; }
 .logo { width: 16px; height: 16px; flex: none; }
-.summary { flex: 1; min-width: 0; font-weight: 600; }
+.summary { flex: 1 1 180px; min-width: 0; font-weight: 600; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.overview { padding: 0 12px 10px; display: grid; gap: 6px; overflow-wrap: anywhere; }
+[hidden] { display: none !important; }
+button:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
 .summary.danger { color: #b42318; } .summary.caution { color: #8a5300; } .summary.ok { color: #0f766e; }
 button { font: 600 12px system-ui, sans-serif; border-radius: 8px; padding: 5px 10px; cursor: pointer; border: 1px solid #cbd5e1; background: #fff; color: #0f172a; }
 button.primary { background: #0f172a; color: #fff; border-color: #0f172a; }
@@ -141,7 +145,7 @@ ul { margin: 0; padding-left: 16px; } li { margin: 2px 0; }
 a { color: inherit; }
 `;
 
-let current: { key: string; host: HTMLElement; root: ShadowRoot } | null = null;
+let current: { key: string; host: HTMLElement; root: ShadowRoot; detailsOpen?: boolean } | null = null;
 const autoRan = new Set<string>();
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -187,9 +191,11 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   logo.src = browser.runtime.getURL('icons/icon16.png');
   logo.alt = 'XoraPass';
   bar.appendChild(logo);
-  bar.appendChild(el('div', `summary ${level}`, summary));
+  bar.appendChild(el('div', `summary ${level}`, busy && !local.danger ? 'Analyzing email…' : summary));
+  const actions = el('div', 'actions');
   const toggle = el('button', '', 'Details');
-  bar.appendChild(toggle);
+  toggle.setAttribute('aria-controls', 'email-scan-details');
+  actions.appendChild(toggle);
   const blocked = ['quota', 'daily_limit', 'budget', 'not_available'];
   const retryable = !!ai && ai.verdict === 'unavailable' && !blocked.includes(ai.reason || '');
   if (aiAllowed && (!ai || retryable || ai.verdict === 'inconclusive')) {
@@ -197,14 +203,39 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
     btn.disabled = busy;
     btn.title = 'Uses 1 AI check';
     btn.addEventListener('click', () => void runAi(m, local, 'button'));
-    bar.appendChild(btn);
+    actions.appendChild(btn);
   }
+  bar.appendChild(actions);
   card.appendChild(bar);
 
+  const overview = el('div', 'overview');
+  const guidance = busy ? '' : emailScanUserText(ai, local);
+  if (guidance) overview.appendChild(el('div', '', guidance));
+  const important = new Set<string>();
+  if (ai?.confirmed_threat) for (const link of ai.links || []) important.add(`Known dangerous link: ${link.host}`);
+  for (const finding of local.findings.filter(f => f.level === 'danger')) for (const reason of finding.reasons) important.add(reason);
+  if (aiBad) for (const flag of ai?.red_flags || []) important.add(flag);
+  for (const finding of local.findings.filter(f => f.level !== 'danger')) for (const reason of finding.reasons) important.add(reason);
+  if (aiWarn) for (const flag of ai?.red_flags || []) important.add(flag);
+  if (important.size) {
+    const list = el('ul');
+    for (const reason of [...important].slice(0, 2)) list.appendChild(el('li', '', reason));
+    overview.appendChild(list);
+  }
+  if (overview.childElementCount) card.appendChild(overview);
+
   const details = el('div', 'details');
-  details.style.display = level === 'ok' && !ai ? 'none' : 'grid';
+  details.id = 'email-scan-details';
+  details.hidden = !current.detailsOpen;
+  details.setAttribute('role', 'region');
+  details.setAttribute('aria-label', 'Email scan details');
+  toggle.setAttribute('aria-expanded', String(!details.hidden));
+  toggle.textContent = details.hidden ? 'Details' : 'Hide details';
   toggle.addEventListener('click', () => {
-    details.style.display = details.style.display === 'none' ? 'grid' : 'none';
+    details.hidden = !details.hidden;
+    if (current?.key === m.key) current.detailsOpen = !details.hidden;
+    toggle.setAttribute('aria-expanded', String(!details.hidden));
+    toggle.textContent = details.hidden ? 'Details' : 'Hide details';
   });
 
   if (ai && ai.verdict !== 'unavailable' && (aiBad || aiWarn)) {

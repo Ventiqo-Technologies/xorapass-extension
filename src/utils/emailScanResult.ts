@@ -37,7 +37,29 @@ const VALIDATION_ISSUES: Readonly<Record<string, string>> = {
   unknown_indicator: 'AI returned a finding this scanner does not recognize.',
   evidence_source_mismatch: 'AI cited evidence from the wrong email field.',
   insufficient_content: 'Too little email content was available for a reliable assessment.',
+  unknown_evidence_reference: 'AI cited evidence that was not supplied for this email.',
 };
+
+/** Short user-facing guidance; technical diagnostics belong under Details. */
+export function emailScanUserText(ai: EmailScanResult | null, local?: Pick<EmailLocalSummary, 'danger' | 'cautions'>): string {
+  if (ai?.confirmed_threat) return 'Do not open the flagged link or share information.';
+  if (local?.danger || ai?.verdict === 'phishing' || ai?.verdict === 'scam') return 'Verify this request through the service’s app or a contact you already trust.';
+  if (local?.cautions || ai?.verdict === 'suspicious') return 'Check unexpected requests before following links or sharing information.';
+  if (ai?.verdict === 'legit') return 'This checks the supplied content, not the sender’s identity.';
+  if (ai?.verdict === 'inconclusive') return 'Treat unexpected links and requests with caution. This is not a safe-email verdict.';
+  if (ai?.verdict === 'unavailable') {
+    switch (ai.reason) {
+      case 'quota': return 'You’ve used this month’s AI checks. Add more in XoraPass or wait for the reset.';
+      case 'daily_limit': case 'auto_limit': return 'The daily AI check limit has been reached. On-device protection remains active.';
+      case 'auth_required': return 'Open XoraPass and sign in again to use AI analysis.';
+      case 'consent_required': return 'Confirm the sharing notice before using AI analysis.';
+      case 'not_available': case 'disabled': return 'AI analysis is not enabled. On-device protection remains active.';
+      case 'budget': return 'AI checks are paused today. On-device protection remains active.';
+      default: return 'Analysis couldn’t finish. Try again; on-device protection remains active.';
+    }
+  }
+  return '';
+}
 
 /** Completed uncertainty is neutral, not a service failure or an assurance. */
 export function emailInconclusiveText(ai: EmailScanResult): string {
@@ -125,6 +147,11 @@ export function normalizeEmailScanResult(value: unknown, senderEmail?: string): 
     typeof l.host === 'string' && l.host.length <= 253 && typeof l.reason === 'string' && l.reason.length <= 300))) return invalid();
   if (neutral && ((value.red_flags as unknown[] | undefined)?.length || (value.links as unknown[] | undefined)?.length)) return invalid();
   if (value.confirmed_threat && (score < 75 || !['phishing', 'scam'].includes(value.verdict as string) || !(value.links as unknown[] | undefined)?.length)) return invalid();
+  const issue = validationIssue(value.validation_issue);
+  if (!value.confirmed_threat && value.verdict === 'suspicious' && score <= 45 && issue &&
+      ['low_confidence', 'insufficient_evidence', 'weak_indicators'].includes(value.reason as string)) {
+    return { verdict: 'inconclusive', risk_score: 0, reason: value.reason as string, validation_issue: issue };
+  }
   const weakLabels = new Set(['Pressure to act immediately', 'Generic greeting instead of your name', 'Contains a suspicious link', 'Offer that is too good to be true']);
   const flags = value.red_flags as string[] | undefined;
   if (!value.confirmed_threat && ['scam', 'phishing'].includes(value.verdict as string) &&
@@ -154,9 +181,9 @@ export function emailInsightSummary(local: Pick<EmailLocalSummary, 'danger' | 'c
     : local.danger ? `XoraPass found ${n} warning${n === 1 ? '' : 's'} on this email`
     : ai?.verdict === 'suspicious' ? 'AI found concerns to review — not confirmed fraud'
     : n ? `${n} thing${n === 1 ? '' : 's'} to check on this email`
-    : ai?.verdict === 'legit' ? 'AI found no scam indicators — sender not authenticated'
-    : ai?.verdict === 'inconclusive' ? 'AI assessment uncertain — no fraud verdict'
-    : ai?.verdict === 'unavailable' ? 'AI check inconclusive — on-device checks still apply'
+    : ai?.verdict === 'legit' ? 'AI found no scam indicators'
+    : ai?.verdict === 'inconclusive' ? 'AI couldn’t assess this email'
+    : ai?.verdict === 'unavailable' ? 'AI analysis unavailable'
     : 'On-device checks found no warning signs';
   return { level, summary };
 }
