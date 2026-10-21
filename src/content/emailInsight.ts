@@ -12,7 +12,7 @@ import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE 
 // removed. Arbitrary confidential text may remain; consent is required.
 
 import browser from 'webextension-polyfill';
-import { normalizeEmailScanResult, emailInsightSummary, EMAIL_SCAN_FAILURE_TEXT as AI_LIMIT_TEXT, type EmailScanResult as AiResult } from '../utils/emailScanResult';
+import { normalizeEmailScanResult, emailInsightSummary, emailAIWarningCopy, EMAIL_SCAN_FAILURE_TEXT as AI_LIMIT_TEXT, type EmailScanResult as AiResult } from '../utils/emailScanResult';
 import { summarizeEmailLocal, findReplyTo, type EmailLocalSummary } from '../utils/emailGuard';
 import { unwrapLink } from '../utils/linkInspect';
 import { extractHostname } from '../utils/siteTrust';
@@ -209,11 +209,12 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
 
   if (ai && ai.verdict !== 'unavailable' && (aiBad || aiWarn)) {
     const box = el('div', `ai ${aiBad ? 'danger' : 'caution'}`);
-    box.appendChild(el('h4', aiBad ? 'bad' : 'warn', ai.title || 'Suspicious email'));
-    if (ai.message) box.appendChild(el('div', '', ai.message));
+    const copy = emailAIWarningCopy(ai.verdict, ai.confirmed_threat);
+    box.appendChild(el('h4', aiBad ? 'bad' : 'warn', copy.title));
+    box.appendChild(el('div', '', copy.message));
     if (ai.red_flags?.length) {
       const ul = el('ul');
-      for (const f of ai.red_flags) ul.appendChild(el('li', '', f));
+      for (const f of ai.red_flags) ul.appendChild(el('li', '', `AI reported: ${f}`));
       box.appendChild(ul);
     }
     details.appendChild(box);
@@ -234,9 +235,7 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   const from = el('span');
   from.appendChild(el('span', '', m.senderName ? `${m.senderName} ` : ''));
   from.appendChild(el('span', 'mono', m.senderEmail ? `<${m.senderEmail}>` : 'address not found'));
-  if (ai?.impersonated_brand && ai.sender_matches_brand === false) {
-    from.appendChild(el('div', 'bad', `Pretends to be ${cap(ai.impersonated_brand)}, but sent from ${ai.sender_domain || 'another domain'}`));
-  } else if (local.claimedBrand && local.flags.includes('sender_brand_mismatch')) {
+  if (local.claimedBrand && local.flags.includes('sender_brand_mismatch')) {
     from.appendChild(el('div', 'bad', `Name says ${cap(local.claimedBrand)}, but sent from ${local.senderDomain || 'another domain'}`));
   }
   row('From', from);
@@ -266,7 +265,7 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   }
   if (ai && ai.verdict !== 'unavailable') {
     details.appendChild(
-      el('div', 'muted', 'AI analysis (OpenAI) checked the supplied sender, subject, links and redacted excerpt. Sender authentication was not verified. Redaction may leave confidential text; analyze only content you choose to share.')
+      el('div', 'muted', ai.confirmed_threat ? 'Threat-intelligence checks found a known dangerous link. Sender authentication was not verified.' : 'AI analysis (OpenAI) checked the supplied sender, subject, links and redacted excerpt. Sender authentication was not verified. Redaction may leave confidential text; analyze only content you choose to share.')
     );
   } else if (aiAllowed) {
     details.appendChild(el('div', 'muted', 'Checked on your device. "Analyze with AI" sends the sender, subject, link addresses and a redacted excerpt. Redaction cannot remove every secret.'));
@@ -288,7 +287,7 @@ async function runAi(m: OpenEmail, local: EmailLocalSummary, trigger: 'auto' | '
     .sendMessage({ type: 'SHIELD_EMAIL_SCAN', payload: { email: payloadFor(m, local), trigger, consent: TEXT_SCAN_CONSENT_VERSION } })
     .catch(() => null);
   if (!featureOn('email_ai') || !current || current.key !== m.key) return;
-  render(m, local, normalizeEmailScanResult(res), false, true);
+  render(m, local, normalizeEmailScanResult(res, m.senderEmail), false, true);
 }
 
 /** Called (throttled) whenever the webmail DOM changes. */

@@ -1198,7 +1198,7 @@ async function handleShieldEmailScan(
     let payload: unknown;
     try { payload = await res.json(); }
     catch { return { verdict: 'unavailable', reason: 'invalid_response' }; }
-    const data = normalizeEmailScanResult(payload);
+    const data = normalizeEmailScanResult(payload, email?.sender_email);
     if (data.verdict !== 'unavailable') {
       emailScanCache.set(key, { res: data, expires: Date.now() + 60 * 60 * 1000 });
       if (emailScanCache.size > 200) emailScanCache.delete(emailScanCache.keys().next().value as string);

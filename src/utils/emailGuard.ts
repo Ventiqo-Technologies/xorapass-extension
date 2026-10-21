@@ -49,12 +49,7 @@ export function isEspTrackingHost(host: string, customList?: readonly string[]):
   const reg = registrableDomain(h) || h;
   if (customList?.some((d) => reg === d || h === d || h.endsWith('.' + d))) return true;
   if (ESP_TRACKING_DOMAINS.has(reg) || ESP_TRACKING_DOMAINS.has(h)) return true;
-  // Algorithmic matching for major ESPs
-  if ((reg.startsWith('sendib') || h.startsWith('sendib')) && (reg.endsWith('.com') || h.endsWith('.com'))) return true;
-  if (reg === 'awstrack.me' || h.endsWith('.awstrack.me')) return true;
-  if (reg === 'mjt.lu' || h.endsWith('.mjt.lu')) return true;
-  if (reg.startsWith('acems') && reg.endsWith('.com')) return true;
-  if (reg.startsWith('cmail') && reg.endsWith('.com')) return true;
+  // Prefixes such as "sendib-attacker.com" are not ownership evidence.
   return false;
 }
 
@@ -77,7 +72,7 @@ export function analyzeEmailLink(
   text: string,
   href: string,
   knownHosts: readonly string[] = [],
-  senderDomain?: string,
+  _senderDomain?: string,
   customConfig?: {
     esp_tracking_domains?: readonly string[];
     standard_email_external_domains?: readonly string[];
@@ -106,11 +101,10 @@ export function analyzeEmailLink(
   const isStandardDest = isStandardExternalEmailHost(host, customConfig?.standard_email_external_domains);
 
   if (claimed && actual && claimed !== actual) {
-    const isSenderAligned = senderDomain ? (claimed === senderDomain || isSameBrandOrAlias(claimed, senderDomain)) : false;
     const isDestinationRecognized = isEsp || isWebmailRedir || isStandardDest || isSameBrandOrAlias(claimed, actual);
 
-    // If an authentic sender links to their own domain through an ESP tracking redirector, this is standard delivery, not spoofing
-    if (!isDestinationRecognized && !isSenderAligned) {
+    // The unverified From address cannot excuse a deceptive destination.
+    if (!isDestinationRecognized) {
       raise('danger', `Link text shows ${claimed} but it really goes to ${actual}`);
     }
   }
