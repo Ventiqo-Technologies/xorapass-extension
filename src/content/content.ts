@@ -2924,6 +2924,15 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
 
   window.addEventListener('popstate', () => {
     setTimeout(checkPendingSave, 400);
+    if (isSupportedWebmail(window.location.hostname, window.location.pathname)) {
+      setTimeout(scanWebmailMessages, 300);
+    }
+  });
+
+  window.addEventListener('hashchange', () => {
+    if (isSupportedWebmail(window.location.hostname, window.location.pathname)) {
+      setTimeout(scanWebmailMessages, 300);
+    }
   });
 
   // React to relevant DOM changes instead of rescanning on every page mutation.
@@ -2932,6 +2941,7 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   // and immediately walking the whole document can starve the page's own QR
   // renderer and login bootstrap.
   let rescanTimer: ReturnType<typeof setTimeout> | null = null;
+  const isWebmail = isSupportedWebmail(window.location.hostname, window.location.pathname);
   const mutationTouchesForm = (record: MutationRecord): boolean => {
     if (record.type === 'attributes') {
       return record.target instanceof HTMLInputElement ||
@@ -2941,8 +2951,13 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
         record.target instanceof HTMLIFrameElement;
     }
 
-    const relevant = 'input, textarea, select, form, iframe';
-    if (record.target instanceof Element && record.target.matches(relevant)) return true;
+    // Preserve strict form-only filtering for normal websites (e.g. WhatsApp Web),
+    // but recognize email reading pane elements on supported webmails (e.g. Outlook,
+    // Gmail) where viewing an email mutates reading containers rather than form fields:
+    const relevant = isWebmail
+      ? 'input, textarea, select, form, iframe, [role="region"], [role="main"], [role="document"], [aria-label*="Message" i], div[id^="UniqueMessageBody"], [data-testid*="message" i], [data-testid="SenderDetails"], .allowTextSelection'
+      : 'input, textarea, select, form, iframe';
+    if (record.target instanceof Element && (record.target.matches(relevant) || (isWebmail && !!record.target.closest(relevant)))) return true;
     return Array.from(record.addedNodes).some((node) =>
       node instanceof Element && (node.matches(relevant) || !!node.querySelector(relevant))
     );
