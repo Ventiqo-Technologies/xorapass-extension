@@ -3,7 +3,7 @@ import { senderDomainMatchesBrand } from './webmailGuard';
 import { registrableDomain } from './siteTrust';
 
 export interface EmailScanResult {
-  verdict: 'phishing' | 'scam' | 'suspicious' | 'legit' | 'unavailable';
+  verdict: 'phishing' | 'scam' | 'suspicious' | 'legit' | 'inconclusive' | 'unavailable';
   risk_score?: number;
   title?: string;
   message?: string;
@@ -35,7 +35,20 @@ const VALIDATION_ISSUES: Readonly<Record<string, string>> = {
   weak_indicators_only: 'AI relied only on weak cues, which are not enough to justify a scam warning.',
   warning_without_evidence: 'AI proposed a warning without supporting findings.',
   unknown_indicator: 'AI returned a finding this scanner does not recognize.',
+  evidence_source_mismatch: 'AI cited evidence from the wrong email field.',
+  insufficient_content: 'Too little email content was available for a reliable assessment.',
 };
+
+/** Completed uncertainty is neutral, not a service failure or an assurance. */
+export function emailInconclusiveText(ai: EmailScanResult): string {
+  const explanations: Record<string, string> = {
+    weak_indicators: 'Only nonspecific cues were found. Discounts, generic greetings or urgency alone do not establish fraud.',
+    insufficient_evidence: 'The supplied evidence did not support a reliable fraud verdict.',
+    low_confidence: 'AI did not reach a confident assessment of the supplied evidence.',
+  };
+  const reason = Object.prototype.hasOwnProperty.call(explanations, ai.reason || '') ? explanations[ai.reason!] : explanations.insufficient_evidence;
+  return `${reason} This is not a safe-email verdict. On-device warnings still apply; sender authentication and unresolved link destinations were not verified.`;
+}
 
 const validationIssue = (value: unknown): string | undefined =>
   typeof value === 'string' && Object.prototype.hasOwnProperty.call(VALIDATION_ISSUES, value) ? value : undefined;
@@ -85,10 +98,11 @@ export function normalizeEmailScanResult(value: unknown, senderEmail?: string): 
     if (issue) result.validation_issue = issue;
     return result;
   }
-  if (!['phishing', 'scam', 'suspicious', 'legit'].includes(value.verdict as string)) return invalid();
+  if (!['phishing', 'scam', 'suspicious', 'legit', 'inconclusive'].includes(value.verdict as string)) return invalid();
   const score = value.risk_score;
   if (typeof score !== 'number' || !Number.isInteger(score) || score < 0 || score > 100) return invalid();
-  if ((value.verdict === 'legit' && score !== 0) || (value.verdict !== 'legit' && score === 0)) return invalid();
+  const neutral = value.verdict === 'legit' || value.verdict === 'inconclusive';
+  if ((neutral && score !== 0) || (!neutral && score === 0)) return invalid();
   for (const key of ['title', 'message', 'impersonated_brand', 'sender_domain', 'reason']) {
     if (value[key] !== undefined && (typeof value[key] !== 'string' || (value[key] as string).length > 2000)) return invalid();
   }
@@ -109,8 +123,14 @@ export function normalizeEmailScanResult(value: unknown, senderEmail?: string): 
   if (value.links !== undefined && (!Array.isArray(value.links) || value.links.length > 20 || !value.links.every(l =>
     record(l) && typeof l.index === 'number' && Number.isInteger(l.index) && l.index >= 0 && l.index < 20 &&
     typeof l.host === 'string' && l.host.length <= 253 && typeof l.reason === 'string' && l.reason.length <= 300))) return invalid();
-  if (value.verdict === 'legit' && ((value.red_flags as unknown[] | undefined)?.length || (value.links as unknown[] | undefined)?.length)) return invalid();
+  if (neutral && ((value.red_flags as unknown[] | undefined)?.length || (value.links as unknown[] | undefined)?.length)) return invalid();
   if (value.confirmed_threat && (score < 75 || !['phishing', 'scam'].includes(value.verdict as string) || !(value.links as unknown[] | undefined)?.length)) return invalid();
+  const weakLabels = new Set(['Pressure to act immediately', 'Generic greeting instead of your name', 'Contains a suspicious link', 'Offer that is too good to be true']);
+  const flags = value.red_flags as string[] | undefined;
+  if (!value.confirmed_threat && ['scam', 'phishing'].includes(value.verdict as string) &&
+      flags?.length && flags.every(flag => weakLabels.has(flag))) {
+    return { verdict: 'inconclusive', risk_score: 0, reason: 'weak_indicators' };
+  }
   return value as unknown as EmailScanResult;
 }
 
@@ -128,13 +148,14 @@ export function emailInsightSummary(local: Pick<EmailLocalSummary, 'danger' | 'c
   const aiBad = ai?.verdict === 'phishing' || ai?.verdict === 'scam';
   const level = aiBad || local.danger ? 'danger'
     : ai?.verdict === 'suspicious' || local.cautions > 0 ? 'caution'
-    : ai?.verdict === 'unavailable' ? 'neutral' : 'ok';
+    : ai?.verdict === 'unavailable' || ai?.verdict === 'inconclusive' ? 'neutral' : 'ok';
   const summary = ai?.confirmed_threat ? "Known dangerous link — don't open it" : aiBad
     ? ai.verdict === 'phishing' ? "AI flagged possible phishing — check carefully" : "AI flagged a possible scam — check carefully"
     : local.danger ? `XoraPass found ${n} warning${n === 1 ? '' : 's'} on this email`
-    : ai?.verdict === 'suspicious' ? 'Suspicious email — check carefully'
+    : ai?.verdict === 'suspicious' ? 'AI found concerns to review — not confirmed fraud'
     : n ? `${n} thing${n === 1 ? '' : 's'} to check on this email`
     : ai?.verdict === 'legit' ? 'AI found no scam indicators — sender not authenticated'
+    : ai?.verdict === 'inconclusive' ? 'AI assessment uncertain — no fraud verdict'
     : ai?.verdict === 'unavailable' ? 'AI check inconclusive — on-device checks still apply'
     : 'On-device checks found no warning signs';
   return { level, summary };

@@ -12,7 +12,7 @@ import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE 
 // removed. Arbitrary confidential text may remain; consent is required.
 
 import browser from 'webextension-polyfill';
-import { normalizeEmailScanResult, emailInsightSummary, emailAIWarningCopy, emailScanFailureText, type EmailScanResult as AiResult } from '../utils/emailScanResult';
+import { normalizeEmailScanResult, emailInsightSummary, emailAIWarningCopy, emailScanFailureText, emailInconclusiveText, type EmailScanResult as AiResult } from '../utils/emailScanResult';
 import { summarizeEmailLocal, findReplyTo, type EmailLocalSummary } from '../utils/emailGuard';
 import { unwrapLink } from '../utils/linkInspect';
 import { extractHostname } from '../utils/siteTrust';
@@ -192,8 +192,8 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
   bar.appendChild(toggle);
   const blocked = ['quota', 'daily_limit', 'budget', 'not_available'];
   const retryable = !!ai && ai.verdict === 'unavailable' && !blocked.includes(ai.reason || '');
-  if (aiAllowed && (!ai || retryable)) {
-    const btn = el('button', 'primary', busy ? 'Analyzing…' : retryable && ai?.reason !== 'auto_limit' ? 'Retry AI analysis' : 'Analyze with AI');
+  if (aiAllowed && (!ai || retryable || ai.verdict === 'inconclusive')) {
+    const btn = el('button', ai?.verdict === 'inconclusive' ? '' : 'primary', busy ? 'Analyzing…' : ai?.verdict === 'inconclusive' ? 'Analyze again' : retryable && ai?.reason !== 'auto_limit' ? 'Retry AI analysis' : 'Analyze with AI');
     btn.disabled = busy;
     btn.title = 'Uses 1 AI check';
     btn.addEventListener('click', () => void runAi(m, local, 'button'));
@@ -218,6 +218,8 @@ function render(m: OpenEmail, local: EmailLocalSummary, ai: AiResult | null, bus
       box.appendChild(ul);
     }
     details.appendChild(box);
+  } else if (ai?.verdict === 'inconclusive') {
+    details.appendChild(el('div', 'muted', emailInconclusiveText(ai)));
   } else if (ai?.verdict === 'unavailable') {
     details.appendChild(el('div', 'muted', emailScanFailureText(ai)));
   }

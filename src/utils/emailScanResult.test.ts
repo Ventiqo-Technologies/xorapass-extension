@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emailInsightSummary, normalizeEmailScanResult, emailScanHttpFailure, emailAIWarningCopy, emailScanFailureText, EMAIL_SCAN_FAILURE_TEXT } from './emailScanResult';
+import { emailInsightSummary, normalizeEmailScanResult, emailScanHttpFailure, emailAIWarningCopy, emailScanFailureText, emailInconclusiveText, EMAIL_SCAN_FAILURE_TEXT } from './emailScanResult';
 import { summarizeEmailLocal } from './emailGuard';
 import { BRAND_DOMAINS, senderDomainMatchesBrand, isSameBrandOrAlias } from './webmailGuard';
 
@@ -91,7 +91,7 @@ describe('email findings cannot be downgraded by AI', () => {
   ])('preserves deterministic danger: %j', input => {
     const local = summarizeEmailLocal(input);
     expect(local.danger).toBe(true);
-    for (const ai of [legit, normalizeEmailScanResult({}), { verdict: 'unavailable' } as const]) {
+    for (const ai of [legit, normalizeEmailScanResult({}), { verdict: 'unavailable' } as const, { verdict: 'inconclusive', risk_score: 0 } as const]) {
       expect(emailInsightSummary(local, ai).level).toBe('danger');
       expect(emailInsightSummary(local, ai).summary).not.toMatch(/verified|no scam|nothing suspicious/i);
     }
@@ -110,6 +110,40 @@ describe('email findings cannot be downgraded by AI', () => {
     const local = summarizeEmailLocal({ sender: 'Team <team@example.com>', links: [], attachments: [] });
     expect(emailInsightSummary(local, { verdict: 'scam', risk_score: 90 }).level).toBe('danger');
     expect(emailInsightSummary(local, { verdict: 'suspicious', risk_score: 45 }).level).toBe('caution');
+  });
+});
+
+describe('completed uncertainty and weak promotional cues', () => {
+  const clean = { danger: false, cautions: 0, findings: [] };
+  it.each(['weak_indicators', 'insufficient_evidence', 'low_confidence'])('keeps %s neutral without calling it safe or a service error', reason => {
+    const result = normalizeEmailScanResult({ verdict: 'inconclusive', risk_score: 0, reason });
+    expect(result.verdict).toBe('inconclusive');
+    expect(emailInsightSummary(clean, result)).toEqual({ level: 'neutral', summary: 'AI assessment uncertain — no fraud verdict' });
+    expect(emailInconclusiveText(result)).toContain('not a safe-email verdict');
+    expect(emailInconclusiveText(result)).not.toMatch(/retry|unavailable|diagnostic code/i);
+  });
+  it.each([
+    { verdict: 'inconclusive', risk_score: 90 },
+    { verdict: 'inconclusive', risk_score: 0, red_flags: ['Scam'] },
+    { verdict: 'inconclusive', risk_score: 0, links: [{ index: 0, host: 'example.com', reason: 'bad' }] },
+    { verdict: 'inconclusive', risk_score: 0, confirmed_threat: true },
+  ])('rejects contradictory neutral responses: %j', value => {
+    expect(normalizeEmailScanResult(value).reason).toBe('invalid_response');
+  });
+  it.each(['Offer that is too good to be true', 'Generic greeting instead of your name', 'Pressure to act immediately', 'Contains a suspicious link'])('does not accept an older API red warning based only on %s', flag => {
+    const result = normalizeEmailScanResult({ verdict: 'scam', risk_score: 90, red_flags: [flag] });
+    expect(result).toEqual({ verdict: 'inconclusive', risk_score: 0, reason: 'weak_indicators' });
+    expect(emailInsightSummary(clean, result).level).toBe('neutral');
+  });
+  it('does not let weak-label handling erase a confirmed threat', () => {
+    const result = normalizeEmailScanResult({ verdict: 'phishing', risk_score: 90, confirmed_threat: true, red_flags: ['Offer that is too good to be true'], links: [{ index: 0, host: 'evil.example', reason: 'Known phishing site' }] });
+    expect(emailInsightSummary(clean, result).level).toBe('danger');
+  });
+  it('does not treat a loose AI link index as corroboration of a weak warning', () => {
+    expect(normalizeEmailScanResult({ verdict: 'scam', risk_score: 90, red_flags: ['Offer that is too good to be true'], links: [{ index: 0, host: 'mailer.example', reason: 'Flagged by AI analysis' }] }).verdict).toBe('inconclusive');
+  });
+  it('never renders arbitrary provider reasons in neutral explanations', () => {
+    expect(emailInconclusiveText({ verdict: 'inconclusive', reason: '<script>private@example.com</script>' })).not.toContain('private@example.com');
   });
 });
 

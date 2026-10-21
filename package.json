@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:outlook-headers": "node scripts/test-outlook-headers.mjs",
+    "test:email-panel": "node scripts/test-email-panel-results.mjs",
     "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {

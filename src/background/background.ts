@@ -1199,7 +1199,7 @@ async function handleShieldEmailScan(
     try { payload = await res.json(); }
     catch { return { verdict: 'unavailable', reason: 'invalid_response' }; }
     const data = normalizeEmailScanResult(payload, email?.sender_email);
-    if (data.verdict !== 'unavailable') {
+    if (data.verdict !== 'unavailable' && data.verdict !== 'inconclusive' && !data.validation_issue) {
       emailScanCache.set(key, { res: data, expires: Date.now() + 60 * 60 * 1000 });
       if (emailScanCache.size > 200) emailScanCache.delete(emailScanCache.keys().next().value as string);
     }
