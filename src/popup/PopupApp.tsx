@@ -3480,7 +3480,7 @@ export const PopupApp: React.FC = () => {
                       ) : shieldState.killSwitch ? (
                         <span className="text-amber-700 dark:text-amber-300">Always-on protection is temporarily paused by XoraPass.</span>
                       ) : shieldState.entitlement && !shieldState.entitlement.planAllows ? (
-                        <span className="text-slate-600 dark:text-slate-400">Always-on protection (works while locked) is included in paid plans.</span>
+                        <span className="text-slate-600 dark:text-slate-400">Always-on protection is not included in your current plan.</span>
                       ) : shieldState.entitlement && !shieldState.entitlement.userEnabled ? (
                         <span className="text-slate-600 dark:text-slate-400">Automatic protection is off. Manual site scans are still available.</span>
                       ) : unlocked ? (

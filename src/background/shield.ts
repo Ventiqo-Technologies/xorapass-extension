@@ -55,6 +55,7 @@ export type ShieldFeature =
   | 'ai_scan'
   | 'image_scan'
   | 'file_scan'
+  | 'file_upload'
   | 'email_ai';
 
 export interface ShieldEntitlement {

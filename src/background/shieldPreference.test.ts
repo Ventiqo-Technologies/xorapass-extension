@@ -20,6 +20,20 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Shield preference is shared by enforcement and status', () => {
+  it('cannot enable protection when the plan permission is off, even with an active preference and cached rollout', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ...enabled(true), plan_allows:false }))));
+    const shield = await import('./shield'); await shield.refreshShieldEntitlement(true);
+    expect(await shield.isShieldActive()).toBe(false);
+    expect(await shield.shieldFeature('email_ai')).toBe(false);
+    expect(await shield.getShieldState()).toMatchObject({ active:false, entitlement:{planAllows:false} });
+  });
+  it('honours independent email, image, hash and upload scan permissions', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ...enabled(true), features:{always_on:true,ai_scan:true,email_ai:false,image_scan:false,file_scan:false,file_upload:true} }))));
+    const shield = await import('./shield'); await shield.refreshShieldEntitlement(true);
+    expect(await shield.shieldFeature('ai_scan')).toBe(true);
+    for (const feature of ['email_ai','image_scan','file_scan'] as const) expect(await shield.shieldFeature(feature)).toBe(false);
+    expect(await shield.shieldFeature('file_upload')).toBe(true);
+  });
   it('replaces a cached active state with the server off preference', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => response(false)));
     const shield = await import('./shield'); await shield.refreshShieldEntitlement();

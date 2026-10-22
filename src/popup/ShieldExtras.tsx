@@ -361,6 +361,11 @@ export default function ShieldExtras({
     setFileResult("");
     setPendingUpload(null);
     try {
+      if (!feat("file_scan")) {
+        setFileResult("File fingerprint checks are not available for this account.");
+        if (feat("file_upload") && auth?.config?.file_upload?.enabled !== false && f.size <= 32 * 1024 * 1024) setPendingUpload(f);
+        return;
+      }
       const sha256 = await sha256Hex(await f.arrayBuffer());
       const v = (await api("/api/shield/file-check", {
         method: "POST",
@@ -370,7 +375,7 @@ export default function ShieldExtras({
       if (v.verdict === "unknown") {
         setFileResult("This file has never been seen by our threat feeds.");
         if (
-          auth?.config?.file_upload?.enabled !== false &&
+          feat("file_upload") && auth?.config?.file_upload?.enabled !== false &&
           f.size <= 32 * 1024 * 1024
         )
           setPendingUpload(f);
@@ -384,7 +389,7 @@ export default function ShieldExtras({
 
   const uploadFile = async () => {
     const f = pendingUpload;
-    if (!f) return;
+    if (!f || !feat("file_upload")) return;
     setPendingUpload(null);
     setBusy("file");
     try {
@@ -570,7 +575,7 @@ export default function ShieldExtras({
           </div>
         </>
       )}
-      {section === "tools" && (feat("image_scan") || feat("file_scan") || (feat("email_ai") && !!auth?.aiChecks)) && (
+      {section === "tools" && (feat("image_scan") || feat("file_scan") || feat("file_upload") || (feat("email_ai") && !!auth?.aiChecks)) && (
         <div className="space-y-2.5 pt-2.5 border-t border-slate-900/10">
           {auth?.aiChecks && (
             <AIChecksMeter usage={auth.aiChecks} />
@@ -605,7 +610,7 @@ export default function ShieldExtras({
               </div>
             )}
 
-          {feat("file_scan") && auth?.config?.file_scan?.enabled !== false && (
+          {(feat("file_scan") || feat("file_upload")) && auth?.config?.file_scan?.enabled !== false && (
             <div className="space-y-1">
               <label className={`${btn} inline-flex items-center gap-1.5`}>
                 <FileSearch className="w-3 h-3" />{" "}
@@ -618,12 +623,12 @@ export default function ShieldExtras({
                 />
               </label>
               <p className="text-[10px] text-slate-400">
-                Only the file's fingerprint (SHA-256) is sent — not the file.
+                {feat("file_scan") ? "Only the file's fingerprint (SHA-256) is sent — not the file." : "Selecting a file does not upload it. A separate confirmation is required."}
               </p>
               {fileResult && (
                 <p className="text-[11px] text-slate-700">{fileResult}</p>
               )}
-              {pendingUpload && (
+              {pendingUpload && feat("file_upload") && (
                 <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 space-y-1">
                   <p>
                     Upload it for a full scan? It's sent to VirusTotal, which{" "}
@@ -665,7 +670,7 @@ function AIChecksMeter({ usage }: { usage: NonNullable<AuthInfo["aiChecks"]> }) 
           </span>
         </div>
         <p className="text-[10px] text-slate-500 dark:text-slate-400">
-          Your lifetime membership includes unlimited AI screen analysis and file security checks.
+          Your lifetime membership includes unlimited checks for the scan features enabled on your plan.
         </p>
       </div>
     );
