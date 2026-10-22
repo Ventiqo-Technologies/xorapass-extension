@@ -49,17 +49,6 @@ export const KNOWN_MESSAGE_TYPES = [
   // allow_secret_rotation flag) so the popup can show "Not included in your
   // plan" instead of a control that silently does nothing.
   'GET_PLAN_FEATURES',
-  // AI Access: the extension is a consumer of XoraPass's AI-access API, using
-  // the human's own login (never a bridge token -- this is the trusted client
-  // surface that performs the actual fill once a human has approved a scoped,
-  // JIT session). See BrokerAction / AIAccessSession in core-api/modules/ai.
-  'AI_CHECK_TAB',
-  'AI_FILL_CONFIRM',
-  'AI_FILL_HANDLED',
-  'AI_LIST_REQUESTS',
-  'AI_DECIDE_REQUEST',
-  'AI_LIST_SESSIONS',
-  'AI_REVOKE_SESSION',
   // Secret paste guard: fetch the effective policy, report a secret-FREE
   // warning event for auditing, and save a detected secret into the vault.
   'AI_PASTE_POLICY',
@@ -174,15 +163,6 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   // popup alone. A content script that could send this would be able to
   // silently disable the control that protects an unattended machine.
   'SET_LOCK_ON_SCREEN_LOCK',
-  // Account-wide AI actions (every pending request / every session) --
-  // reserved for the popup, same tier as the vault-lifecycle messages above.
-  // The page-scoped ones (AI_CHECK_TAB, AI_FILL_CONFIRM, AI_FILL_HANDLED,
-  // AI_REVOKE_SESSION) stay content-script-reachable, same trust tier as
-  // GET_MATCHING_CREDENTIALS: our own injected UI is the only thing that ever
-  // triggers them, exactly like the existing autofill button.
-  'AI_LIST_REQUESTS',
-  'AI_DECIDE_REQUEST',
-  'AI_LIST_SESSIONS',
   'SET_CLIPBOARD_CLEAR',
   // Extension checkup: privileged call reserved for popup
   'AUDIT_EXTENSIONS',
@@ -443,31 +423,6 @@ export function validateMessage(
     // GET_STATUS, LOCK_VAULT, GET_SETTINGS and CLIPBOARD_COPIED need no
     // payload — CLIPBOARD_COPIED deliberately carries no secret, it is only a
     // signal that the popup put a password on the clipboard.
-    case 'AI_CHECK_TAB':
-      if (!payload || typeof payload.hostname !== 'string') {
-        return { ok: false, reason: 'bad-payload' };
-      }
-      break;
-    case 'AI_FILL_CONFIRM':
-      if (!payload || typeof payload.sessionId !== 'string') {
-        return { ok: false, reason: 'bad-payload' };
-      }
-      break;
-    case 'AI_FILL_HANDLED':
-    case 'AI_REVOKE_SESSION':
-      if (!payload || typeof payload.sessionId !== 'string') {
-        return { ok: false, reason: 'bad-payload' };
-      }
-      break;
-    case 'AI_DECIDE_REQUEST':
-      if (
-        !payload ||
-        typeof payload.requestId !== 'string' ||
-        (payload.decision !== 'approve' && payload.decision !== 'deny')
-      ) {
-        return { ok: false, reason: 'bad-payload' };
-      }
-      break;
     case 'AI_PASTE_EVENT':
       // Secret-free by contract: hostname, detected type NAMES, the action, and optional vaultEntryId.
       if (

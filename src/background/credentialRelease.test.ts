@@ -22,7 +22,7 @@ const lifecycleListeners = between('browser.alarms.onAlarm.addListener((alarm) =
   between('browser.idle.onStateChanged.addListener((state) => {', '// (Re)arm');
 const handlers = [
   ['UNLOCK_VAULT', 'LOCK_VAULT'], ['LOCK_VAULT', 'REFRESH_TOKEN'],
-  ['GET_CREDENTIAL_SECRET', 'REMEMBER_USERNAME'], ['AI_FILL_CONFIRM', 'AI_FILL_HANDLED'],
+  ['GET_CREDENTIAL_SECRET', 'REMEMBER_USERNAME'],
   ['SHIELD_SIGN_OUT', 'SHIELD_EMAIL_SCAN'],
 ].map(([start, end]) => between(`  if (type === '${start}') {`, `  if (type === '${end}') {`)).join('\n');
 
@@ -208,23 +208,12 @@ describe('SHIELD-005 actual credential release handler', () => {
   });
 });
 
-describe('SHIELD-005 AI-approved credential release', () => {
-  it('preserves an authorized AI fill', async () => {
-    const f = fixture();
-    expect(await f.request('AI_FILL_CONFIRM')).toEqual({ username: f.item.username, value: f.item.value });
-  });
-
-  it.each(['manual lock', 'account switch', 'same-account re-unlock'])('denies %s while the AI risk check is pending', async (event) => {
-    const f = fixture(); const pending = pause(f, 'risk');
-    const response = f.request('AI_FILL_CONFIRM'); await pending.entered;
-    if (event === 'manual lock') await f.lock();
-    else if (event === 'account switch') await f.unlock('second@example.invalid');
-    else { await f.lock(); await f.unlock(); }
-    pending.resume(); expect(await response).toEqual({ error: 'locked' });
-  });
-
-  it('rejects an unauthorized AI requesting frame', async () => {
-    const f = fixture(); f.sender.frameId = 2; f.sender.url = 'https://evil.invalid/'; f.sender.origin = 'https://evil.invalid';
-    expect(await f.request('AI_FILL_CONFIRM')).toEqual({ error: 'unauthorized_frame' });
+describe('retired AI credential access', () => {
+  it('has no approval, session or AI fill handlers', () => {
+    expect(source).not.toContain('/ai/access-requests');
+    expect(source).not.toContain('/ai/sessions');
+    expect(source).not.toContain("type === 'AI_FILL_CONFIRM'");
+    expect(source).toContain("type === 'SHIELD_EMAIL_SCAN'");
+    expect(source).toContain("type === 'AI_PASTE_EVENT'");
   });
 });

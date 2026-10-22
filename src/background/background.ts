@@ -125,12 +125,8 @@ let lastCopiedSecret = '';
 let lastCopiedId = '';
 let lastCopiedField = '';
 
-// AI Access heartbeat: chrome.alarms cannot fire faster than once a minute in
-// MV3, so this is a backstop only -- the primary triggers for noticing a
-// newly-approved AI session are the content script asking on page load/focus
-// (AI_CHECK_TAB) and tab activation/navigation (see below), both of which are
-// much faster in practice.
-const AI_HEARTBEAT_ALARM = 'xorapass-ai-heartbeat';
+// Clear alarms left by old builds; never resume retired credential approvals.
+void browser.alarms.clear('xorapass-ai-heartbeat');
 const TOKEN_REFRESH_ALARM = 'xorapass-token-refresh';
 const CLIPBOARD_KEY = 'clipboardClearSeconds';
 const CLIPBOARD_ALARM = 'xorapass-clipboard-clear';
@@ -183,13 +179,12 @@ async function getLockOnScreenLock(): Promise<boolean> {
 
 async function lockVaultNow(): Promise<void> {
   const generation = vaultSession.invalidate();
-  dismissedByTab.clear();
   clearRiskApprovals();
   // Preserve the lock across a worker restart while clipboard cleanup waits.
   // Keep the clipboard marker/key until cleanup, but stop stored vault access.
   if (!await vaultSession.commit(generation, () => browser.storage.session.set({ unlocked: false }), false)) return;
   await Promise.allSettled([
-    browser.alarms.clear(AUTO_LOCK_ALARM), clearAiHeartbeat(), clearTokenRefresh(),
+    browser.alarms.clear(AUTO_LOCK_ALARM), clearTokenRefresh(),
   ]);
   // Same ordering as the auto-lock alarm: drain the clipboard before the
   // pending marker is wiped along with the rest of the session.
@@ -218,12 +213,6 @@ async function scheduleAutoLock() {
   }
 }
 
-async function scheduleAiHeartbeat() {
-  await browser.alarms.create(AI_HEARTBEAT_ALARM, { periodInMinutes: 1 });
-}
-async function clearAiHeartbeat() {
-  await browser.alarms.clear(AI_HEARTBEAT_ALARM);
-}
 
 // Renews the access token proactively, well before its ~30-minute server
 // lifetime, so ordinary use never hits a 401 in the first place. apiJwt()
@@ -348,11 +337,7 @@ browser.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name === CLIPBOARD_ALARM) {
     void clearClipboard();
-    void clearAiHeartbeat();
     return;
-  }
-  if (alarm.name === AI_HEARTBEAT_ALARM) {
-    void pushAiFillToActiveTabs();
   }
   if (alarm.name === TOKEN_REFRESH_ALARM) {
     void apiRefresh();
@@ -463,49 +448,6 @@ browser.tabs.onRemoved.addListener((tabId) => {
   void setLastUsername(tabId, null);
 });
 
-// ── AI Access ────────────────────────────────────────────────────────────────
-// The extension is the trusted client surface for the AI-credential-firewall
-// story: once a human has approved an AI's request (in the web app, the Tk
-// console -- anywhere), XoraPass mints a scoped, time-bound session. This
-// worker notices that session and offers to perform the fill -- it is the
-// piece described in ai.go's BrokerAction comment ("applied by XoraPass on
-// the user's device") that did not exist until now.
-//
-// This ALWAYS authenticates with the human's own login (the same session the
-// popup uses to fetch/decrypt the vault) -- never a bridge token. A bridge
-// token is the AI's credential and is deliberately rejected on every one of
-// these endpoints; the extension acts only after a human has already decided.
-
-interface AiSession {
-  id: string;
-  request_id: string;
-  status: string;
-  granted_scopes: string[];
-  ai_tool_name: string;
-  vault_entry_id?: string;
-  action: string;
-  domain: string;
-  environment: string;
-  expires_at: string;
-}
-
-interface AiFillOffer {
-  sessionId: string;
-  vaultEntryId: string;
-  aiToolName: string;
-  action: string;
-  domain: string;
-  environment: string;
-  grantedScopes: string[];
-  expiresAt: string;
-}
-
-// Per-tab set of session ids the user already dismissed/handled, so the same
-// offer isn't re-shown on every check. Cleared on navigation to a fresh page.
-const dismissedByTab = new Map<number, Set<string>>();
-browser.tabs.onRemoved.addListener((tabId) => {
-  dismissedByTab.delete(tabId);
-});
 
 async function getJwt(): Promise<string> {
   const res = await browser.storage.session.get(['jwt']);
@@ -533,7 +475,7 @@ async function callApiJwt(
     }
     return { ok: res.ok, status: res.status, data };
   } catch (e) {
-    console.warn('[XoraPass] AI Access API call failed:', e);
+    console.warn('[XoraPass] API call failed:', e);
     return { ok: false, status: 0, data: { detail: 'network error' } };
   }
 }
@@ -868,107 +810,10 @@ async function saveSecretToVault(input: {
   return { ok: true };
 }
 
-// Tab switches and page loads each independently trigger a check, and both
-// can fire together for the same tab (e.g. onActivated + onUpdated). Without
-// this, rapid tab-switching would multiply into that many /ai/sessions calls
-// in the same instant -- sharing one short-lived result keeps the offer
-// discovery path cheap regardless of how many tabs trigger it at once. The
-// fill-confirmation check (AI_FILL_CONFIRM) deliberately does NOT use this
-// cache -- that one call is the moment-of-truth check right before a secret
-// is used, and always reads live state.
-let sessionsCache: { data: AiSession[]; fetchedAt: number } | null = null;
-const SESSIONS_CACHE_MS = 5000;
-let sessionsInFlight: Promise<AiSession[]> | null = null;
 
-async function getActiveAiSessions(): Promise<AiSession[]> {
-  const now = Date.now();
-  if (sessionsCache && now - sessionsCache.fetchedAt < SESSIONS_CACHE_MS) {
-    return sessionsCache.data;
-  }
-  if (sessionsInFlight) {
-    return sessionsInFlight;
-  }
-  sessionsInFlight = (async () => {
-    try {
-      const { ok, data } = await apiJwt('GET', '/ai/sessions');
-      const sessions = ok && Array.isArray(data) ? (data as AiSession[]) : [];
-      sessionsCache = { data: sessions, fetchedAt: Date.now() };
-      return sessions;
-    } finally {
-      sessionsInFlight = null;
-    }
-  })();
-  return sessionsInFlight;
-}
-
-/**
- * Finds an active AI session, scoped to `autofill`, whose domain matches the
- * given hostname and hasn't already been dismissed in this tab. Returns null
- * when the vault is locked, nothing matches, or the call fails -- all
- * fail-closed (no offer), never fail-open.
- */
-async function getAiFillForHostname(hostname: string, tabId: number): Promise<AiFillOffer | null> {
-  if (!hostname) return null;
-  const data = await getActiveAiSessions();
-
-  const dismissed = dismissedByTab.get(tabId);
-  const match = data.find(
-    (s) =>
-      s.status === 'active' &&
-      !!s.domain &&
-      isDomainMatch(hostname, s.domain) &&
-      s.granted_scopes.includes('autofill') &&
-      !(dismissed && dismissed.has(s.id))
-  );
-  if (!match || !match.vault_entry_id) return null;
-
-  return {
-    sessionId: match.id,
-    vaultEntryId: match.vault_entry_id,
-    aiToolName: match.ai_tool_name || 'An AI tool',
-    action: match.action,
-    domain: match.domain,
-    environment: match.environment,
-    grantedScopes: match.granted_scopes,
-    expiresAt: match.expires_at,
-  };
-}
-
-/** Push an offer to a specific tab if one exists. Never throws. */
-async function pushAiFillCheck(tabId: number, url?: string) {
-  const hostname = url ? extractHostname(url) : '';
-  if (!hostname) return;
-  const offer = await getAiFillForHostname(hostname, tabId);
-  if (offer) {
-    browser.tabs.sendMessage(tabId, { type: 'AI_FILL_AVAILABLE', payload: offer }).catch(() => {
-      /* content script not present on this page (e.g. chrome:// tab) */
-    });
-  }
-}
-
-/** Backstop: re-checks every window's active tab once a minute. */
-async function pushAiFillToActiveTabs() {
-  const jwt = await getJwt();
-  if (!jwt) return;
-  const tabs = await browser.tabs.query({ active: true });
-  for (const tab of tabs) {
-    if (tab.id !== undefined) void pushAiFillCheck(tab.id, tab.url);
-  }
-}
-
-// Re-check on tab switch (fast, cheap) and on navigation completing. A fresh
-// navigation also clears this tab's dismissed set, so a re-visit can re-offer.
-browser.tabs.onActivated.addListener(({ tabId }) => {
-  browser.tabs.get(tabId).then((tab) => void pushAiFillCheck(tabId, tab.url)).catch(() => {});
-});
+// Keep proactive tab-risk checks independent of the retired approval flow.
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'loading' && changeInfo.url) {
-    dismissedByTab.delete(tabId);
-  }
-  if (changeInfo.status === 'complete') {
-    void pushAiFillCheck(tabId, tab.url);
-    void checkAndPushTabRisk(tabId, tab.url);
-  }
+  if (changeInfo.status === 'complete') void checkAndPushTabRisk(tabId, tab.url);
 });
 
 /** Normalized set of hostnames on which the user has disabled autofill. */
@@ -1443,9 +1288,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (type === 'UNLOCK_VAULT') {
     const generation = vaultSession.invalidate();
     clearRiskApprovals();
-    // jwt is optional for backward compatibility, but the popup always sends
-    // it now -- without it, the AI Access checks below simply find nothing
-    // (getJwt() returns '' and apiJwt() fails closed), never an error state.
+    // JWT is optional for older/offline clients; remote services fail closed
+    // until the session has a usable access token.
     const payload = msg.payload as {
       decryptedItems: unknown;
       email: string;
@@ -1490,7 +1334,6 @@ browser.runtime.onMessage.addListener((message, sender) => {
       .then((applied) => {
         if (!applied) return { error: 'session_changed' };
         void scheduleAutoLock();
-        void scheduleAiHeartbeat();
         void scheduleTokenRefresh();
         // Always-on Shield: get/rotate this browser's locked-mode credential.
         if (jwt) void ensureShieldDeviceToken(jwt, email);
@@ -1987,144 +1830,6 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return savePendingCredential(tabId);
   }
 
-  // ── AI Access messages ──────────────────────────────────────────────────
-
-  if (type === 'AI_CHECK_TAB') {
-    const hostname: string = msg.payload.hostname;
-    const tabId = sender.tab?.id;
-    if (tabId == null) return Promise.resolve({ offer: null });
-    return getAiFillForHostname(hostname, tabId).then((offer) => ({ offer }));
-  }
-
-  if (type === 'AI_FILL_CONFIRM') {
-    const generation = vaultSession.capture();
-    if (generation === null) return Promise.resolve({ error: 'locked' });
-    const senderUrl = credentialRequestUrl(sender);
-    if (!senderUrl) return Promise.resolve({ error: 'unauthorized_frame' });
-    // Re-verify against the LIVE server state at the moment of the click --
-    // the banner may have been sitting open for a while, and the session
-    // could have expired or been revoked (from the popup, the web app,
-    // anywhere) since it was rendered. The vault entry to fill is also taken
-    // from the server's own session record, never trusted from the caller --
-    // a session only ever unlocks the one credential it was actually
-    // approved for.
-    const { sessionId } = msg.payload as { sessionId: string };
-    return apiJwt('GET', '/ai/sessions').then(({ ok, data }) => {
-      if (!ok || !Array.isArray(data)) {
-        return { error: 'Could not verify this AI session -- try again.' };
-      }
-      const session = (data as AiSession[]).find((s) => s.id === sessionId);
-      if (!session || session.status !== 'active' || !session.granted_scopes.includes('autofill') || !session.vault_entry_id) {
-        return { error: 'This AI session is no longer active.' };
-      }
-      return (async () => {
-        const res = await browser.storage.session.get(['unlocked', 'vaultItems', 'email', 'encKey']);
-        if (!vaultSession.isCurrent(generation) || !res.unlocked) return { error: 'locked' };
-        const items = (res as Record<string, unknown>).vaultItems as VaultItem[] | undefined;
-        const item = items?.find((i) => i.id === session.vault_entry_id);
-        if (!item) return { error: 'Credential not found in this session -- try unlocking again.' };
-
-        // An approved AI session authorises WHICH credential may be filled; it
-        // says nothing about WHERE. This path releases a secret exactly like
-        // GET_CREDENTIAL_SECRET does and was doing no domain-risk check at all,
-        // so an agent driving a lookalike page got the credential the human had
-        // approved for the real one. The AI context is what raises the
-        // backend's scrutiny (AI_SESSION_ELEVATED_SCRUTINY, +35) and turns a
-        // medium score into require_approval rather than a warning.
-        const aiHostname = extractHostname(senderUrl);
-        if (!aiHostname) return { error: 'Could not determine this page -- try again.' };
-
-        const allowlist = await getDomainAllowlist();
-        const knownHosts = (items || [])
-          .filter((i) => !!i.url)
-          .map((i) => extractHostname(i.url!))
-          .filter(Boolean);
-
-        const risk = await evaluateDomainRisk({
-          hostname: aiHostname,
-          currentUrl: senderUrl,
-          knownHosts,
-          allowlist,
-          savedDomain: item.url ? extractHostname(item.url) : '',
-          aiContext: { isAISession: true, agentId: session.id, toolName: 'autofill' },
-          sensitivity: sensitivityForItems([item]),
-        });
-
-        // No per-tab "fill anyway" escape here: the whole point of an AI
-        // session is that a human is not watching this click, so a
-        // require_approval verdict has to stop it outright.
-        if (risk.decision === 'block' || risk.decision === 'require_approval') {
-          console.warn('[XoraPass] Refused AI fill for risk domain:', aiHostname, risk.decision);
-          return {
-            error:
-              'This page was flagged by domain risk checks, so the AI session was not allowed to fill here.',
-            risk,
-          };
-        }
-
-        const releaseError = await credentialReleaseError(generation, res, item, sender, senderUrl);
-        if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
-        if (releaseError) return { error: releaseError };
-        return { username: item.username, value: item.value };
-      })();
-    });
-  }
-
-  if (type === 'AI_FILL_HANDLED') {
-    const { sessionId } = msg.payload;
-    const tabId = sender.tab?.id;
-    if (tabId !== undefined) {
-      const set = dismissedByTab.get(tabId) || new Set<string>();
-      set.add(sessionId);
-      dismissedByTab.set(tabId, set);
-    }
-    return Promise.resolve({ success: true });
-  }
-
-  if (type === 'AI_REVOKE_SESSION') {
-    const { sessionId } = msg.payload;
-    return apiJwt('POST', `/ai/sessions/${sessionId}/revoke`).then(({ ok, status, data }) => {
-      if (ok) {
-        for (const set of dismissedByTab.values()) set.add(sessionId);
-        sessionsCache = null; // don't let a cached pre-revoke list re-offer it within the TTL
-      }
-      return ok ? { success: true } : { error: data?.detail || `HTTP ${status}` };
-    });
-  }
-
-  if (type === 'AI_LIST_REQUESTS') {
-    return apiJwt('GET', '/ai/access-requests').then(({ ok, data }) =>
-      ok ? { requests: data } : { error: data?.detail || 'Failed to load requests', requests: [] }
-    );
-  }
-
-  if (type === 'AI_LIST_SESSIONS') {
-    return apiJwt('GET', '/ai/sessions').then(({ ok, data }) =>
-      ok ? { sessions: data } : { error: data?.detail || 'Failed to load sessions', sessions: [] }
-    );
-  }
-
-  if (type === 'AI_DECIDE_REQUEST') {
-    const { requestId, decision, grantedScopes, durationSeconds, maxUses } = msg.payload as {
-      requestId: string;
-      decision: 'approve' | 'deny';
-      grantedScopes?: string[];
-      durationSeconds?: number;
-      maxUses?: number;
-    };
-    const path = `/ai/access-requests/${requestId}/${decision}`;
-    const body =
-      decision === 'approve'
-        ? {
-            ...(grantedScopes && grantedScopes.length ? { granted_scopes: grantedScopes } : {}),
-            ...(durationSeconds ? { duration_seconds: durationSeconds } : {}),
-            ...(maxUses ? { max_uses: maxUses } : {}),
-          }
-        : undefined;
-    return apiJwt('POST', path, body).then(({ ok, status, data }) =>
-      ok ? { success: true, data } : { error: data?.detail || `HTTP ${status}` }
-    );
-  }
 
   // ── Secret paste guard messages ─────────────────────────────────────────
 
@@ -2679,7 +2384,6 @@ async function applyBridgedSession(
   if (!applied) throw new Error('Vault session changed during bridge login');
 
   void scheduleAutoLock();
-  void scheduleAiHeartbeat();
   void ensureShieldDeviceToken(token, email);
   // Without this, a bridged session with a refresh token now correctly
   // stored would still never proactively renew -- only the reactive 401

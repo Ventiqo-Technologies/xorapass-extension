@@ -150,26 +150,6 @@ interface CaretSnapshot {
   range?: Range;
 }
 
-// â”€â”€ AI Access â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// This page's part of the AI-credential-firewall story: once a human has
-// approved an AI's request elsewhere (the web app, the desktop console),
-// XoraPass mints a scoped, time-bound session. This banner is how that
-// authorization actually becomes a fill on the page -- distinct from, and
-// requiring its own explicit click on top of, the manual autofill button
-// above. No fill ever happens without this page-level click, no matter how
-// many approvals happened upstream.
-interface AiFillOffer {
-  sessionId: string;
-  vaultEntryId: string;
-  aiToolName: string;
-  action: string;
-  domain: string;
-  environment: string;
-  grantedScopes: string[];
-  expiresAt: string;
-}
-
-let aiBanner: HTMLElement | null = null;
 
 // Categories whose values are sensitive enough to always require an explicit
 // confirmation before being written into a page.
@@ -184,22 +164,6 @@ interface FrameAssessment {
   isCrossOriginFrame: boolean;
 }
 
-function escapeHtml(s: string): string {
-  return (s || '').replace(/[&<>"]|'/g, (c) => {
-    switch (c) {
-      case '&':
-        return '&amp;';
-      case '<':
-        return '&lt;';
-      case '>':
-        return '&gt;';
-      case '"':
-        return '&quot;';
-      default:
-        return '&#39;';
-    }
-  });
-}
 
 
 // Determines whether we are running inside a third-party (cross-origin) iframe.
@@ -812,30 +776,11 @@ function handleFillRefusal(error: string | undefined): void {
   }
 }
 
-// Ask background whether an AI-approved fill is available for this page.
-function checkAiFill() {
-  const hostname = window.location.hostname;
-  browser.runtime
-    .sendMessage({ type: 'AI_CHECK_TAB', payload: { hostname } })
-    .then((response: any) => {
-      if (response && response.offer) {
-        renderAiBanner(response.offer as AiFillOffer);
-      } else {
-        removeAiBanner();
-      }
-    })
-    .catch(() => {
-      /* background unavailable */
-    });
-}
 
-// Background pushes this when it notices a new session on tab switch,
-// navigation, or its once-a-minute backstop.
+// Background messages for manual autofill, document context and risk warnings.
 browser.runtime.onMessage.addListener((message: any) => {
   if (!message || typeof message.type !== 'string') return undefined;
-  if (message.type === 'AI_FILL_AVAILABLE') {
-    renderAiBanner(message.payload as AiFillOffer);
-  } else if (message.type === 'SHORTCUT_AUTOFILL') {
+  if (message.type === 'SHORTCUT_AUTOFILL') {
     void handleShortcutAutofill();
   } else if (message.type === 'GET_CREDENTIAL_APPROVAL_CONTEXT') {
     return window === window.top ? Promise.resolve(credentialApprovalContext()) : undefined;
@@ -1781,160 +1726,6 @@ async function handlePick(id: string, passInput: HTMLInputElement): Promise<void
 
 
 // ---------------------------------------------------------------------------
-// AI Access banner
-// ---------------------------------------------------------------------------
-
-function removeAiBanner() {
-  aiBanner?.remove();
-  aiBanner = null;
-}
-
-function renderAiBanner(offer: AiFillOffer) {
-  if (isAutofillSuppressed()) { removeAiBanner(); return; }
-  // Don't stack duplicate banners for the same session, and don't downgrade
-  // an already-shown banner for a different offer without replacing it.
-  if (aiBanner && aiBanner.dataset.sessionId === offer.sessionId) return;
-  removeAiBanner();
-
-  const bar = document.createElement('div');
-  bar.dataset.sessionId = offer.sessionId;
-  Object.assign(bar.style, {
-    position: 'fixed',
-    top: '0',
-    left: '0',
-    right: '0',
-    zIndex: '2147483647',
-    display: 'flex',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: '10px',
-    padding: '10px 16px',
-    background: 'linear-gradient(90deg, #312e81, #3730a3)',
-    borderBottom: '1px solid rgba(129, 140, 248, 0.4)',
-    boxShadow: '0 4px 20px rgba(49, 46, 129, 0.4)',
-    fontFamily: 'Inter, system-ui, sans-serif',
-    fontSize: '13px',
-    color: '#e0e7ff',
-  });
-
-  const label = document.createElement('span');
-  label.innerHTML = `ðŸ¤– <b>${escapeHtml(offer.aiToolName)}</b> was approved to ${escapeHtml(
-    offer.action
-  )} on this page â€” fill now?`;
-  label.style.flex = '1';
-  label.style.minWidth = '200px';
-  bar.appendChild(label);
-
-  const mkBtn = (text: string, bg: string, color: string) => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.innerText = text;
-    Object.assign(b.style, {
-      padding: '6px 14px',
-      fontSize: '12px',
-      fontWeight: '700',
-      color,
-      background: bg,
-      border: 'none',
-      borderRadius: '8px',
-      cursor: 'pointer',
-    });
-    return b;
-  };
-
-  const fillBtn = mkBtn('Fill', 'linear-gradient(90deg, #818cf8, #6366f1)', '#0f172a');
-  fillBtn.addEventListener('click', () => void handleAiFill(offer, false));
-  bar.appendChild(fillBtn);
-
-  if (offer.grantedScopes.includes('submit')) {
-    const submitBtn = mkBtn('Fill & Submit', 'rgba(255,255,255,0.15)', '#e0e7ff');
-    submitBtn.addEventListener('click', () => void handleAiFill(offer, true));
-    bar.appendChild(submitBtn);
-  }
-
-  const dismissBtn = mkBtn('Not now', 'rgba(255,255,255,0.08)', '#c7d2fe');
-  dismissBtn.addEventListener('click', () => {
-    browser.runtime
-      .sendMessage({ type: 'AI_FILL_HANDLED', payload: { sessionId: offer.sessionId } })
-      .catch(() => {});
-    removeAiBanner();
-  });
-  bar.appendChild(dismissBtn);
-
-  const revokeBtn = mkBtn('Revoke access', 'transparent', '#fca5a5');
-  revokeBtn.style.textDecoration = 'underline';
-  revokeBtn.addEventListener('click', () => {
-    browser.runtime
-      .sendMessage({ type: 'AI_REVOKE_SESSION', payload: { sessionId: offer.sessionId } })
-      .catch(() => {});
-    removeAiBanner();
-  });
-  bar.appendChild(revokeBtn);
-
-  document.documentElement.appendChild(bar);
-  aiBanner = bar;
-}
-
-// Performs the actual fill for an AI-approved session, gated by the same
-// insecure-context / lookalike-domain checks manual autofill uses, plus the
-// explicit click on this banner that got us here.
-async function handleAiFill(offer: AiFillOffer, alsoSubmit: boolean) {
-  const warnings: string[] = [];
-  if (isInsecureContext()) {
-    warnings.push('This page is served over insecure HTTP. Data you enter can be intercepted.');
-  }
-  if (lookalikeWarning) {
-    warnings.push(`The address of this page resembles "${lookalikeWarning.target}" but does not match it.`);
-  }
-  if (warnings.length > 0) {
-    const proceed = await showConfirmDialog({
-      title: 'Confirm AI-approved autofill',
-      body: warnings,
-      confirmLabel: 'Fill anyway',
-      cancelLabel: 'Cancel',
-    });
-    if (!proceed) return;
-  }
-
-  const passwordInputs = Array.from(document.querySelectorAll('input[type="password"]')) as HTMLInputElement[];
-  const passEl = passwordInputs.find(isFillable);
-  if (!passEl) {
-    removeAiBanner();
-    return;
-  }
-  const usernameEl = findUsernameField(passEl);
-
-  // The credential to fill is derived server-side from the session record --
-  // this only needs to name which session is being used.
-  const response: any = await browser.runtime
-    .sendMessage({ type: 'AI_FILL_CONFIRM', payload: { sessionId: offer.sessionId } })
-    .catch(() => null);
-
-  if (!response || response.error) {
-    removeAiBanner();
-    return;
-  }
-
-  if (usernameEl && response.username) autofillField(usernameEl, response.username);
-  autofillField(passEl, response.value);
-
-  if (alsoSubmit) {
-    const form = passEl.form;
-    const submitter =
-      form?.querySelector('button[type="submit"], input[type="submit"]') ||
-      (form ? null : document.querySelector('button[type="submit"], input[type="submit"]'));
-    if (form && typeof form.requestSubmit === 'function') {
-      form.requestSubmit(submitter as HTMLElement | undefined);
-    } else if (submitter instanceof HTMLElement) {
-      submitter.click();
-    }
-  }
-
-  browser.runtime
-    .sendMessage({ type: 'AI_FILL_HANDLED', payload: { sessionId: offer.sessionId } })
-    .catch(() => {});
-  removeAiBanner();
-}
 
 // Decides whether a fill needs explicit confirmation, and if so, asks the user.
 // Returns true when the fill may proceed.
@@ -2894,7 +2685,7 @@ function initPasteGuard(): void {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-onAutofillSuppressed(() => { clearAll(); closeSavePrompt(); removeAiBanner(); });
+onAutofillSuppressed(() => { clearAll(); closeSavePrompt(); });
 
 const frame = assessFrame();
 if (frame.isTop || !frame.isCrossOriginFrame) {
@@ -2912,7 +2703,6 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   } else {
     loadCredentials();
   }
-  checkAiFill();
   watchForUsernameEntry();
   watchForSubmission();
   watchForFocus();
@@ -2992,7 +2782,6 @@ if (frame.isTop || !frame.isCrossOriginFrame) {
   window.addEventListener('resize', scheduleReposition, { passive: true });
   window.addEventListener('focus', () => {
     loadCredentials();
-    checkAiFill();
     scanWebmailMessages();
   });
 

@@ -36,6 +36,9 @@ describe('validateMessage — origin', () => {
 });
 
 describe('validateMessage — shape', () => {
+  it.each(['AI_CHECK_TAB', 'AI_FILL_CONFIRM', 'AI_FILL_HANDLED', 'AI_LIST_REQUESTS', 'AI_DECIDE_REQUEST', 'AI_LIST_SESSIONS', 'AI_REVOKE_SESSION'])('rejects retired credential access message %s', type => {
+    expect(validateMessage({ type, payload: { hostname: 'example.invalid', sessionId: 'old', requestId: 'old', decision: 'approve' } }, popupSender()).reason).toBe('unknown-type');
+  });
   it('rejects malformed messages', () => {
     expect(validateMessage(null, popupSender()).ok).toBe(false);
     expect(validateMessage({}, popupSender()).ok).toBe(false);
