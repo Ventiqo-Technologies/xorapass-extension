@@ -11,7 +11,7 @@ import { DEFAULT_SHIELD_CONFIG } from '../utils/shieldConfig';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import { registrableDomain } from '../utils/siteTrust';
 
-const source = readFileSync(new URL('./background.ts', import.meta.url), 'utf8');
+const source = readFileSync(new URL('./background.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const evaluate = source.slice(source.indexOf('async function evaluateDomainRisk('), source.indexOf('/**\n * Proactive navigation check'));
 const blocklist = source.slice(source.indexOf('function blocklistAssessment('), source.indexOf('/**\n * Navigation guard'));
 function fixture(trust: 'saved' | 'personal' | 'global' | 'platform' = 'saved') {
