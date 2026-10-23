@@ -4,7 +4,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
 import { useActiveTabRisk } from './useActiveTabRisk';
-import { isCurrentRiskContext, autofillRiskIndicator } from '../utils/tabRiskContext';
+import { autofillRiskIndicator } from '../utils/tabRiskContext';
+import { popupThreat } from '../utils/popupRisk';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import { GOOGLE_NO_GUARANTEE_NOTICE, webRiskAdvisoryFromSignals, type ThreatAdvisory } from '../utils/webRiskAttribution';
 import {
@@ -56,11 +57,9 @@ import { type ExtensionAuditSummary } from '../utils/extensionAudit';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
-import { assessWithCatalog, disabledDomainRiskAssessment } from '../utils/domainRisk';
+import { assessWithCatalog } from '../utils/domainRisk';
 import { type SiteSafetyReport } from '../utils/siteScanner';
 import {
-  mergeLocalAndRemoteRisk,
-  type RemoteDomainRiskResponse,
   type DomainRiskHistoryEvent,
   type DomainRiskReportRecord,
   type DomainRiskAllowlistRequestRecord,
@@ -379,14 +378,6 @@ export const PopupApp: React.FC = () => {
   const [currentProtocol, setCurrentProtocol] = useState('');
   const [siteDisabled, setSiteDisabled] = useState(false);
   const [domainAllowlist, setDomainAllowlist] = useState<string[]>([]);
-  // Threat-intel (VirusTotal/Google Web Risk/Cloudflare) verdict for the
-  // active tab's domain — separate from the local heuristic engine below,
-  // which only catches lookalikes of the user's OWN saved domains. Without
-  // this, a straightforwardly malicious site that isn't impersonating
-  // anything saved (e.g. a torrent/piracy site flagged by threat intel)
-  // showed nothing at all in the popup, even though the in-page warning
-  // overlay (which does call this) caught it correctly. null until fetched.
-  const [remoteDomainRisk, setRemoteDomainRisk] = useState<RemoteDomainRiskResponse | null>(null);
   // Recent personal Domain Risk activity (blocked/warned sites), shown as a
   // small summary on the Firewall tab — same data as the web app's Domain
   // Risk panel History tab, fetched fresh, capped client-side to the most
@@ -446,7 +437,8 @@ export const PopupApp: React.FC = () => {
   const [activeTabUrl, setActiveTabUrl] = useState<string>('');
   const [activeTabTitle, setActiveTabTitle] = useState<string>('');
   const [activeTabFavIcon, setActiveTabFavIcon] = useState<string>('');
-  const { tab: activeRiskTab, warning: activeThreatWarning } = useActiveTabRisk();
+  const { tab: activeRiskTab, warning: activeThreatWarning, assessment: tabRiskAssessment,
+    enabled: tabShieldEnabled, available: tabRiskAvailable } = useActiveTabRisk();
   const [threatBannerDismissed, setThreatBannerDismissed] = useState(false);
 
   // XoraPass Shield - "Is This Safe?" Analyzer state
@@ -649,7 +641,7 @@ export const PopupApp: React.FC = () => {
     setActiveTabUrl(activeRiskTab?.url || '');
     setActiveTabTitle(activeRiskTab?.title || '');
     setActiveTabFavIcon(activeRiskTab?.favIconUrl || '');
-    setRemoteDomainRisk(null); setThreatBannerDismissed(false); setSiteDisabled(false);
+    setThreatBannerDismissed(false); setSiteDisabled(false);
     let cancelled = false;
     try {
       const url = new URL(activeRiskTab?.url || '');
@@ -1485,85 +1477,18 @@ export const PopupApp: React.FC = () => {
       ? findLookalikeTarget(currentHostname, knownHosts, domainAllowlist)
       : null;
 
-  // The merged view is what actually drives the banner below — remote
-  // threat-intel can escalate (never soften) what the local engine alone
-  // found, same rule mergeLocalAndRemoteRisk already enforces for the
-  // in-page overlay.
-  const domainRiskAssessment =
-    localDomainRisk && remoteDomainRisk
-      ? mergeLocalAndRemoteRisk(localDomainRisk, remoteDomainRisk)
-      : remoteDomainRisk
-      ? mergeLocalAndRemoteRisk(disabledDomainRiskAssessment(currentHostname), remoteDomainRisk)
-      : localDomainRisk;
+  // Use the same final assessment as page protection. Until available, local
+  // matching can offer a conservative fallback, never a new remote verdict.
+  const domainRiskAssessment = siteDisabled || tabShieldEnabled === false ? null :
+    tabRiskAssessment?.pageHostname === currentHostname ? tabRiskAssessment : localDomainRisk;
 
   const isCurrentDomainAllowlisted = domainAllowlist.some((h) => {
     try { return h === currentHostname || currentHostname.endsWith('.' + h); } catch { return false; }
   });
 
-  const isDangerousSite = Boolean(
-    domainRiskAssessment &&
-    !isCurrentDomainAllowlisted &&
-    !domainRiskAssessment.signals?.isSameRegistrableDomain &&
-    !domainRiskAssessment.signals?.isExactMatch &&
-    !domainRiskAssessment.signals?.isSubdomainMatch &&
-    (domainRiskAssessment.decision === 'block' ||
-     domainRiskAssessment.riskLevel === 'high' ||
-     domainRiskAssessment.riskLevel === 'critical' ||
-     domainRiskAssessment.riskScore >= 60 ||
-     (Boolean(domainRiskAssessment.matchedTarget) && domainRiskAssessment.riskScore >= 40 && domainRiskAssessment.decision !== 'allow') ||
-     (domainRiskAssessment.safeWarningMessage && /malware|phishing|blocked/i.test(domainRiskAssessment.safeWarningMessage)) ||
-     (domainRiskAssessment.reasons && domainRiskAssessment.reasons.some((r: string) => /malware|phishing|blocked/i.test(r))))
-  );
+  const isDangerousSite = domainRiskAssessment?.decision === 'block';
 
-  const isWarningSite = Boolean(
-    domainRiskAssessment &&
-    !isCurrentDomainAllowlisted &&
-    !isDangerousSite &&
-    !domainRiskAssessment.signals?.isSameRegistrableDomain &&
-    !domainRiskAssessment.signals?.isExactMatch &&
-    !domainRiskAssessment.signals?.isSubdomainMatch &&
-    (domainRiskAssessment.decision === 'warn' ||
-     domainRiskAssessment.decision === 'require_approval' ||
-     domainRiskAssessment.riskScore >= 20 ||
-     (domainRiskAssessment.reasons && domainRiskAssessment.reasons.length > 0))
-  );
-
-  // Fetch the remote threat-intel verdict for the active tab whenever it
-  // changes — unconditionally (not gated behind the local engine already
-  // having found something), since the whole point is catching threats the
-  // local engine alone can't see. Also reports the event to backend
-  // telemetry as a side effect, same as before.
-  useEffect(() => {
-    setRemoteDomainRisk(null);
-    const context = activeRiskTab?.context;
-    if (!context || !currentHostname || siteDisabled || isLocalHost) return;
-    let cancelled = false;
-    const isLegitLocal =
-      localDomainRisk?.signals?.isSameRegistrableDomain ||
-      localDomainRisk?.signals?.isExactMatch ||
-      localDomainRisk?.signals?.isSubdomainMatch;
-    browser.runtime
-      .sendMessage({
-        type: 'CHECK_DOMAIN_RISK',
-        payload: {
-          currentDomain: currentHostname,
-          currentUrl: context.url,
-          savedDomain: isLegitLocal ? '' : (localDomainRisk?.matchedTarget || lookalike?.target || ''),
-        },
-      })
-      .then(async (res: any) => {
-        if (cancelled || !res?.risk || !await isCurrentRiskContext(browser.tabs, context)) return;
-        const [active] = await browser.tabs.query({active:true,currentWindow:true});
-        if (!cancelled && active?.id === context.tabId) setRemoteDomainRisk(res.risk);
-        // Page-aware verdict publication belongs to the background. A popup's
-        // URL-only lookup must not overwrite the content script's richer scan.
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRiskTab?.context, currentHostname, currentProtocol, siteDisabled, isLocalHost]);
+  const isWarningSite = domainRiskAssessment?.decision === 'warn' || domainRiskAssessment?.decision === 'require_approval';
 
   const health = computeVaultHealth(vaultItems.map((i) => ({ category: i.category, value: i.value })));
   const tier = scoreTier(health.score);
@@ -1596,23 +1521,14 @@ export const PopupApp: React.FC = () => {
   };
 
   // Derive consolidated active threat warning from tab warning or popup's live assessment
-  const activeThreat = (!threatBannerDismissed && (activeThreatWarning || isDangerousSite || isWarningSite)) ? {
-    severity: activeThreatWarning?.severity || (isDangerousSite ? 'block' : 'warn'),
-    title: activeThreatWarning?.title || (isDangerousSite ? 'Threat detected' : 'Security Warning'),
-    message: activeThreatWarning?.message || domainRiskAssessment?.safeWarningMessage || (
-      isDangerousSite
-        ? (domainRiskAssessment?.matchedTarget
-            ? `This site appears to impersonate ${domainRiskAssessment.matchedTarget}. Autofill is blocked for your protection.`
-            : 'Security providers have flagged this site. Autofill is blocked for your protection.')
-        : (domainRiskAssessment?.reasons?.[0] || 'This domain has unusual characteristics. Verify before filling.')
-    ),
-    currentDomain: activeThreatWarning?.currentDomain || currentHostname,
-    expectedDomain: activeThreatWarning?.expectedDomain || domainRiskAssessment?.matchedTarget || lookalike?.target || null,
-    riskLevel: activeThreatWarning?.riskLevel || domainRiskAssessment?.riskLevel || (isDangerousSite ? 'critical' : 'medium'),
-    allowlistRequestStatus: activeThreatWarning?.allowlistRequestStatus || null,
-  } : null;
+  const activeThreat = threatBannerDismissed ? null : popupThreat(domainRiskAssessment, activeThreatWarning,
+    currentHostname, siteDisabled || tabShieldEnabled === false);
 
-  const autofillIndicator = autofillRiskIndicator(siteDisabled, activeThreatWarning?.severity, domainRiskAssessment?.decision);
+  const autofillIndicator = !siteDisabled && !tabRiskAssessment && !activeThreat?.pageBlocked ? {
+    label: tabShieldEnabled === false ? 'Shield off' : tabRiskAvailable ? 'Checking Shield' : 'Reload tab', tone: 'unknown',
+    detail: tabShieldEnabled === false ? 'Shield protection is turned off. Your autofill site preference is separate.' :
+      tabRiskAvailable ? 'Waiting for the current page assessment. This is not a safety verdict.' : 'Reload this tab to sync Shield status with the extension.',
+  } : autofillRiskIndicator(siteDisabled, activeThreat?.pageBlocked ? 'block' : undefined, domainRiskAssessment?.decision);
 
   const renderActiveThreatBanner = () => {
     if (!activeThreat || threatBannerDismissed) return null;
@@ -1648,7 +1564,7 @@ export const PopupApp: React.FC = () => {
                       : 'bg-amber-500 text-white'
                   }`}
                 >
-                  {isBlock ? (activeThreatWarning?.pageBlocked ? 'Blocked' : 'Threat detected') : 'Suspicious Domain'}
+                  {isBlock ? (activeThreat.pageBlocked ? 'Blocked' : 'Threat detected') : 'Security warning'}
                 </span>
                 {activeThreat.riskLevel && (
                   <span className="text-[10px] opacity-75 font-mono uppercase">
@@ -2746,7 +2662,7 @@ export const PopupApp: React.FC = () => {
                       )}
 
                       {/* Legacy simple lookalike (only shown when full risk assessment gives no result) */}
-                      {!activeThreat && lookalike && !domainRiskAssessment?.matchedTarget && !isDangerousSite && !isWarningSite && (
+                      {!activeThreat && !tabRiskAssessment && tabShieldEnabled !== false && lookalike && !domainRiskAssessment?.matchedTarget && !isDangerousSite && !isWarningSite && (
                         <div className="flex items-start gap-1.5 text-xs text-rose-950 dark:text-rose-100 bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-500/40 p-2 rounded-lg leading-snug">
                           <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                           <span>Possible lookalike for "{lookalike.target}". Verify domain before filling.</span>
@@ -3683,7 +3599,6 @@ export const PopupApp: React.FC = () => {
                   {currentHostname && /^https?:$/.test(currentProtocol) && !isLocalHost && (() => {
                     const isBlocked =
                       domainRiskAssessment?.decision === 'block' ||
-                      remoteDomainRisk?.decision === 'block' ||
                       siteReport?.verdict === 'danger' ||
                       siteReportState === 'already_blocked';
                     const flagged =

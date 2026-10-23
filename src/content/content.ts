@@ -20,8 +20,10 @@ import { isAutofillSuppressed, isExtensionUiElement, onAutofillSuppressed } from
 import { acceptsTabRiskUpdate, createRiskDocumentToken, currentRiskDocumentContext, sameRiskDocument, type PageRiskContext } from '../utils/tabRiskContext';
 import { reportDisplayedShieldAction } from './shieldActions';
 import { shieldActionReason } from '../utils/shieldActions';
+import type { DomainRiskAssessment } from '../utils/domainRisk';
 const pageRiskContext = currentRiskDocumentContext;
 let warningRiskContext: PageRiskContext | null = null;
+let assessmentRiskContext: PageRiskContext | null = null;
 
 // Node identities prevent a replacement form with the same URL from inheriting
 // a grant. No field values are read or transmitted by this scope.
@@ -107,18 +109,7 @@ import { scanEmailContent, checkInsecureForms, checkOpaqueOriginLogin, featureOn
 let activeCredentials: OverlayCredential[] = [];
 let lookalikeWarning: { target: string; reason: string; riskScore?: number; reasons?: string[] } | null = null;
 let shieldUserEnabled = true;
-let domainRisk: {
-  decision: string;
-  riskScore: number;
-  riskLevel?: string;
-  reasons: string[];
-  matchedTarget: string | null;
-  safeWarningMessage?: string;
-  // Server-set: a full-page block rather than a corner banner.
-  showInterstitial?: boolean;
-  // Provider signals (for the required Google Web Risk attribution).
-  threatIntelSignals?: Record<string, string>;
-} | null = null;
+let domainRisk: DomainRiskAssessment | null = null;
 
 // Tracks the last hostname+decision pair we already alerted on, so
 // loadCredentials() re-running (tab focus, visibility change, SPA route
@@ -326,6 +317,7 @@ function loadCredentials(): void {
 
       lookalikeWarning = shieldUserEnabled ? response.lookalike || null : null;
       domainRisk = shieldUserEnabled ? response.risk || null : null;
+      assessmentRiskContext = context;
       activeCredentials = response.credentials || [];
 
       maybeShowProactiveRiskWarning();
@@ -504,6 +496,7 @@ async function maybeRunAiScan(href: string): Promise<void> {
   const blocking = res.risk_score >= 75;
   const scanContext = pageRiskContext();
   showRiskWarning({
+    source: 'ai',
     onShown: () => reportDisplayedShieldAction('warning_shown', 'risk', scanContext),
     severity: blocking ? 'block' : 'warn',
     title: typeof res.title === 'string' && res.title ? res.title : 'Possible Scam Detected',
@@ -535,8 +528,9 @@ async function maybeRunAiScan(href: string): Promise<void> {
                     type: 'GET_CREDENTIALS',
                     payload: { url: window.location.href },
                   });
-                  if (checkRes?.risk?.decision === 'block') {
+                  if (checkRes?.risk?.decision === 'block' && sameRiskDocument(scanContext, pageRiskContext())) {
                     domainRisk = checkRes.risk;
+                    assessmentRiskContext = scanContext;
                     triggerFullPageBlock({
                       message: checkRes.risk.safeWarningMessage || 'This domain has been verified and blocked by XoraPass Shield.',
                       reasons: checkRes.risk.reasons,
@@ -685,6 +679,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   warningRiskContext = warningContext;
   const approvalContext = credentialApprovalContext();
   showRiskWarning({
+    source: 'domain',
     severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
     onShown: () => reportDisplayedShieldAction('warning_shown', shieldActionReason(domainRisk), warningContext),
     title: decision === 'block' ? blockTitle : 'Suspicious Site Detected',
@@ -725,8 +720,9 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
                     type: 'GET_CREDENTIALS',
                     payload: { url: window.location.href },
                   });
-                  if (checkRes?.risk?.decision === 'block') {
+                  if (checkRes?.risk?.decision === 'block' && sameRiskDocument(warningContext, pageRiskContext())) {
                     domainRisk = checkRes.risk;
+                    assessmentRiskContext = warningContext;
                     triggerFullPageBlock({
                       message: checkRes.risk.safeWarningMessage || 'This domain has been verified and blocked by XoraPass Shield.',
                       reasons: checkRes.risk.reasons,
@@ -800,29 +796,20 @@ browser.runtime.onMessage.addListener((message: any) => {
     if (shieldUserEnabled && acceptsTabRiskUpdate(window === window.top, pageRiskContext(), message)) {
       pushedRiskVersion++;
       domainRisk = message.payload?.risk || message.risk;
+      assessmentRiskContext = pageRiskContext();
       lastWarnedRiskKey = null;
       void maybeShowProactiveRiskWarning().then(notifyTabRiskChanged);
     }
   } else if (message.type === 'POPUP_STATE_CHANGED') {
     setPopupSuppressed(Boolean(message.payload?.open ?? message.payload?.isOpen));
+  } else if (message.type === 'GET_TAB_RISK_STATE') {
+    if (window !== window.top || !sameRiskDocument(message.pageContext, pageRiskContext())) return undefined;
+    return Promise.resolve({ pageContext: pageRiskContext(), enabled: shieldUserEnabled,
+      assessment: shieldUserEnabled && sameRiskDocument(assessmentRiskContext, pageRiskContext()) ? domainRisk : null,
+      warning: shieldUserEnabled ? currentTabWarning() : null });
   } else if (message.type === 'GET_ACTIVE_TAB_WARNING') {
     if (window !== window.top || !sameRiskDocument(message.pageContext, pageRiskContext())) return undefined;
-    const navigation = (window as any).__xoraShieldNav;
-    if (navigation?.shown === true && navigation?.action === 'block' && navigation?.host === window.location.hostname) {
-      return Promise.resolve({severity:'block',title:'Site blocked',pageBlocked:true,message:'Shield is showing a full-screen block on this page.',currentDomain:window.location.hostname});
-    }
-    if (!sameRiskDocument(warningRiskContext, pageRiskContext())) return Promise.resolve(null);
-    const warning = getActiveRiskWarning();
-    // Full-page blocks do not create a corner warning, but the popup still
-    // needs their effective decision rather than displaying "Autofill on".
-    const nav = (window as any).__xoraShieldNav;
-    const pageBlocked = isInterstitialOpen() || (nav?.shown === true && nav?.action === 'block' && nav?.host === window.location.hostname);
-    return Promise.resolve(domainRisk?.decision === 'block' ? {
-      severity: 'block', title: pageBlocked ? 'Site blocked' : 'Threat detected', pageBlocked,
-      message: domainRisk.safeWarningMessage || getRiskWarningMessage() || 'Shield blocks autofill on this page.',
-      currentDomain: window.location.hostname, expectedDomain: domainRisk.matchedTarget,
-      riskLevel: domainRisk.riskLevel,
-    } : warning);
+    return Promise.resolve(currentTabWarning());
   } else if (message.type === 'GET_PAGE_SIGNALS') {
     if (window !== window.top) return undefined;
     return Promise.resolve({ pageSignals: worthAssessingSignals() || collectPageSignals(), pageContext: pageRiskContext() });
@@ -831,6 +818,17 @@ browser.runtime.onMessage.addListener((message: any) => {
   }
   return undefined;
 });
+
+function currentTabWarning() {
+  const nav = (window as any).__xoraShieldNav;
+  const pageBlocked = isInterstitialOpen() || (nav?.shown === true && nav?.action === 'block' && nav?.host === window.location.hostname);
+  if (pageBlocked) return {source:'domain' as const,severity:'block',title:'Site blocked',pageBlocked:true,
+    message:'Shield is showing a full-screen block on this page.',currentDomain:window.location.hostname};
+  const warning = getActiveRiskWarning();
+  if (warning?.source === 'domain' && (!sameRiskDocument(warningRiskContext, pageRiskContext()) ||
+    !sameRiskDocument(assessmentRiskContext, pageRiskContext()) || domainRisk?.decision === 'allow')) return null;
+  return warning;
+}
 
 async function handleShortcutAutofill(): Promise<void> {
   if (isAutofillSuppressed()) return;
@@ -2921,7 +2919,7 @@ function applyContentShieldPreference(enabled: boolean): void {
   const before = shieldUserEnabled;
   shieldUserEnabled = enabled;
   if (!shieldUserEnabled) {
-    domainRisk = null; lookalikeWarning = null; warningRiskContext = null; lastWarnedRiskKey = null;
+    domainRisk = null; lookalikeWarning = null; warningRiskContext = null; assessmentRiskContext = null; lastWarnedRiskKey = null;
     closeRiskWarning(); closePhishingInterstitial(); closeCheckoutProtectionBanner(); closeWebmailPhishingBanner();
     notifyTabRiskChanged();
   }

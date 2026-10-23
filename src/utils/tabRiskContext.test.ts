@@ -3,7 +3,7 @@ import { acceptsTabRiskUpdate, autofillRiskIndicator, createRiskDocumentToken, i
 
 const page = {url:'https://shop.example.org/login?step=1',documentToken:'document-a'};
 const context = {...page,tabId:7};
-const risk = {pageHostname:'shop.example.org',decision:'warn',safeWarningMessage:'Shop caution'};
+const risk = {pageHostname:'shop.example.org',decision:'warn',riskScore:45,riskLevel:'medium',safeWarningMessage:'Shop caution'};
 function fixture() {
   let current: PageRiskContext = {...page};
   let url = page.url;
@@ -62,6 +62,10 @@ describe('main-page risk warning routing',()=>{
   });
   it('accepts a safe verdict to clear a previous warning for this document',()=>{
     expect(acceptsTabRiskUpdate(true,page,{pageContext:page,risk:{...risk,decision:'allow'}})).toBe(true);
+  });
+  it('rejects raw scanner/API responses instead of promoting them to page verdicts',()=>{
+    expect(acceptsTabRiskUpdate(true,page,{pageContext:page,risk:{decision:'warn',risk_score:15,risk_level:'safe',reason_codes:['BRAND_IN_URL_PATH']}})).toBe(false);
+    expect(acceptsTabRiskUpdate(true,page,{pageContext:page,risk:{...risk,riskScore:NaN}})).toBe(false);
   });
   it('does not return a context when the content script is unavailable',async()=>{
     const f=fixture();f.tabs.sendMessage.mockRejectedValueOnce(new Error('No receiver'));

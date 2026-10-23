@@ -2,7 +2,7 @@ import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION } from '../utils/t
 import { reportShieldAction, shieldActionReason } from '../utils/shieldActions';
 import { displayedShieldAction } from '../utils/shieldActionContext';
 import { RiskApprovals, readApprovalContext, sameApprovalContext } from '../utils/riskApproval';
-import { readTabRiskContext, publishTabRisk, type TabRiskContext } from '../utils/tabRiskContext';
+import { readTabRiskContext, publishTabRisk } from '../utils/tabRiskContext';
 import browser from 'webextension-polyfill';
 import { normalizeEmailScanResult, emailScanHttpFailure } from '../utils/emailScanResult';
 import { isDomainMatch, extractHostname, findLookalikeTarget, registrableDomain } from '../utils/siteTrust';
@@ -2035,9 +2035,6 @@ browser.runtime.onMessage.addListener((message, sender) => {
       // Page shape, straight from the tab's own content script. The popup
       // can't collect it, and without it the backend's page classifier (and
       // the report's script/form indicators) have nothing to work with.
-      const [scanTab] = await browser.tabs.query({active:true,currentWindow:true});
-      const pageContext: TabRiskContext | null = scanTab?.id !== undefined && scanTab.url === targetUrl
-        ? await readTabRiskContext(browser.tabs, scanTab.id, targetUrl) : null;
       let pageSignals: PageSignals | undefined = msg.payload?.pageSignals;
       if (!pageSignals) {
         try {
@@ -2093,8 +2090,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
         extraBrands: brands,
       });
 
-      await publishTabRisk(browser.tabs, pageContext, risk);
-
+      // Scanner reports are not final autofill/page-protection verdicts.
+      // Raw API fields bypass local trust/form merging and must never be
+      // pushed into content state just because the Shield tab was opened.
       return { report };
     })();
   }
@@ -2561,6 +2559,7 @@ async function handleWebBridgeMessage(type: string, payload: any, sender?: brows
       for (const tab of tabs) {
         if (tab.id !== undefined && tab.url && extractHostname(tab.url) === hostname) {
           void readTabRiskContext(browser.tabs, tab.id, tab.url).then(context => publishTabRisk(browser.tabs, context, {
+            ...disabledDomainRiskAssessment(hostname),
             pageHostname: hostname, decision:'block', showInterstitial:true,
             riskScore:100, riskLevel:'critical', reasons:['Domain blocked by platform administrator policy.'], matchedTarget:null,
           }));

@@ -3,6 +3,7 @@
 export interface PageRiskContext { url: string; documentToken: string }
 export interface TabRiskContext extends PageRiskContext { tabId: number }
 export interface TabRiskWarning {
+  source?: 'domain' | 'ai' | 'behavior';
   pageBlocked?: boolean;
   severity: string; title: string; message: string; currentDomain: string;
   expectedDomain?: string | null; riskLevel?: string; allowlistRequestStatus?: string | null;
@@ -61,10 +62,13 @@ export async function isCurrentRiskContext(tabs: RiskTabs, context: TabRiskConte
 
 export function acceptsTabRiskUpdate(isTopFrame: boolean, context: PageRiskContext, message: unknown): boolean {
   if (!isTopFrame || !message || typeof message !== 'object') return false;
-  const update = message as { pageContext?: PageRiskContext; risk?: { pageHostname?: string }; payload?: { risk?: { pageHostname?: string } } };
+  const update = message as { pageContext?: PageRiskContext; risk?: { pageHostname?: string; riskScore?: number; riskLevel?: string; decision?: string }; payload?: { risk?: { pageHostname?: string; riskScore?: number; riskLevel?: string; decision?: string } } };
   if (!sameRiskDocument(context, update.pageContext)) return false;
   const risk = update.payload?.risk || update.risk;
-  return !!risk && typeof risk === 'object' && (!risk.pageHostname || risk.pageHostname === new URL(context.url).hostname);
+  return !!risk && typeof risk === 'object' && risk.pageHostname === new URL(context.url).hostname &&
+    ['allow','warn','require_approval','block'].includes(risk.decision || '') &&
+    typeof risk.riskScore === 'number' && Number.isFinite(risk.riskScore) && risk.riskScore >= 0 && risk.riskScore <= 100 &&
+    ['safe','low','medium','high','critical'].includes(risk.riskLevel || '');
 }
 
 export async function publishTabRisk(tabs: RiskTabs, context: TabRiskContext | null, risk: unknown): Promise<boolean> {

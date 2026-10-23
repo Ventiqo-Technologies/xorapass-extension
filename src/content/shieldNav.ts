@@ -179,6 +179,7 @@ const MAX_GUARD_MS = 1500;
       if (!shieldActive || state.shown) return;
       tellBackground('wallet_check', { level: d.level });
       showRiskWarning({
+        source: 'behavior',
         onShown: warningReceipt(),
         severity: 'warn', title: 'Risky wallet request detected',
         message: `${String(d.summary || 'This page requested a risky wallet permission.').slice(0, 300)} XoraPass provides an advisory warning only. Review and reject unwanted requests in your wallet; page-level detection can be bypassed.`,
@@ -192,6 +193,7 @@ const MAX_GUARD_MS = 1500;
     if (kind === 'clickfix' && !warnedClickFix) {
       warnedClickFix = true;
       showRiskWarning({
+        source: 'behavior',
         onShown: warningReceipt(),
         severity: 'block',
         title: "Blocked a Dangerous 'Paste This Command' Trick",
@@ -207,6 +209,7 @@ const MAX_GUARD_MS = 1500;
       if (isNotificationBait(!!d.activated, text, detectScamCues(text))) {
         warnedNotification = true;
         showRiskWarning({
+          source: 'behavior',
           onShown: warningReceipt(),
           severity: 'warn',
           title: 'Notification Spam Trick',
@@ -233,6 +236,7 @@ const MAX_GUARD_MS = 1500;
         }
         tellBackground('tech_support_scam', { score });
         showRiskWarning({
+          source: 'behavior',
           onShown: warningReceipt(),
           severity: 'block',
           title: 'Fake Tech-Support Scam',

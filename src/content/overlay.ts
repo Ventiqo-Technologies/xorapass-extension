@@ -13,6 +13,7 @@
 // cannot reach our nodes (closed mode leaves element.shadowRoot === null).
 
 import browser from 'webextension-polyfill';
+import { currentRiskDocumentContext, sameRiskDocument, type PageRiskContext, type TabRiskWarning } from '../utils/tabRiskContext';
 import { isAutofillSuppressed, isExtensionUiElement, onAutofillSuppressed, suppressAutofill } from '../utils/autofillSurface';
 import {
   computeIconPosition,
@@ -2294,6 +2295,12 @@ let riskAlertEl: HTMLElement | null = null;
 // The options last passed to showRiskWarning — kept so the popup can pull
 // the threat metadata without re-deriving it.
 let activeRiskWarningOpts: RiskWarningOptions | null = null;
+// Both isolated-world bundles can display warnings. Share metadata only; the
+// owning bundle still owns its DOM and callbacks. Closing another bundle's
+// domain warning must not erase an independent behaviour warning.
+const sharedRiskWarningKey = Symbol.for('xorapass.activeRiskWarning');
+const riskWarningOwner = Symbol('riskWarningOwner');
+type WarningWindow = Window & { [sharedRiskWarningKey]?: { owner: symbol; context: PageRiskContext; warning: TabRiskWarning } };
 // True while the extension popup is open; prevents the alert from being shown
 // (it renders inside the popup instead to avoid overlap).
 let popupSuppressed = false;
@@ -2326,6 +2333,7 @@ function advisoryFooter(a: WarningAdvisory, dark: boolean): HTMLElement {
 }
 
 export interface RiskWarningOptions {
+  source?: 'domain' | 'ai' | 'behavior';
   /** Called after the surface is attached and has a visible layout. */
   onShown?: () => void;
   /** Attribution for a third-party verdict — required for Google Web Risk. */
@@ -2368,6 +2376,11 @@ export interface RiskWarningOptions {
  */
 export function showRiskWarning(opts: RiskWarningOptions): void {
   activeRiskWarningOpts = opts;
+  (window as WarningWindow)[sharedRiskWarningKey] = { owner: riskWarningOwner, context: currentRiskDocumentContext(), warning: {
+    source: opts.source, severity: opts.severity, title: opts.title, message: opts.message,
+    currentDomain: opts.currentDomain, expectedDomain: opts.expectedDomain,
+    riskLevel: opts.riskLevel, allowlistRequestStatus: opts.allowlistRequestStatus,
+  } };
   // If the popup is open, skip rendering the in-page alert — the popup shows
   // the warning inline instead, so we don't need (or want) the corner card.
   if (popupSuppressed) return;
@@ -2843,6 +2856,7 @@ export function closeRiskWarning(): void {
     riskAlertEl = null;
   }
   activeRiskWarningOpts = null;
+  if ((window as WarningWindow)[sharedRiskWarningKey]?.owner === riskWarningOwner) delete (window as WarningWindow)[sharedRiskWarningKey];
 }
 
 /**
@@ -2850,22 +2864,10 @@ export function closeRiskWarning(): void {
  * script can relay it to the extension popup. Returns null if no warning is
  * active on this page.
  */
-export function getActiveRiskWarning(): {
-  severity: string; title: string; message: string;
-  currentDomain: string; expectedDomain?: string | null;
-  riskLevel?: string; allowlistRequestStatus?: string | null;
-} | null {
-  if (!activeRiskWarningOpts) return null;
-  const o = activeRiskWarningOpts;
-  return {
-    severity: o.severity,
-    title: o.title,
-    message: o.message,
-    currentDomain: o.currentDomain,
-    expectedDomain: o.expectedDomain,
-    riskLevel: o.riskLevel,
-    allowlistRequestStatus: o.allowlistRequestStatus,
-  };
+export function getActiveRiskWarning(): TabRiskWarning | null {
+  const shared = (window as WarningWindow)[sharedRiskWarningKey];
+  if (!shared || !sameRiskDocument(shared.context, currentRiskDocumentContext())) return null;
+  return { ...shared.warning };
 }
 
 /**
