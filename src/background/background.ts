@@ -1,4 +1,6 @@
 import { automaticTextScansAllowed, TEXT_SCAN_CONSENT_VERSION } from '../utils/textScanPrivacy';
+import { reportShieldAction, shieldActionReason } from '../utils/shieldActions';
+import { displayedShieldAction } from '../utils/shieldActionContext';
 import { RiskApprovals, readApprovalContext, sameApprovalContext } from '../utils/riskApproval';
 import { readTabRiskContext, publishTabRisk, type TabRiskContext } from '../utils/tabRiskContext';
 import browser from 'webextension-polyfill';
@@ -1272,6 +1274,15 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const type = guard.type;
   const msg = message as { type: string; payload?: any };
 
+  if (type === 'SHIELD_ACTION_PERFORMED') {
+    return (async () => {
+      const credential = await getShieldCredential();
+      const event = await displayedShieldAction(browser.tabs, sender, msg.payload);
+      if (!event) return { success: false };
+      return { success: await reportShieldAction(event.url, event.action, event.reason, async () => credential) };
+    })();
+  }
+
   if (typeof type === 'string' && type.startsWith('WEB_BRIDGE_')) {
     return handleWebBridgeMessage(type, msg.payload, sender);
   }
@@ -1678,6 +1689,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       if (!vaultSession.isCurrent(generation)) return { error: 'locked' };
 
       if (await isFillWithheld(risk, sender)) {
+        if (risk.decision === 'block') void reportShieldAction(senderUrl, 'autofill_blocked', shieldActionReason(risk), getShieldCredential);
         console.warn('[XoraPass] Refused secret for risk domain:', hostname, risk.decision, risk.reasons);
         return { error: risk.decision === 'block' ? 'risk_blocked' : 'risk_approval_required', risk };
       }

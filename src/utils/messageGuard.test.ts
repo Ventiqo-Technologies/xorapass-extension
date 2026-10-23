@@ -28,6 +28,13 @@ const contentSender = (): any => ({ id: OWN_ID, url: 'https://example.com/login'
 const externalWebSender = (): any => ({ url: 'https://app.xorapass.com/', origin: 'https://app.xorapass.com' });
 
 describe('validateMessage — origin', () => {
+  it('accepts display receipts only from our top-level content script, never a webpage, popup or child frame', () => {
+    const message={type:'SHIELD_ACTION_PERFORMED',payload:{action:'page_blocked',reason:'phishing',pageContext:{url:'https://example.com/login',documentToken:'synthetic'}}};
+    expect(validateMessage(message,{...contentSender(),frameId:0}).ok).toBe(true);
+    expect(validateMessage(message,{...contentSender(),frameId:1}).ok).toBe(false);
+    expect(validateMessage(message,popupSender()).ok).toBe(false);
+    expect(validateMessage(message,externalWebSender()).ok).toBe(false);
+  });
   it('rejects messages from other extensions', () => {
     const res = validateMessage({ type: 'GET_STATUS' }, { id: 'other', url: `chrome-extension://other/x` } as any);
     expect(res.ok).toBe(false);

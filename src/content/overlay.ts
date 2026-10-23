@@ -1489,7 +1489,10 @@ export function initOverlayTheme(): void {
 }
 
 function ensureHost(): HTMLDivElement {
-  if (layer && shadow) return layer;
+  if (layer && shadow && hostEl) {
+    if (!hostEl.isConnected) document.documentElement.appendChild(hostEl);
+    return layer;
+  }
 
   initOverlayTheme();
 
@@ -1497,7 +1500,7 @@ function ensureHost(): HTMLDivElement {
   host.id = HOST_ID;
   host.setAttribute('data-xorapass-ui', '');
   // Keep the host itself inert and unstyleable from the page.
-  host.setAttribute('style', 'all: initial; position: static;');
+  host.setAttribute('style', 'all: initial !important; display: block !important; position: static !important; visibility: visible !important; opacity: 1 !important;');
 
   // Closed mode: page scripts get null from host.shadowRoot and cannot read
   // the credential labels we render or synthesise clicks on our buttons.
@@ -2323,6 +2326,8 @@ function advisoryFooter(a: WarningAdvisory, dark: boolean): HTMLElement {
 }
 
 export interface RiskWarningOptions {
+  /** Called after the surface is attached and has a visible layout. */
+  onShown?: () => void;
   /** Attribution for a third-party verdict — required for Google Web Risk. */
   advisory?: WarningAdvisory | null;
   /** 'block' gets the strongest visual treatment; anything else reads as a caution. */
@@ -2562,9 +2567,20 @@ export function showRiskWarning(opts: RiskWarningOptions): void {
 
   root.appendChild(card);
   riskAlertEl = card;
+  notifySurfaceShown(card, opts.onShown);
+}
+
+function notifySurfaceShown(surface: HTMLElement, callback?: () => void): void {
+  if (!callback) return;
+  requestAnimationFrame(() => {
+    const rect = surface.getBoundingClientRect();
+    const style = getComputedStyle(surface);
+    if (surface.isConnected && rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none') callback();
+  });
 }
 
 export interface InterstitialOptions {
+  onShown?: () => void;
   /** Attribution for a third-party verdict — required for Google Web Risk. */
   advisory?: WarningAdvisory | null;
   currentDomain: string;
@@ -2597,9 +2613,9 @@ const PROCEED_DELAY_SECONDS = 5;
  * buttons - and a MutationObserver re-attaches the host if the page tries to
  * delete it, which a phishing page has every reason to attempt.
  */
-export function showPhishingInterstitial(opts: InterstitialOptions): void {
+export function showPhishingInterstitial(opts: InterstitialOptions): boolean {
   // Another bundle or the parent frame already owns the blocking surface.
-  if (!interstitialEl && isAutofillSuppressed()) return;
+  if (!interstitialEl && isAutofillSuppressed()) return false;
   closePhishingInterstitial();
   releaseInterstitialSuppression = suppressAutofill();
   const root = ensureHost();
@@ -2627,7 +2643,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
 
   const badge = document.createElement('div');
   badge.className = 'xp-int-badge';
-  badge.innerHTML = `${SHIELD_SVG}<span>Phishing Blocked</span>`;
+  badge.innerHTML = `${SHIELD_SVG}<span>Blocked</span>`;
   brandHeader.appendChild(badge);
 
   card.appendChild(brandHeader);
@@ -2636,7 +2652,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
   title.className = 'xp-int-title';
   title.textContent = opts.expectedDomain
     ? `XoraPass Shield blocked this site: Impersonating ${opts.expectedDomain}`
-    : 'XoraPass Shield blocked this site: Potential Phishing Detected';
+    : 'XoraPass Shield blocked this page';
   card.appendChild(title);
 
   const body = document.createElement('p');
@@ -2781,19 +2797,20 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
 
   const foot = document.createElement('div');
   foot.className = 'xp-int-foot';
-  foot.innerHTML = `${SHIELD_SVG}<span><strong>Credential Guard Active:</strong> Your vault stayed locked and no credentials, passwords, or personal data were released.</span>`;
+  foot.innerHTML = `${SHIELD_SVG}<span><strong>Shield protection active:</strong> This page has been interrupted. Do not enter passwords or payment details here.</span>`;
   card.appendChild(foot);
 
   shell.appendChild(card);
   root.appendChild(shell);
   interstitialEl = shell;
+  notifySurfaceShown(shell, opts.onShown);
 
   // A phishing page has every reason to delete our host node. Put it back.
   try {
-    const hostNode = document.getElementById(HOST_ID);
+    const hostNode = hostEl;
     if (hostNode?.parentNode) {
       interstitialGuard = new MutationObserver(() => {
-        if (interstitialEl && !document.getElementById(HOST_ID)) {
+        if (interstitialEl && !hostNode.isConnected) {
           document.documentElement.appendChild(hostNode);
         }
       });
@@ -2802,6 +2819,7 @@ export function showPhishingInterstitial(opts: InterstitialOptions): void {
   } catch {
     /* observation unavailable - the interstitial still renders */
   }
+  return shell.isConnected;
 }
 
 export function closePhishingInterstitial(): void {
@@ -2816,7 +2834,7 @@ export function closePhishingInterstitial(): void {
 }
 
 export function isInterstitialOpen(): boolean {
-  return interstitialEl !== null;
+  return interstitialEl?.isConnected === true;
 }
 
 export function closeRiskWarning(): void {

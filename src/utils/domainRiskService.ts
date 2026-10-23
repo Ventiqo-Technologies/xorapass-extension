@@ -7,6 +7,7 @@
 // Includes in-memory & session caching with TTL to minimize API latency and overhead.
 
 import { API_BASE_URL } from './config';
+import { visibleShieldHistory } from './domainRiskHistory';
 import type { Decision, RiskLevel, DomainRiskAssessment } from './domainRisk';
 import { extractHostname } from './siteTrust';
 import type { PageSignals } from './pageSignals';
@@ -579,7 +580,10 @@ export interface DomainRiskHistoryEvent {
   id: number;
   event_type: string; // "domain_risk_block" | "domain_risk_warn" | "domain_risk_require_approval"
   timestamp: string;
-  secret_exposed: boolean;
+  // Old false values are defaults, not proof of a credential outcome.
+  secret_exposed?: boolean | null;
+  record_type?: 'assessment' | 'extension_action';
+  credential_outcome?: 'not_observed';
   detail?: string;
   domain?: string;
   reason_codes?: string; // JSON-encoded string[]
@@ -588,7 +592,7 @@ export interface DomainRiskHistoryEvent {
 /**
  * Calls GET /api/domain-risk/my-history — the same personal history the web
  * app's Domain Risk panel shows, so the extension popup can surface a small
- * "recently blocked/warned" summary without duplicating any backend logic.
+ * recent-assessment summary. These are not client action receipts.
  * Requires auth; resolves an empty array without a request if no JWT is
  * available, and on any network/parse failure (fails empty, not throwing,
  * since this is a nice-to-have summary, not something autofill depends on).
@@ -606,7 +610,7 @@ export async function getDomainRiskHistory(
     });
     if (!res.ok) return [];
     const data = (await res.json()) as { events?: DomainRiskHistoryEvent[] };
-    return Array.isArray(data.events) ? data.events : [];
+    return visibleShieldHistory(data.events || []);
   } catch {
     return [];
   }

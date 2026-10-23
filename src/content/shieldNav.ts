@@ -16,6 +16,8 @@
 // Built as its own self-contained IIFE (vite --mode shieldnav).
 
 import browser from 'webextension-polyfill';
+import { currentRiskDocumentContext, sameRiskDocument } from '../utils/tabRiskContext';
+import { reportDisplayedShieldAction } from './shieldActions';
 import { showPhishingInterstitial, closePhishingInterstitial, closeRiskWarning, showRiskWarning } from './overlay';
 import { detectScamCues } from '../utils/pageContent';
 import { webRiskAdvisoryFromThreatType } from '../utils/webRiskAttribution';
@@ -56,6 +58,11 @@ const MAX_GUARD_MS = 1500;
   };
   (window as unknown as { __xoraShieldNav?: typeof state }).__xoraShieldNav = state;
 
+  browser.runtime.onMessage.addListener((message: any) => {
+    if (message?.type === 'GET_TAB_RISK_CONTEXT') return Promise.resolve(currentRiskDocumentContext());
+    return undefined;
+  });
+
   let guarding = true;
   const EVENTS = ['keydown', 'keypress', 'beforeinput', 'paste', 'drop'] as const;
   const hold = (e: Event) => {
@@ -77,12 +84,18 @@ const MAX_GUARD_MS = 1500;
   const failOpen = setTimeout(release, MAX_GUARD_MS);
 
   const show = (v: NavVerdict) => {
-    state.shown = true;
+    const context = currentRiskDocumentContext();
     const expected = v.matchedTarget || null;
     const message =
       (v.reasons && v.reasons[0]) ||
       'XoraPass Shield flagged this site as dangerous. Entering passwords or payment details here is not safe.';
     showPhishingInterstitial({
+      onShown: () => {
+        if (!sameRiskDocument(context, currentRiskDocumentContext())) return;
+        state.shown = true;
+        reportDisplayedShieldAction('page_blocked', v.threatType === 'MALWARE' ? 'malware' : v.threatType === 'SOCIAL_ENGINEERING' ? 'phishing' : v.layer === 'policy' ? 'policy' : 'risk', context);
+        browser.runtime.sendMessage({ type: 'TAB_RISK_CHANGED' }).catch(() => undefined);
+      },
       advisory: webRiskAdvisoryFromThreatType(v.threatType),
       currentDomain: location.hostname,
       expectedDomain: expected,
@@ -155,12 +168,18 @@ const MAX_GUARD_MS = 1500;
     browser.runtime.sendMessage({ type: 'SHIELD_BEHAVIOR', payload: { kind, ...detail } }).catch(() => undefined);
   };
 
+  const warningReceipt = () => {
+    const context = currentRiskDocumentContext();
+    return () => reportDisplayedShieldAction('warning_shown', 'risk', context);
+  };
+
   const handle = (d: any) => {
     const kind = String(d.kind || '');
     if (kind === 'wallet_check') {
       if (!shieldActive || state.shown) return;
       tellBackground('wallet_check', { level: d.level });
       showRiskWarning({
+        onShown: warningReceipt(),
         severity: 'warn', title: 'Risky wallet request detected',
         message: `${String(d.summary || 'This page requested a risky wallet permission.').slice(0, 300)} XoraPass provides an advisory warning only. Review and reject unwanted requests in your wallet; page-level detection can be bypassed.`,
         currentDomain: location.hostname, riskLevel: 'high',
@@ -173,6 +192,7 @@ const MAX_GUARD_MS = 1500;
     if (kind === 'clickfix' && !warnedClickFix) {
       warnedClickFix = true;
       showRiskWarning({
+        onShown: warningReceipt(),
         severity: 'block',
         title: "Blocked a Dangerous 'Paste This Command' Trick",
         message:
@@ -187,6 +207,7 @@ const MAX_GUARD_MS = 1500;
       if (isNotificationBait(!!d.activated, text, detectScamCues(text))) {
         warnedNotification = true;
         showRiskWarning({
+          onShown: warningReceipt(),
           severity: 'warn',
           title: 'Notification Spam Trick',
           message:
@@ -212,6 +233,7 @@ const MAX_GUARD_MS = 1500;
         }
         tellBackground('tech_support_scam', { score });
         showRiskWarning({
+          onShown: warningReceipt(),
           severity: 'block',
           title: 'Fake Tech-Support Scam',
           message:
@@ -239,8 +261,9 @@ const MAX_GUARD_MS = 1500;
   const publishHooks = () => window.postMessage({ __xoraShieldState: 'v1', enabled: shieldActive === true }, '*');
   const refreshNavigation = () => {
     const version = ++stateVersion;
+    const context = currentRiskDocumentContext();
     browser.runtime.sendMessage({ type: 'SHIELD_NAV_CHECK' }).then((v: NavVerdict | undefined) => {
-      if (version !== stateVersion) return;
+      if (version !== stateVersion || !sameRiskDocument(context, currentRiskDocumentContext())) { release(); return; }
       clearTimeout(failOpen);
       setActive(!!v && v.layer !== 'disabled' && v.hooks === true); publishHooks();
       state.action = v?.action || 'allow';
