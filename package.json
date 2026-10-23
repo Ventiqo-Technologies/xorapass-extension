@@ -13,6 +13,9 @@
     "test": "vitest run",
     "test:outlook-headers": "node scripts/test-outlook-headers.mjs",
     "test:email-panel": "node scripts/test-email-panel-results.mjs",
+    "test:webmail-mutations": "node scripts/test-webmail-mutations.mjs",
+    "test:regression": "node scripts/run-regression-suite.mjs",
+    "regression": "node scripts/run-regression-suite.mjs",
     "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
@@ -33,6 +36,7 @@
     "@types/react-dom": "^19.0.0",
     "@types/webextension-polyfill": "^0.10.7",
     "@vitejs/plugin-react": "^4.7.0",
+    "playwright": "^1.64.1",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.6.3",
     "vite": "^6.4.4",
