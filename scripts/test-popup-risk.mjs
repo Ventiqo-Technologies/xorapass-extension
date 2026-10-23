@@ -4,15 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { pathToFileURL } from 'node:url';
+import { chromium } from 'playwright';
 import { build } from 'esbuild';
-let playwright;
-try { playwright = await import('playwright'); } catch {
-  const cache = path.join(os.homedir(), '.npm', '_npx');
-  const file = fs.readdirSync(cache).map(dir => path.join(cache, dir, 'node_modules/playwright/index.mjs')).find(file => fs.existsSync(file));
-  if (!file) throw Error('Install the regression Playwright dependency');
-  playwright = await import(pathToFileURL(file).href);
-}
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'xorapass-popup-risk-'));
 const result = await build({
   stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import {PopupApp} from './src/popup/PopupApp';import {assessWithCatalog} from './src/utils/domainRisk';
@@ -38,7 +31,7 @@ const css = fs.readdirSync('dist/assets').filter(file=>file.endsWith('.css')).ma
 const html = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><div id="root"></div>`;
 const server = http.createServer((req,res)=>{res.setHeader('Content-Type',req.url==='/fixture.js'?'text/javascript':'text/html');res.end(req.url==='/fixture.js'?result.outputFiles[0].text:html);});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-const browser = await playwright.chromium.launch({headless:true});
+const browser = await chromium.launch({headless:true});
 try {
   for(const theme of ['light','dark']) for(const width of [380,440]) {
     const page=await browser.newPage({viewport:{width,height:650},reducedMotion:'reduce'});

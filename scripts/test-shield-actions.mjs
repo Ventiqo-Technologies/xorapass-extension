@@ -3,12 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { chromium } from 'playwright';
 import { build } from 'esbuild';
 
-const cache = path.join(os.homedir(), '.npm', '_npx');
-const modulePath = process.env.PLAYWRIGHT_MODULE || fs.readdirSync(cache).map(dir => path.join(cache, dir, 'node_modules/playwright/index.mjs')).find(file => fs.existsSync(file));
-const { chromium } = await import(pathToFileURL(modulePath).href);
 const plugins = [{ name: 'synthetic-browser', setup(builder) {
   builder.onResolve({ filter: /^webextension-polyfill$/ }, () => ({ path: 'browser', namespace: 'fixture' }));
   builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export default window.fixtureBrowser;' }));
