@@ -13,6 +13,16 @@ const steps = [
     args: ['vitest', 'run'],
   },
   {
+    name: 'Tier 2B: Chromium Shield Popup Verdict & Navigation Actions',
+    cmd: 'node',
+    args: ['scripts/test-popup-risk.mjs'],
+  },
+  {
+    name: 'Tier 2C: Chromium Shield Rendered Action Receipts',
+    cmd: 'node',
+    args: ['scripts/test-shield-actions.mjs'],
+  },
+  {
     name: 'Tier 3A: Chromium Webmail Reading Pane & SPA Mutation Regressions',
     cmd: 'node',
     args: ['scripts/test-webmail-mutations.mjs'],

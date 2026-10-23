@@ -3,19 +3,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { chromium } from 'playwright';
 import { build } from 'esbuild';
 
-const cache = path.join(os.homedir(), '.npm', '_npx');
-const modulePath = process.env.PLAYWRIGHT_MODULE || fs.readdirSync(cache).map(dir => path.join(cache, dir, 'node_modules/playwright/index.mjs')).find(file => fs.existsSync(file));
-const { chromium } = await import(pathToFileURL(modulePath).href);
 const plugins = [{ name: 'synthetic-browser', setup(builder) {
   builder.onResolve({ filter: /^webextension-polyfill$/ }, () => ({ path: 'browser', namespace: 'fixture' }));
   builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export default window.fixtureBrowser;' }));
 } }];
 const bundle = async options => (await build({ ...options, bundle: true, write: false, format: 'iife', plugins })).outputFiles[0].text;
 const nav = await bundle({ entryPoints: ['src/content/shieldNav.ts'] });
-const overlay = await bundle({ stdin: { contents: `export {showPhishingInterstitial,closePhishingInterstitial,showRiskWarning} from './src/content/overlay';export {currentRiskDocumentContext} from './src/utils/tabRiskContext';`, resolveDir: process.cwd(), loader: 'ts' }, globalName: 'FixtureOverlay' });
+const overlay = await bundle({ stdin: { contents: `export {showPhishingInterstitial,closePhishingInterstitial,showRiskWarning,getActiveRiskWarning,closeRiskWarning} from './src/content/overlay';export {currentRiskDocumentContext} from './src/utils/tabRiskContext';`, resolveDir: process.cwd(), loader: 'ts' }, globalName: 'FixtureOverlay' });
 const browser = await chromium.launch({ headless: true });
 const screenshots = fs.mkdtempSync(path.join(os.tmpdir(), 'xorapass-shield-actions-'));
 async function pageFixture() {
@@ -86,6 +83,12 @@ try {
   await warning.waitForFunction(() => window.fixtureMessages.some(m => m.type === 'SHIELD_ACTION_PERFORMED'));
   assert.equal(await warning.evaluate(() => window.fixtureMessages.find(m => m.type === 'SHIELD_ACTION_PERFORMED').payload.action), 'warning_shown');
   assert.equal(await warning.evaluate(() => window.__xoraShieldNav.shown), false);
+  await warning.addScriptTag({ content: overlay });
+  assert.equal(await warning.evaluate(() => FixtureOverlay.getActiveRiskWarning()?.source), 'behavior', 'The idle bundle can read a navigation-bundle behavior warning');
+  await warning.evaluate(() => FixtureOverlay.closeRiskWarning());
+  assert.equal(await warning.evaluate(() => FixtureOverlay.getActiveRiskWarning()?.source), 'behavior', 'A different bundle cannot erase the owner warning');
+  await warning.evaluate(() => history.pushState({}, '', '/other'));
+  assert.equal(await warning.evaluate(() => FixtureOverlay.getActiveRiskWarning()), null, 'Old-route metadata is not a warning for the new route');
   await warning.close();
 
   const removed = await pageFixture();

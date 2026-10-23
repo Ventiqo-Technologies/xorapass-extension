@@ -121,6 +121,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // Popup requests the active warning (if any) that the in-page overlay is
   // displaying, so it can mirror it inline without a second risk scan.
   'GET_ACTIVE_TAB_WARNING',
+  'GET_TAB_RISK_STATE',
   'GET_TAB_RISK_CONTEXT',
   // Popup tells the content script the user dismissed the warning in the popup,
   // so the in-page overlay card can also be closed.
