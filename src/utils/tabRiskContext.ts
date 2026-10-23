@@ -3,12 +3,21 @@
 export interface PageRiskContext { url: string; documentToken: string }
 export interface TabRiskContext extends PageRiskContext { tabId: number }
 export interface TabRiskWarning {
+  pageBlocked?: boolean;
   severity: string; title: string; message: string; currentDomain: string;
   expectedDomain?: string | null; riskLevel?: string; allowlistRequestStatus?: string | null;
 }
 export interface RiskTabs {
   get(id: number): Promise<{ id?: number; url?: string }>;
   sendMessage(id: number, message: unknown, options: { frameId: number }): Promise<unknown>;
+}
+
+// document_start and document_idle bundles must identify the SAME document.
+const riskDocumentKey = Symbol.for('xorapass.riskDocumentToken');
+export function currentRiskDocumentContext(): PageRiskContext {
+  const owner = window as Window & { [riskDocumentKey]?: string };
+  const documentToken = owner[riskDocumentKey] ||= createRiskDocumentToken();
+  return { url: window.location.href, documentToken };
 }
 
 // getRandomValues also works on HTTP pages, where randomUUID is unavailable.

@@ -17,9 +17,10 @@ import { automaticTextScansAllowed } from '../utils/textScanPrivacy';
 // never sent anywhere to be scanned.
 import browser from 'webextension-polyfill';
 import { isAutofillSuppressed, isExtensionUiElement, onAutofillSuppressed } from '../utils/autofillSurface';
-import { acceptsTabRiskUpdate, createRiskDocumentToken, sameRiskDocument, type PageRiskContext } from '../utils/tabRiskContext';
-const riskDocumentToken = createRiskDocumentToken();
-const pageRiskContext = (): PageRiskContext => ({url:window.location.href,documentToken:riskDocumentToken});
+import { acceptsTabRiskUpdate, createRiskDocumentToken, currentRiskDocumentContext, sameRiskDocument, type PageRiskContext } from '../utils/tabRiskContext';
+import { reportDisplayedShieldAction } from './shieldActions';
+import { shieldActionReason } from '../utils/shieldActions';
+const pageRiskContext = currentRiskDocumentContext;
 let warningRiskContext: PageRiskContext | null = null;
 
 // Node identities prevent a replacement form with the same URL from inheriting
@@ -284,7 +285,12 @@ function isInsecureContext(): boolean {
 // ---------------------------------------------------------------------------
 
 // Request the credential list (labels/usernames only) for the current domain.
+let credentialLoadSequence = 0;
+let pushedRiskVersion = 0;
 function loadCredentials(): void {
+  const request = ++credentialLoadSequence;
+  const context = pageRiskContext();
+  const riskVersion = pushedRiskVersion;
   const hostname = window.location.hostname;
   let scamCues: string[] | undefined;
   try {
@@ -308,6 +314,7 @@ function loadCredentials(): void {
       },
     })
     .then((response: any) => {
+      if (request !== credentialLoadSequence || riskVersion !== pushedRiskVersion || !sameRiskDocument(context, pageRiskContext())) return;
       if (!response) return;
 
       // Respect the per-site disable list.
@@ -495,7 +502,9 @@ async function maybeRunAiScan(href: string): Promise<void> {
   if (isRiskWarningOpen() && domainRisk?.decision === 'block') return;
 
   const blocking = res.risk_score >= 75;
+  const scanContext = pageRiskContext();
   showRiskWarning({
+    onShown: () => reportDisplayedShieldAction('warning_shown', 'risk', scanContext),
     severity: blocking ? 'block' : 'warn',
     title: typeof res.title === 'string' && res.title ? res.title : 'Possible Scam Detected',
     message:
@@ -544,8 +553,8 @@ async function maybeRunAiScan(href: string): Promise<void> {
   });
 }
 
-function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): void {
-  if (!shieldUserEnabled) return;
+function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): boolean {
+  if (!shieldUserEnabled) return false;
   closeRiskWarning();
   const currentHostname = window.location.hostname;
   const expectedDomain = domainRisk?.matchedTarget || lookalikeWarning?.target || null;
@@ -556,7 +565,8 @@ function triggerFullPageBlock(opts?: { message?: string; reasons?: string[] }): 
   const reasons = opts?.reasons || domainRisk?.reasons || ['Domain confirmed blocked by security policy.'];
 
   const approvalContext = credentialApprovalContext();
-  showPhishingInterstitial({
+  return showPhishingInterstitial({
+    onShown: () => { reportDisplayedShieldAction('page_blocked', shieldActionReason(domainRisk), approvalContext); notifyTabRiskChanged(); },
     advisory: webRiskAdvisoryFromSignals(domainRisk?.threatIntelSignals),
     currentDomain: currentHostname,
     expectedDomain,
@@ -632,8 +642,7 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
   // interact with the page at all is the risk being managed.
   if ((domainRisk?.showInterstitial || (domainRisk as any)?.show_interstitial || domainRisk?.decision === 'block') && !navHandled) {
     warningRiskContext = warningContext;
-    lastWarnedRiskKey = key;
-    triggerFullPageBlock();
+    if (triggerFullPageBlock()) lastWarnedRiskKey = key;
     notifyTabRiskChanged();
     return;
   }
@@ -671,12 +680,13 @@ async function maybeShowProactiveRiskWarning(): Promise<void> {
 
   const isMalware = (domainRisk?.reasons || []).some((r) => /malware/i.test(r)) ||
     Object.values(domainRisk?.threatIntelSignals || {}).some((s) => s === 'malware_hit');
-  const blockTitle = isMalware ? 'Dangerous Malware Site Blocked' : 'Likely Phishing Site Blocked';
+  const blockTitle = isMalware ? 'Malware warning' : 'Security warning';
 
   warningRiskContext = warningContext;
   const approvalContext = credentialApprovalContext();
   showRiskWarning({
     severity: decision === 'block' ? 'block' : decision === 'require_approval' ? 'require_approval' : 'warn',
+    onShown: () => reportDisplayedShieldAction('warning_shown', shieldActionReason(domainRisk), warningContext),
     title: decision === 'block' ? blockTitle : 'Suspicious Site Detected',
     message,
     advisory: webRiskAdvisoryFromSignals(domainRisk?.threatIntelSignals),
@@ -788,6 +798,7 @@ browser.runtime.onMessage.addListener((message: any) => {
     return window === window.top ? Promise.resolve(pageRiskContext()) : undefined;
   } else if (message.type === 'TAB_RISK_UPDATE') {
     if (shieldUserEnabled && acceptsTabRiskUpdate(window === window.top, pageRiskContext(), message)) {
+      pushedRiskVersion++;
       domainRisk = message.payload?.risk || message.risk;
       lastWarnedRiskKey = null;
       void maybeShowProactiveRiskWarning().then(notifyTabRiskChanged);
@@ -796,12 +807,18 @@ browser.runtime.onMessage.addListener((message: any) => {
     setPopupSuppressed(Boolean(message.payload?.open ?? message.payload?.isOpen));
   } else if (message.type === 'GET_ACTIVE_TAB_WARNING') {
     if (window !== window.top || !sameRiskDocument(message.pageContext, pageRiskContext())) return undefined;
+    const navigation = (window as any).__xoraShieldNav;
+    if (navigation?.shown === true && navigation?.action === 'block' && navigation?.host === window.location.hostname) {
+      return Promise.resolve({severity:'block',title:'Site blocked',pageBlocked:true,message:'Shield is showing a full-screen block on this page.',currentDomain:window.location.hostname});
+    }
     if (!sameRiskDocument(warningRiskContext, pageRiskContext())) return Promise.resolve(null);
     const warning = getActiveRiskWarning();
     // Full-page blocks do not create a corner warning, but the popup still
     // needs their effective decision rather than displaying "Autofill on".
+    const nav = (window as any).__xoraShieldNav;
+    const pageBlocked = isInterstitialOpen() || (nav?.shown === true && nav?.action === 'block' && nav?.host === window.location.hostname);
     return Promise.resolve(domainRisk?.decision === 'block' ? {
-      severity: 'block', title: 'Dangerous Site Blocked',
+      severity: 'block', title: pageBlocked ? 'Site blocked' : 'Threat detected', pageBlocked,
       message: domainRisk.safeWarningMessage || getRiskWarningMessage() || 'Shield blocks autofill on this page.',
       currentDomain: window.location.hostname, expectedDomain: domainRisk.matchedTarget,
       riskLevel: domainRisk.riskLevel,

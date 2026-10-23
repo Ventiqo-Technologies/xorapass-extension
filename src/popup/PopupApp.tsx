@@ -168,9 +168,9 @@ function getStoreReviewUrl(): string {
 
 // Historical server assessments, not evidence that the browser took an action.
 const DOMAIN_RISK_DECISION_STYLES: Record<string, string> = {
-  domain_risk_block: 'bg-rose-50 text-rose-700 border-rose-200',
-  domain_risk_require_approval: 'bg-amber-100 text-amber-800 border-amber-300',
-  domain_risk_warn: 'bg-amber-50 text-amber-700 border-amber-200',
+  shield_page_blocked: 'bg-rose-50 text-rose-700 border-rose-200',
+  shield_autofill_blocked: 'bg-amber-100 text-amber-800 border-amber-300',
+  shield_warning_shown: 'bg-amber-50 text-amber-700 border-amber-200',
 };
 const DOMAIN_RISK_REQUEST_STATUS_STYLES: Record<string, string> = {
   pending: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -1598,7 +1598,7 @@ export const PopupApp: React.FC = () => {
   // Derive consolidated active threat warning from tab warning or popup's live assessment
   const activeThreat = (!threatBannerDismissed && (activeThreatWarning || isDangerousSite || isWarningSite)) ? {
     severity: activeThreatWarning?.severity || (isDangerousSite ? 'block' : 'warn'),
-    title: activeThreatWarning?.title || (isDangerousSite ? (domainRiskAssessment?.matchedTarget && !domainRiskAssessment.signals?.isSameRegistrableDomain ? 'Phishing / Lookalike Domain Blocked' : 'Dangerous Site Blocked') : 'Security Warning'),
+    title: activeThreatWarning?.title || (isDangerousSite ? 'Threat detected' : 'Security Warning'),
     message: activeThreatWarning?.message || domainRiskAssessment?.safeWarningMessage || (
       isDangerousSite
         ? (domainRiskAssessment?.matchedTarget
@@ -1648,7 +1648,7 @@ export const PopupApp: React.FC = () => {
                       : 'bg-amber-500 text-white'
                   }`}
                 >
-                  {isBlock ? 'Phishing Blocked' : 'Suspicious Domain'}
+                  {isBlock ? (activeThreatWarning?.pageBlocked ? 'Blocked' : 'Threat detected') : 'Suspicious Domain'}
                 </span>
                 {activeThreat.riskLevel && (
                   <span className="text-[10px] opacity-75 font-mono uppercase">
@@ -1720,7 +1720,7 @@ export const PopupApp: React.FC = () => {
           {siteReportState === 'already_blocked' ? (
             <span className="inline-flex items-center gap-1 py-1.5 px-2.5 rounded-lg text-xs font-bold bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-700/60">
               <Shield className="w-3.5 h-3.5" />
-              Blocked by Shield
+              Autofill blocked
             </span>
           ) : siteReportState === 'done' ? (
             <span className="inline-flex items-center gap-1 py-1.5 px-2.5 rounded-lg text-xs font-bold bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700/60">
@@ -2681,7 +2681,7 @@ export const PopupApp: React.FC = () => {
                             <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5 animate-pulse" />
                             <div className="flex-1 min-w-0">
                               <div className="text-xs font-bold text-rose-900 dark:text-rose-200 leading-tight">
-                                {domainRiskAssessment.matchedTarget && !domainRiskAssessment.signals?.isSameRegistrableDomain ? 'Phishing / Lookalike Domain Blocked' : 'Dangerous Site Blocked'}
+                                {activeThreatWarning?.pageBlocked ? 'Site blocked' : 'Threat detected'}
                               </div>
                               <div className="text-xs text-rose-950 dark:text-rose-100 mt-1 leading-snug font-medium">
                                 {domainRiskAssessment.safeWarningMessage ||
@@ -3712,7 +3712,7 @@ export const PopupApp: React.FC = () => {
                         ) : (
                           <span className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-rose-200 text-rose-700 bg-rose-50 flex items-center gap-1">
                             <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />
-                            Blocked by Shield
+                            Autofill blocked
                           </span>
                         )}
                         {flagged && (
@@ -4195,7 +4195,7 @@ export const PopupApp: React.FC = () => {
                         (domainRiskHistory.length === 0 ? (
                           <div className="py-6 text-center space-y-1">
                             <ShieldCheck className="w-5 h-5 text-emerald-600 mx-auto" />
-                            <p className="text-xs text-slate-500 px-4">No risk assessments recorded yet.</p>
+                            <p className="text-xs text-slate-500 px-4">No Shield actions reported yet.</p>
                           </div>
                         ) : (
                           domainRiskHistory.map((ev) => (

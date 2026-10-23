@@ -1,20 +1,25 @@
+// Only actions reported after rendering/refusal are user-facing history.
 export const HISTORY_ASSESSMENT_LABELS: Record<string, string> = {
-  domain_risk_block: 'Block recommended',
-  domain_risk_require_approval: 'Approval recommended',
-  domain_risk_warn: 'Risk indicators',
-  domain_risk_allow: 'Check recorded',
+  shield_page_blocked: 'Blocked',
+  shield_warning_shown: 'Warning shown',
+  shield_autofill_blocked: 'Autofill blocked',
 };
 
-// Never replay legacy banner copy: the server logs its recommendation before
-// the extension applies local trust and form checks. It is not an action receipt.
+export function isReportedShieldAction(eventType: unknown): eventType is string {
+  return typeof eventType === 'string' && Object.prototype.hasOwnProperty.call(HISTORY_ASSESSMENT_LABELS, eventType);
+}
+
+export function visibleShieldHistory<T extends { event_type: string }>(events: T[]): T[] {
+  return Array.isArray(events) ? events.filter(event => event && isReportedShieldAction(event.event_type)) : [];
+}
+
 export function historyAssessmentSummary(eventType: string): string {
   switch (eventType) {
-    case 'domain_risk_block': return 'Security checks recommended blocking this site.';
-    case 'domain_risk_require_approval': return 'Security checks recommended asking for approval before autofill.';
-    case 'domain_risk_warn': return 'Security checks recorded potential risk indicators. These are not proof of a malicious site.';
-    case 'domain_risk_allow': return 'Security checks did not recommend a warning for this check. This is not a guarantee of safety.';
-    default: return 'A security assessment was recorded; its recommendation is unavailable.';
+    case 'shield_page_blocked': return 'Your extension reported showing a full-screen Shield block on this page.';
+    case 'shield_warning_shown': return 'Your extension reported displaying a warning on this page.';
+    case 'shield_autofill_blocked': return 'Your extension reported refusing an autofill request. This does not mean the page itself was blocked.';
+    default: return 'This assessment does not confirm that the extension took an action.';
   }
 }
 
-export const HISTORY_ASSESSMENT_NOTICE = 'These are security assessments, not confirmed warnings or blocks. Your extension may handle a site differently using local trust and form checks. Credential sharing is not tracked here.';
+export const HISTORY_ASSESSMENT_NOTICE = 'Activity reported by your extension. “Blocked” means a full-screen Shield warning was displayed; “Autofill blocked” means a fill request was refused. Reports may take a moment to sync.';

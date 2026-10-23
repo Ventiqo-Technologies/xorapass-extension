@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
+import { webcrypto } from 'node:crypto';
 
 function isIsolatedHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
@@ -161,10 +162,14 @@ describe('Production Bundle Smoke Test: dist/shieldNav.js', () => {
     sandbox.location = {
       hostname,
       protocol: 'https:',
+      href: `https://${hostname}/`,
     };
+    sandbox.crypto = webcrypto;
+    sandbox.URL = URL;
     sandbox.chrome = {
       runtime: {
         id: 'mock-xorapass-extension-id',
+        onMessage: { addListener: () => {}, removeListener: () => {}, hasListener: () => false },
         sendMessage: () => Promise.resolve({ action: 'allow' }),
       },
       storage: {

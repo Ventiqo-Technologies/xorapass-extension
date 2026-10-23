@@ -7,6 +7,7 @@
 // Includes in-memory & session caching with TTL to minimize API latency and overhead.
 
 import { API_BASE_URL } from './config';
+import { visibleShieldHistory } from './domainRiskHistory';
 import type { Decision, RiskLevel, DomainRiskAssessment } from './domainRisk';
 import { extractHostname } from './siteTrust';
 import type { PageSignals } from './pageSignals';
@@ -581,7 +582,7 @@ export interface DomainRiskHistoryEvent {
   timestamp: string;
   // Old false values are defaults, not proof of a credential outcome.
   secret_exposed?: boolean | null;
-  record_type?: 'assessment';
+  record_type?: 'assessment' | 'extension_action';
   credential_outcome?: 'not_observed';
   detail?: string;
   domain?: string;
@@ -609,7 +610,7 @@ export async function getDomainRiskHistory(
     });
     if (!res.ok) return [];
     const data = (await res.json()) as { events?: DomainRiskHistoryEvent[] };
-    return Array.isArray(data.events) ? data.events : [];
+    return visibleShieldHistory(data.events || []);
   } catch {
     return [];
   }

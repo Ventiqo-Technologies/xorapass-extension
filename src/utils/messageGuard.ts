@@ -96,6 +96,7 @@ export const KNOWN_MESSAGE_TYPES = [
   // Always-on Shield. SHIELD_NAV_CHECK comes from the document_start content
   // script and carries nothing — the background uses the sender frame's URL.
   'SHIELD_NAV_CHECK',
+  'SHIELD_ACTION_PERFORMED',
   // AI scam analysis: from the content script, carries only the redacted
   // page extract (utils/pageContent.ts); the URL comes from the sender.
   'SHIELD_AI_SCAN',
@@ -263,6 +264,13 @@ export function validateMessage(
   const payload = isPlainObject(message.payload) ? message.payload : undefined;
 
   switch (type) {
+    case 'SHIELD_ACTION_PERFORMED':
+      if (sender.frameId !== 0 || sender.tab?.id == null || !/^https?:\/\//.test(sender.url || '') ||
+        !payload || !['page_blocked','warning_shown'].includes(String(payload.action)) ||
+        !['phishing','malware','policy','unsafe_form','risk'].includes(String(payload.reason)) || !isPlainObject(payload.pageContext)) {
+        return { ok: false, reason: 'bad-payload' };
+      }
+      break;
     case 'WEB_BRIDGE_DOMAIN_BLOCKED':
       if (!payload || typeof payload.hostname !== 'string' || !payload.hostname.trim()) {
         return { ok: false, reason: 'bad-payload' };
