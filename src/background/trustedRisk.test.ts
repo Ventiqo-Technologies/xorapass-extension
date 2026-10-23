@@ -48,6 +48,17 @@ describe('SHIELD-003 actual trusted-site risk pipeline', () => {
       const risk = await f.run(f.options);
       expect(risk.decision).toBe('block'); expect(risk.policyEnforced).toBe(true);
     });
+    it(`does not equate a server heuristic warning with a displayed warning on a ${trust} site`, async () => {
+      const f = fixture(trust);
+      f.checkDomainRiskRemote.mockResolvedValue({ decision: 'warn', risk_score: 40, risk_level: 'medium', reasons: [], reason_codes: ['BRAND_IN_URL_PATH', 'OFFSCREEN_INPUT_FIELDS'] });
+      expect((await f.run(f.options)).decision).toBe('allow');
+      expect(f.checkDomainRiskRemote).toHaveBeenCalledTimes(1);
+    });
+    it(`does not suppress a provider phishing hit on a ${trust} site`, async () => {
+      const f = fixture(trust);
+      f.checkDomainRiskRemote.mockResolvedValue({ decision: 'block', risk_score: 100, risk_level: 'critical', reasons: [], reason_codes: ['THREAT_INTEL_PHISHING_HIT'] });
+      expect((await f.run(f.options)).decision).toBe('block');
+    });
     it(`enforces unsafe form checks offline on a ${trust} site`, async () => {
       const f = fixture(trust); f.cfg.remote = { ...f.cfg.remote, enabled: false };
       expect((await f.run({ ...f.options, formContext: { ...f.options.formContext, actionUrl: 'https://collector.invalid/' } })).decision).toBe('require_approval');

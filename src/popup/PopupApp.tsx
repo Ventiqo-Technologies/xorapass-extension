@@ -1,4 +1,5 @@
 import { TEXT_SCAN_CONSENT_KEY, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE } from '../utils/textScanPrivacy';
+import { HISTORY_ASSESSMENT_LABELS, HISTORY_ASSESSMENT_NOTICE, historyAssessmentSummary } from '../utils/domainRiskHistory';
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
@@ -165,13 +166,7 @@ function getStoreReviewUrl(): string {
   return isFirefox ? STORE_REVIEW_URLS.firefox : STORE_REVIEW_URLS.chrome;
 }
 
-// Domain Risk history badge — same decision set as the web app's Domain
-// Risk panel, condensed for this popup's tighter visual density.
-const DOMAIN_RISK_DECISION_LABELS: Record<string, string> = {
-  domain_risk_block: 'Blocked',
-  domain_risk_require_approval: 'Approval needed',
-  domain_risk_warn: 'Warned',
-};
+// Historical server assessments, not evidence that the browser took an action.
 const DOMAIN_RISK_DECISION_STYLES: Record<string, string> = {
   domain_risk_block: 'bg-rose-50 text-rose-700 border-rose-200',
   domain_risk_require_approval: 'bg-amber-100 text-amber-800 border-amber-300',
@@ -4192,12 +4187,15 @@ export const PopupApp: React.FC = () => {
                       ))}
                     </div>
 
+                    {domainRiskSubTab === 'history' && (
+                      <p className="px-3 pb-2 text-xs leading-relaxed text-slate-600">{HISTORY_ASSESSMENT_NOTICE}</p>
+                    )}
                     <div className="max-h-52 overflow-y-auto custom-scrollbar divide-y divide-slate-100">
                       {domainRiskSubTab === 'history' &&
                         (domainRiskHistory.length === 0 ? (
                           <div className="py-6 text-center space-y-1">
                             <ShieldCheck className="w-5 h-5 text-emerald-600 mx-auto" />
-                            <p className="text-xs text-slate-400 px-4">No sites flagged yet.</p>
+                            <p className="text-xs text-slate-500 px-4">No risk assessments recorded yet.</p>
                           </div>
                         ) : (
                           domainRiskHistory.map((ev) => (
@@ -4209,11 +4207,11 @@ export const PopupApp: React.FC = () => {
                                     DOMAIN_RISK_DECISION_STYLES[ev.event_type] || 'bg-slate-50 text-slate-500 border-slate-200'
                                   }`}
                                 >
-                                  {DOMAIN_RISK_DECISION_LABELS[ev.event_type] || ev.event_type}
+                                  {HISTORY_ASSESSMENT_LABELS[ev.event_type] || 'Assessment recorded'}
                                 </span>
                               </div>
                               <div className="flex items-center justify-between gap-2">
-                                <p className="text-xs text-slate-500 truncate flex-1">{ev.detail || 'Flagged by XoraPass security protection.'}</p>
+                                <p className="text-xs text-slate-600 flex-1">{historyAssessmentSummary(ev.event_type)}</p>
                                 <span className="text-xs text-slate-400 shrink-0">{fmtRelativeShort(ev.timestamp)} ago</span>
                               </div>
                             </div>
