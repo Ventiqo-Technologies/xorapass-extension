@@ -133,6 +133,32 @@ export function outlookHeader(container: Element, doc: Document, root?: Element)
     if (sender.senderEmail) attributeSenders.set(sender.senderEmail, { ...sender, senderName: txt(element).replace(sender.senderEmail, '').replace(/[<>]/g, '').trim() || sender.senderName });
   }
   if (attributeSenders.size === 1) return { ...attributeSenders.values().next().value, senderLookupComplete: true };
+
+  // In Outlook, the message header can expose only the sender's display name;
+  // the address is sometimes present on its sender-details element elsewhere
+  // in the document. Accept that address only when the element itself carries
+  // the same sender name visible in this message header. Never scan generic
+  // people cards or the whole document for an arbitrary email address.
+  const headerLabel = fragmentText(header, doc)
+    .split(/\b(?:to|cc|bcc)\s*:/i)[0]
+    .replace(/^\s*from\s*:\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLocaleLowerCase();
+  if (headerLabel.length >= 5) {
+    const senderDetails = Array.from(doc.querySelectorAll('[data-testid="SenderDetails"]'));
+    const matched = senderDetails.flatMap((element) => {
+      const content = `${txt(element)} ${element.getAttribute('aria-label') || ''} ${element.getAttribute('title') || ''}`
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLocaleLowerCase();
+      if (!content.includes(headerLabel) && !headerLabel.includes(content)) return [];
+      const address = element.getAttribute('email') || element.getAttribute('data-email-address') || '';
+      const sender = parseOutlookSender(address ? `${txt(element)} <${address}>` : txt(element));
+      return sender.senderEmail ? [sender] : [];
+    });
+    if (matched.length === 1) return { ...matched[0], senderLookupComplete: true };
+  }
   return missing;
 }
 

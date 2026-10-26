@@ -6,14 +6,13 @@
 // links people are phished with are wrapped by a mail/social redirector
 // (Google, Outlook SafeLinks, Proofpoint, Facebook, ...) that carries the
 // destination in its own query string. Unwrapping those needs no request at
-// all. Only a genuine URL shortener (bit.ly, ...) hides its destination
-// server-side, and for those alone the background makes one credential-less
-// HEAD request (redirects followed as HEAD) — never a GET, which could consume
-// a one-time link or confirm to a phisher that the address is live.
+// all. Opaque ESP tracking links stay unresolved so inspection doesn't send
+// their recipient-specific click token to the tracking server. Only a genuine
+// URL shortener (bit.ly, ...) is probed with a credential-less HEAD request.
 
 import { extractHostname, registrableDomain } from './siteTrust';
 import type { DomainRiskAssessment } from './domainRisk';
-import { DEFAULT_REDIRECTOR_RULES, type ShieldRedirectorRule } from './shieldConfig';
+import { DEFAULT_ESP_TRACKING_DOMAINS, DEFAULT_REDIRECTOR_RULES, type ShieldRedirectorRule } from './shieldConfig';
 
 let activeRedirectorRules: readonly ShieldRedirectorRule[] = DEFAULT_REDIRECTOR_RULES;
 
@@ -47,6 +46,13 @@ export const SHORTENER_HOSTS: ReadonlySet<string> = new Set([
 export function isShortenerUrl(url: string): boolean {
   const host = extractHostname(url);
   return !!host && SHORTENER_HOSTS.has(host);
+}
+
+/** Email click trackers conceal their target in an opaque server-side token. */
+export function isEmailTrackingUrl(url: string): boolean {
+  const host = extractHostname(url);
+  if (!host) return false;
+  return DEFAULT_ESP_TRACKING_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
 }
 
 function safeUrl(raw: string): URL | null {
@@ -162,9 +168,10 @@ export function buildLinkVerdict(opts: {
   risk: DomainRiskAssessment;
   hops: number;
   unresolvedShortener: boolean;
+  unresolvedTrackingLink?: boolean;
   isCustomScheme: boolean;
 }): LinkVerdict {
-  const { finalUrl, risk, hops, unresolvedShortener, isCustomScheme } = opts;
+  const { finalUrl, risk, hops, unresolvedShortener, unresolvedTrackingLink = false, isCustomScheme } = opts;
   const threats: string[] = [];
   let score = risk.riskScore;
 
@@ -184,6 +191,10 @@ export function buildLinkVerdict(opts: {
   }
   if (unresolvedShortener) {
     threats.push('Destination hidden behind a link shortener and could not be verified');
+    score = Math.max(score, 40);
+  }
+  if (unresolvedTrackingLink) {
+    threats.push('Final destination is hidden behind an email tracking link and could not be verified');
     score = Math.max(score, 40);
   }
   if (hops >= 3) {
