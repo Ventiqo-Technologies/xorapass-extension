@@ -88,7 +88,7 @@ export const DEFAULT_ESP_TRACKING_DOMAINS: readonly string[] = Object.freeze([
   'postmarkapp.com', 'mandrillapp.com', 'mailchimp.com', 'hubspotlinks.com',
   'klaviyomail.com', 'constantcontact.com', 'campaign-monitor.com', 'customeriomail.com',
   'sparkpostmail.com', 'intercom-mail.com', 'intercom-clicks.com', 'sailthru.com',
-  'acems1.com', 'activehosted.com',
+  'acems1.com', 'activehosted.com', 'emlnk9.com',
 ]);
 
 export const DEFAULT_STANDARD_EMAIL_EXTERNAL_DOMAINS: readonly string[] = Object.freeze([

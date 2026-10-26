@@ -53,7 +53,7 @@ import {
 import { decideNavigation, isTrustedHost, isAllowlistedHost, shouldEscalateRemote, threatReason } from '../utils/shieldEngine';
 import { sanitizeUrlForRiskCheck, authHeaderValue } from '../utils/domainRiskService';
 import type { ShieldConfig } from '../utils/shieldConfig';
-import { unwrapLink, isShortenerUrl, buildLinkVerdict } from '../utils/linkInspect';
+import { unwrapLink, isShortenerUrl, isEmailTrackingUrl, buildLinkVerdict } from '../utils/linkInspect';
 import { mergeExtraBrands } from '../utils/brandCatalog';
 import { scorePageSignals, applyPageRisk } from '../utils/pageRisk';
 import { auditInstalledExtensions } from '../utils/extensionAudit';
@@ -2759,6 +2759,10 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
       }
     }
 
+    // ESP click links carry an opaque server-side recipient token. Do not
+    // follow them automatically: report the wrapper as unresolved instead.
+    const unresolvedTrackingLink = !isCustomScheme && isEmailTrackingUrl(finalUrl);
+
     // 3. Score the destination against the user's saved sites (the vault
     //    cache in storage.local is ciphertext only — hostnames come from the
     //    unlocked session) plus commonly phished brands.
@@ -2771,7 +2775,7 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
       : assessWithCatalog(destHost, vaultHosts, allowlist, finalUrl);
 
     // 4. Threat intel for the destination (query-stripped; plan-gated).
-    if (!isCustomScheme && destHost && !unresolvedShortener) {
+    if (!isCustomScheme && destHost && !unresolvedShortener && !unresolvedTrackingLink) {
       const enabled = await checkDomainRiskEnabled(globalThis.fetch, getShieldCredential);
       if (enabled) {
         const remote = await checkDomainRiskRemote(
@@ -2792,6 +2796,7 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
       risk,
       hops: hopCount,
       unresolvedShortener,
+      unresolvedTrackingLink,
       isCustomScheme,
     });
 
@@ -2801,6 +2806,8 @@ menusApi?.onClicked?.addListener(async (info: any, tab: any) => {
         originalUrl,
         finalUrl,
         redirectsCount: hopCount,
+        destinationResolved: !unresolvedShortener && !unresolvedTrackingLink,
+        unresolvedTrackingLink,
         riskScore,
         verdict,
         threats,

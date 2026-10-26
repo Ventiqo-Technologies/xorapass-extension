@@ -2980,6 +2980,8 @@ export interface LinkInspectionData {
   originalUrl: string;
   finalUrl: string;
   redirectsCount: number;
+  destinationResolved: boolean;
+  unresolvedTrackingLink: boolean;
   riskScore: number;
   verdict: 'safe' | 'suspicious' | 'high_risk';
   threats: string[];
@@ -3016,11 +3018,11 @@ export function showLinkInspectionModal(data: LinkInspectionData): void {
         ${isHigh ? 'Phishing or Dangerous Destination' : isSusp ? 'Caution: Redirect or Unverified Domain' : 'Destination Appears Safe'}
       </div>
       <p style="font-size:12px;color:#64748b;margin:0 0 10px 0;line-height:1.45;">
-        ${isHigh ? 'XoraPass recommends NOT visiting this link. It exhibits indicators of spoofing or credential theft.' : 'Link destination resolved safely without executing untrusted scripts.'}
+        ${isHigh ? 'XoraPass recommends NOT visiting this link. It exhibits indicators of spoofing or credential theft.' : !data.destinationResolved ? 'The final destination could not be verified. Opening this link may redirect to another site.' : 'The resolved destination was checked without opening the page.'}
       </p>
 
       <div class="xp-link-dest-box">
-        <span class="xp-link-dest-label">Final Destination</span>
+        <span class="xp-link-dest-label">${data.destinationResolved ? 'Final Destination' : data.unresolvedTrackingLink ? 'Unresolved Tracking Link' : 'Unresolved Link'}</span>
         <span class="xp-link-dest-url" title="${data.finalUrl}">${data.finalUrl}</span>
       </div>
 
@@ -3041,7 +3043,7 @@ export function showLinkInspectionModal(data: LinkInspectionData): void {
     <div class="xp-link-actions">
       <button class="risk-btn-dismiss" id="xp-link-modal-dismiss" style="padding:6px 12px;font-size:12px;">Close</button>
       ${!isHigh ? `
-        <button class="risk-btn-primary" id="xp-link-modal-open" style="padding:6px 14px;font-size:12px;">Open Destination</button>
+        <button class="risk-btn-primary" id="xp-link-modal-open" style="padding:6px 14px;font-size:12px;">${data.destinationResolved ? 'Open Destination' : 'Open Link'}</button>
       ` : `
         <button class="risk-btn-secondary" id="xp-link-modal-bypass" style="padding:6px 12px;font-size:12px;color:#b91c1c;border-color:#fca5a5;">Open Anyway (Unsafe)</button>
       `}
