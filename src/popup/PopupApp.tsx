@@ -1,6 +1,6 @@
 import { TEXT_SCAN_CONSENT_KEY, TEXT_SCAN_CONSENT_VERSION, TEXT_SCAN_NOTICE } from '../utils/textScanPrivacy';
 import { HISTORY_ASSESSMENT_LABELS, HISTORY_ASSESSMENT_NOTICE, historyAssessmentSummary } from '../utils/domainRiskHistory';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import axios from 'axios';
 import ShieldExtras from './ShieldExtras';
 import { useActiveTabRisk } from './useActiveTabRisk';
@@ -51,6 +51,7 @@ import {
   HelpCircle,
   Puzzle,
   Flag,
+  Building,
 } from 'lucide-react';
 import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptSafety';
 import { type ExtensionAuditSummary } from '../utils/extensionAudit';
@@ -58,6 +59,7 @@ import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesT
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
 import { assessWithCatalog } from '../utils/domainRisk';
+import { fetchAndDecryptWorkspaceSecrets } from '../utils/workspaceSecrets';
 import { type SiteSafetyReport } from '../utils/siteScanner';
 import {
   type DomainRiskHistoryEvent,
@@ -216,6 +218,12 @@ interface DecryptedItem {
   accountId?: string;
   // 2FA TOTP secret / URI
   totpSecret?: string;
+  // Workspace support
+  workspaceId?: string;
+  workspaceName?: string;
+  vaultId?: string;
+  vaultName?: string;
+  readOnly?: boolean;
 }
 
 const ItemAvatar: React.FC<{ label: string; url?: string; category?: string; size?: string }> = ({
@@ -407,6 +415,7 @@ export const PopupApp: React.FC = () => {
   const [generated, setGenerated] = useState(() => generatePassword(DEFAULT_OPTIONS));
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<'all' | CategoryKey>('all');
+  const [workspaceFilter, setWorkspaceFilter] = useState<'all' | 'personal' | string>('all');
   const [copiedField, setCopiedField] = useState<{ id: string; field: string } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -1118,12 +1127,20 @@ export const PopupApp: React.FC = () => {
     });
 
     const decrypted = decryptEntries(vaultRes.data, encKey);
-    const res: any = await storeSession(decrypted, token, encKey, email, false, refreshToken);
+    let workspaceItems: DecryptedItem[] = [];
+    try {
+      workspaceItems = await fetchAndDecryptWorkspaceSecrets(token);
+    } catch (wsErr) {
+      console.warn('[XoraPass] Could not fetch workspace secrets:', wsErr);
+    }
+    const allDecrypted = [...decrypted, ...workspaceItems];
+
+    const res: any = await storeSession(allDecrypted, token, encKey, email, false, refreshToken);
     if (res && res.success) {
       await writeVaultCache(email, masterSalt, vaultRes.data as RawVaultEntry[]);
       setUnlocked(true);
       setOffline(false);
-      setVaultItems(decrypted);
+      setVaultItems(allDecrypted);
       setPassword('');
       setStep('login');
     } else {
@@ -1152,12 +1169,20 @@ export const PopupApp: React.FC = () => {
     });
     const encKey = hexToBytes(encKeyHex);
     const decrypted = decryptEntries(vaultRes.data, encKey);
+    let workspaceItems: DecryptedItem[] = [];
+    try {
+      workspaceItems = await fetchAndDecryptWorkspaceSecrets(token);
+    } catch (wsErr) {
+      console.warn('[XoraPass] Could not fetch workspace secrets:', wsErr);
+    }
+    const allDecrypted = [...decrypted, ...workspaceItems];
+
     // No refreshToken passed through here on purpose -- background.ts's
     // UNLOCK_VAULT handler leaves the stored one alone when this call omits
     // it, so a routine sync can never clobber a token apiRefresh() rotated.
-    await storeSession(decrypted, token, encKey, accountEmail);
+    await storeSession(allDecrypted, token, encKey, accountEmail);
     await updateCachedEntries(accountEmail, vaultRes.data as RawVaultEntry[]);
-    setVaultItems(decrypted);
+    setVaultItems(allDecrypted);
   };
 
   const refreshVault = async (manual = false) => {
@@ -1430,9 +1455,24 @@ export const PopupApp: React.FC = () => {
   const matchingIds = new Set(matchingItems.map((i) => i.id));
   const inCategory = (item: DecryptedItem) =>
     categoryFilter === 'all' || (item.category || 'login') === categoryFilter;
+
+  const workspaceNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const item of vaultItems) {
+      if (item.workspaceName) names.add(item.workspaceName);
+    }
+    return Array.from(names);
+  }, [vaultItems]);
+
+  const inWorkspace = (item: DecryptedItem) => {
+    if (workspaceFilter === 'all') return true;
+    if (workspaceFilter === 'personal') return !item.workspaceId;
+    return item.workspaceName === workspaceFilter;
+  };
+
   const searchedItems = (
     term ? vaultItems.filter(matches) : vaultItems.filter((i) => !matchingIds.has(i.id))
-  ).filter(inCategory);
+  ).filter(inCategory).filter(inWorkspace);
 
   const categoryCount = (key: CategoryKey) =>
     vaultItems.filter((i) => (i.category || 'login') === key).length;
@@ -2187,6 +2227,29 @@ export const PopupApp: React.FC = () => {
                       )}
                     </div>
                   </div>
+
+                  {selectedItem.workspaceName && (
+                    <div className="flex items-center justify-between p-2.5 rounded-xl bg-indigo-50 border border-indigo-200/70 text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Building className="w-4 h-4 text-indigo-600 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="font-bold text-indigo-950 truncate">{selectedItem.workspaceName}</div>
+                          {selectedItem.vaultName && (
+                            <div className="text-[11px] text-indigo-700 truncate">{selectedItem.vaultName}</div>
+                          )}
+                        </div>
+                      </div>
+                      {selectedItem.readOnly ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold border border-amber-300/60 shrink-0">
+                          Read-only
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 font-bold border border-indigo-300/60 shrink-0">
+                          Shared
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {/* 1. CARD CATEGORY DETAIL LAYOUT */}
                   {selectedItem.category === 'card' && (
                     <div className="space-y-2">
@@ -2697,7 +2760,14 @@ export const PopupApp: React.FC = () => {
                           >
                             <ItemAvatar label={item.label} url={item.url} category={item.category} size="w-7 h-7 text-xs" />
                             <div className="min-w-0 flex-1">
-                              <div className="text-sm font-bold text-slate-900 truncate leading-tight">{item.label}</div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-sm font-bold text-slate-900 truncate leading-tight">{item.label}</span>
+                                {item.workspaceName && (
+                                  <span className="text-[10px] px-1.5 py-0.2 rounded font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200/60 truncate max-w-[110px]" title={`Workspace: ${item.workspaceName}`}>
+                                    {item.workspaceName}
+                                  </span>
+                                )}
+                              </div>
                               <div className="text-xs text-slate-500 font-mono truncate">{getItemSubtitle(item)}</div>
                             </div>
                             <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -2769,6 +2839,39 @@ export const PopupApp: React.FC = () => {
                     </button>
                   </div>
 
+                  {/* Workspace Filter Chips (shown when workspace secrets exist) */}
+                  {workspaceNames.length > 0 && (
+                    <div className="flex items-center gap-1 overflow-x-auto pb-1 custom-scrollbar shrink-0">
+                      <button
+                        onClick={() => setWorkspaceFilter('all')}
+                        className={`px-2 py-0.5 rounded-md font-semibold transition cursor-pointer shrink-0 border text-[11px] ${workspaceFilter === 'all'
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                          : 'bg-white/80 text-indigo-700 border-indigo-200/60 hover:bg-white'}`}
+                      >
+                        All
+                      </button>
+                      <button
+                        onClick={() => setWorkspaceFilter('personal')}
+                        className={`px-2 py-0.5 rounded-md font-semibold transition cursor-pointer shrink-0 border text-[11px] ${workspaceFilter === 'personal'
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                          : 'bg-white/80 text-indigo-700 border-indigo-200/60 hover:bg-white'}`}
+                      >
+                        Personal
+                      </button>
+                      {workspaceNames.map((name) => (
+                        <button
+                          key={name}
+                          onClick={() => setWorkspaceFilter(name)}
+                          className={`px-2 py-0.5 rounded-md font-semibold transition cursor-pointer shrink-0 border text-[11px] ${workspaceFilter === name
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                            : 'bg-white/80 text-indigo-700 border-indigo-200/60 hover:bg-white'}`}
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Category Filter Chips */}
                   {vaultItems.length > 0 && (
                     <div className="flex items-center gap-1 overflow-x-auto pb-1 custom-scrollbar shrink-0">
@@ -2825,7 +2928,19 @@ export const PopupApp: React.FC = () => {
                           <ItemAvatar label={item.label} url={item.url} category={item.category} size="w-7 h-7 text-xs" />
 
                           <div className="min-w-0 flex-1">
-                            <div className="text-sm font-bold text-slate-800 truncate leading-tight group-hover:text-brand-cyan transition">{item.label}</div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-sm font-bold text-slate-800 truncate leading-tight group-hover:text-brand-cyan transition">{item.label}</span>
+                              {item.workspaceName && (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200/60 truncate max-w-[110px]" title={`Workspace: ${item.workspaceName}`}>
+                                  {item.workspaceName}
+                                </span>
+                              )}
+                              {item.readOnly && (
+                                <span className="text-[9px] px-1 py-0.2 rounded font-medium bg-amber-50 text-amber-700 border border-amber-200/60">
+                                  Read-only
+                                </span>
+                              )}
+                            </div>
                             <div className="text-xs text-slate-500 font-mono truncate mt-0.5">{getItemSubtitle(item)}</div>
                           </div>
 
