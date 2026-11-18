@@ -86,8 +86,10 @@ export const KNOWN_MESSAGE_TYPES = [
   'APPLY_UPDATE',
   // XoraPass Shield - Site Scanner on-demand report
   'SCAN_SITE',
-  // XoraPass Shield - Installed Extension Security Checkup
+  // XoraPass Shield - Installed Extension Security Checkup & Management
   'AUDIT_EXTENSIONS',
+  'DISABLE_EXTENSION',
+  'UNINSTALL_EXTENSION',
   // Checkout Guard: the all-frames cardFrame.ts probe reporting card inputs
   // inside a (usually cross-origin) payment iframe. Carries no data at all;
   // the background only relays "card fields exist" to the tab's top frame.
@@ -166,8 +168,10 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   // silently disable the control that protects an unattended machine.
   'SET_LOCK_ON_SCREEN_LOCK',
   'SET_CLIPBOARD_CLEAR',
-  // Extension checkup: privileged call reserved for popup
+  // Extension checkup & management: privileged calls reserved for popup
   'AUDIT_EXTENSIONS',
+  'DISABLE_EXTENSION',
+  'UNINSTALL_EXTENSION',
   // Site Scanner: builds a report from the vault's saved hostnames — popup only.
   'SCAN_SITE',
   // Shield account state / sign-out: popup only.

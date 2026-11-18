@@ -54,6 +54,8 @@ import {
   Building,
   User,
   Folder,
+  Power,
+  Trash2,
 } from 'lucide-react';
 import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptSafety';
 import { type ExtensionAuditSummary } from '../utils/extensionAudit';
@@ -869,6 +871,24 @@ export const PopupApp: React.FC = () => {
       console.error('Failed to audit extensions', err);
     } finally {
       setIsAuditingExtensions(false);
+    }
+  };
+
+  const handleDisableExtension = async (id: string) => {
+    try {
+      await browser.runtime.sendMessage({ type: 'DISABLE_EXTENSION', payload: { id } });
+      await handleAuditExtensions();
+    } catch (err) {
+      console.error('Failed to disable extension', err);
+    }
+  };
+
+  const handleUninstallExtension = async (id: string) => {
+    try {
+      await browser.runtime.sendMessage({ type: 'UNINSTALL_EXTENSION', payload: { id } });
+      await handleAuditExtensions();
+    } catch (err) {
+      console.error('Failed to uninstall extension', err);
     }
   };
 
@@ -4235,17 +4255,39 @@ export const PopupApp: React.FC = () => {
                                 )}
                               </div>
 
-                              <span
-                                className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded shrink-0 ${
-                                  ext.riskLevel === 'high'
-                                    ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/80 dark:text-rose-300 dark:border dark:border-rose-700/60'
-                                    : ext.riskLevel === 'low'
-                                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-700/60'
-                                    : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:border dark:border-slate-700/60'
-                                }`}
-                              >
-                                {ext.reputation === 'known_malicious' ? 'Known malicious' : ext.riskLevel === 'high' ? 'Elevated access' : ext.riskLevel === 'low' ? 'Some access' : 'Unknown'}
-                              </span>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <span
+                                  className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded ${
+                                    ext.reputation === 'known_malicious' || ext.riskLevel === 'high'
+                                      ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/80 dark:text-rose-300 dark:border dark:border-rose-700/60'
+                                      : ext.riskLevel === 'low'
+                                      ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 dark:border dark:border-amber-700/60'
+                                      : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:border dark:border-slate-700/60'
+                                  }`}
+                                >
+                                  {ext.reputation === 'known_malicious' ? 'Known malicious' : ext.riskLevel === 'high' ? 'Elevated access' : ext.riskLevel === 'low' ? 'Some access' : 'Unknown'}
+                                </span>
+
+                                {ext.enabled ? (
+                                  <button
+                                    onClick={() => handleDisableExtension(ext.id)}
+                                    className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 text-slate-500 hover:text-amber-600 dark:text-slate-400 dark:hover:text-amber-400 transition"
+                                    title="Disable extension"
+                                    aria-label="Disable extension"
+                                  >
+                                    <Power className="w-3.5 h-3.5" />
+                                  </button>
+                                ) : null}
+
+                                <button
+                                  onClick={() => handleUninstallExtension(ext.id)}
+                                  className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950/60 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition"
+                                  title="Uninstall extension"
+                                  aria-label="Uninstall extension"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             </div>
                           ))
                         )}

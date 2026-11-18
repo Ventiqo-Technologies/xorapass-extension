@@ -2208,6 +2208,56 @@ browser.runtime.onMessage.addListener((message, sender) => {
     })();
   }
 
+  if (type === 'DISABLE_EXTENSION') {
+    return (async () => {
+      const { id } = msg.payload || {};
+      if (typeof id === 'string' && id) {
+        const api = (globalThis as any).chrome?.management || (browser as any)?.management;
+        if (typeof api?.setEnabled === 'function') {
+          return new Promise<boolean>((resolve) => {
+            try {
+              const res = api.setEnabled(id, false, () => {
+                const err = (globalThis as any).chrome?.runtime?.lastError;
+                resolve(!err);
+              });
+              if (res && typeof res.then === 'function') {
+                res.then(() => resolve(true)).catch(() => resolve(false));
+              }
+            } catch {
+              resolve(false);
+            }
+          });
+        }
+      }
+      return false;
+    })();
+  }
+
+  if (type === 'UNINSTALL_EXTENSION') {
+    return (async () => {
+      const { id } = msg.payload || {};
+      if (typeof id === 'string' && id) {
+        const api = (globalThis as any).chrome?.management || (browser as any)?.management;
+        if (typeof api?.uninstall === 'function') {
+          return new Promise<boolean>((resolve) => {
+            try {
+              const res = api.uninstall(id, { showConfirmDialog: true }, () => {
+                const err = (globalThis as any).chrome?.runtime?.lastError;
+                resolve(!err);
+              });
+              if (res && typeof res.then === 'function') {
+                res.then(() => resolve(true)).catch(() => resolve(false));
+              }
+            } catch {
+              resolve(false);
+            }
+          });
+        }
+      }
+      return false;
+    })();
+  }
+
   // ── Web Bridge messages from content script or internal pages ─────────
   if (
     type === 'WEB_BRIDGE_LOGIN' ||
