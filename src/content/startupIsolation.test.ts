@@ -3,44 +3,75 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
 import { webcrypto } from 'node:crypto';
+import { isStartupIsolatedHost } from '../utils/startupIsolation';
 
-function isIsolatedHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  return (
-    host === 'web.whatsapp.com' || host.endsWith('.whatsapp.com') ||
-    host === 'aws.amazon.com' || host.endsWith('.aws.amazon.com') ||
-    host === 'signin.aws' || host.endsWith('.signin.aws') ||
-    host === 'awsapps.com' || host.endsWith('.awsapps.com')
-  );
-}
-
-describe('AWS and WhatsApp startup isolation domain matching', () => {
+describe('Startup isolation domain matching', () => {
   it('correctly matches WhatsApp domains', () => {
-    expect(isIsolatedHost('web.whatsapp.com')).toBe(true);
-    expect(isIsolatedHost('sub.web.whatsapp.com')).toBe(true);
-    expect(isIsolatedHost('api.whatsapp.com')).toBe(true);
-    expect(isIsolatedHost('WEB.WHATSAPP.COM')).toBe(true);
+    expect(isStartupIsolatedHost('web.whatsapp.com')).toBe(true);
+    expect(isStartupIsolatedHost('sub.web.whatsapp.com')).toBe(true);
+    expect(isStartupIsolatedHost('api.whatsapp.com')).toBe(true);
+    expect(isStartupIsolatedHost('WEB.WHATSAPP.COM')).toBe(true);
   });
 
   it('correctly matches AWS Console, signin, and SSO domains', () => {
-    expect(isIsolatedHost('aws.amazon.com')).toBe(true);
-    expect(isIsolatedHost('console.aws.amazon.com')).toBe(true);
-    expect(isIsolatedHost('us-east-1.console.aws.amazon.com')).toBe(true);
-    expect(isIsolatedHost('signin.aws')).toBe(true);
-    expect(isIsolatedHost('us-east-1.signin.aws')).toBe(true);
-    expect(isIsolatedHost('awsapps.com')).toBe(true);
-    expect(isIsolatedHost('company.awsapps.com')).toBe(true);
+    expect(isStartupIsolatedHost('aws.amazon.com')).toBe(true);
+    expect(isStartupIsolatedHost('console.aws.amazon.com')).toBe(true);
+    expect(isStartupIsolatedHost('us-east-1.console.aws.amazon.com')).toBe(true);
+    expect(isStartupIsolatedHost('signin.aws')).toBe(true);
+    expect(isStartupIsolatedHost('us-east-1.signin.aws')).toBe(true);
+    expect(isStartupIsolatedHost('awsapps.com')).toBe(true);
+    expect(isStartupIsolatedHost('company.awsapps.com')).toBe(true);
+  });
+
+  it('correctly matches Microsoft SharePoint, OneDrive, and Office 365 domains', () => {
+    expect(isStartupIsolatedHost('sharepoint.com')).toBe(true);
+    expect(isStartupIsolatedHost('contoso.sharepoint.com')).toBe(true);
+    expect(isStartupIsolatedHost('contoso-my.sharepoint.com')).toBe(true);
+    expect(isStartupIsolatedHost('contoso.sharepoint-df.com')).toBe(true);
+    expect(isStartupIsolatedHost('office.com')).toBe(true);
+    expect(isStartupIsolatedHost('www.office.com')).toBe(true);
+    expect(isStartupIsolatedHost('office.net')).toBe(true);
+    expect(isStartupIsolatedHost('res.cdn.office.net')).toBe(true);
+    expect(isStartupIsolatedHost('officeapps.live.com')).toBe(true);
+    expect(isStartupIsolatedHost('word-edit.officeapps.live.com')).toBe(true);
+    expect(isStartupIsolatedHost('excel.officeapps.live.com')).toBe(true);
+    expect(isStartupIsolatedHost('powerpoint.officeapps.live.com')).toBe(true);
+    expect(isStartupIsolatedHost('view.officeapps.live.com')).toBe(true);
+    expect(isStartupIsolatedHost('onedrive.live.com')).toBe(true);
+    expect(isStartupIsolatedHost('onedrive.com')).toBe(true);
+    expect(isStartupIsolatedHost('microsoft.com')).toBe(true);
+    expect(isStartupIsolatedHost('microsoftonline.com')).toBe(true);
+    expect(isStartupIsolatedHost('login.microsoftonline.com')).toBe(true);
+    expect(isStartupIsolatedHost('microsoft365.com')).toBe(true);
+    expect(isStartupIsolatedHost('cloud.microsoft')).toBe(true);
+    expect(isStartupIsolatedHost('tenant.cloud.microsoft')).toBe(true);
+  });
+
+  it('correctly matches Atlassian Cloud, Google Docs, and creative platforms', () => {
+    expect(isStartupIsolatedHost('atlassian.net')).toBe(true);
+    expect(isStartupIsolatedHost('ventiqo.atlassian.net')).toBe(true);
+    expect(isStartupIsolatedHost('atlassian.com')).toBe(true);
+    expect(isStartupIsolatedHost('jira.com')).toBe(true);
+    expect(isStartupIsolatedHost('docs.google.com')).toBe(true);
+    expect(isStartupIsolatedHost('drive.google.com')).toBe(true);
+    expect(isStartupIsolatedHost('figma.com')).toBe(true);
+    expect(isStartupIsolatedHost('canva.com')).toBe(true);
   });
 
   it('does not isolate regular Amazon retail or lookalike domains', () => {
-    expect(isIsolatedHost('amazon.com')).toBe(false);
-    expect(isIsolatedHost('www.amazon.com')).toBe(false);
-    expect(isIsolatedHost('smile.amazon.com')).toBe(false);
-    expect(isIsolatedHost('evil-whatsapp.com')).toBe(false);
-    expect(isIsolatedHost('not-aws.amazon.com.evil.com')).toBe(false);
-    expect(isIsolatedHost('fake-signin.aws.attacker.com')).toBe(false);
-    expect(isIsolatedHost('github.com')).toBe(false);
-    expect(isIsolatedHost('claude.ai')).toBe(false);
+    expect(isStartupIsolatedHost('amazon.com')).toBe(false);
+    expect(isStartupIsolatedHost('www.amazon.com')).toBe(false);
+    expect(isStartupIsolatedHost('smile.amazon.com')).toBe(false);
+    expect(isStartupIsolatedHost('evil-whatsapp.com')).toBe(false);
+    expect(isStartupIsolatedHost('not-aws.amazon.com.evil.com')).toBe(false);
+    expect(isStartupIsolatedHost('fake-signin.aws.attacker.com')).toBe(false);
+    expect(isStartupIsolatedHost('evil-sharepoint.com')).toBe(false);
+    expect(isStartupIsolatedHost('not-sharepoint.com.attacker.com')).toBe(false);
+    expect(isStartupIsolatedHost('fake-office.com')).toBe(false);
+    expect(isStartupIsolatedHost('office.com.malicious.net')).toBe(false);
+    expect(isStartupIsolatedHost('fake-microsoft.com')).toBe(false);
+    expect(isStartupIsolatedHost('github.com')).toBe(false);
+    expect(isStartupIsolatedHost('claude.ai')).toBe(false);
   });
 });
 
@@ -138,6 +169,24 @@ describe('Production Bundle Smoke Test: dist/pageHooks.js', () => {
     expect(ctx.__xoraShieldHooked).toBeUndefined();
   });
 
+  it('bypasses pageHooks on contoso.sharepoint.com', () => {
+    const ctx = createPageHooksContext('contoso.sharepoint.com');
+    vm.runInContext(bundleCode, ctx);
+    expect(ctx.__xoraShieldHooked).toBeUndefined();
+  });
+
+  it('bypasses pageHooks on word-edit.officeapps.live.com', () => {
+    const ctx = createPageHooksContext('word-edit.officeapps.live.com');
+    vm.runInContext(bundleCode, ctx);
+    expect(ctx.__xoraShieldHooked).toBeUndefined();
+  });
+
+  it('bypasses pageHooks on login.microsoftonline.com', () => {
+    const ctx = createPageHooksContext('login.microsoftonline.com');
+    vm.runInContext(bundleCode, ctx);
+    expect(ctx.__xoraShieldHooked).toBeUndefined();
+  });
+
   it('activates pageHooks on standard domain (github.com)', () => {
     const ctx = createPageHooksContext('github.com');
     vm.runInContext(bundleCode, ctx);
@@ -221,6 +270,27 @@ describe('Production Bundle Smoke Test: dist/shieldNav.js', () => {
 
   it('bypasses typing guard and navigation interceptor on signin.aws', () => {
     const { ctx, addedListeners } = createShieldNavContext('signin.aws');
+    vm.runInContext(bundleCode, ctx);
+    expect(ctx.__xoraShieldNav).toBeUndefined();
+    expect(addedListeners.length).toBe(0);
+  });
+
+  it('bypasses typing guard and navigation interceptor on contoso.sharepoint.com', () => {
+    const { ctx, addedListeners } = createShieldNavContext('contoso.sharepoint.com');
+    vm.runInContext(bundleCode, ctx);
+    expect(ctx.__xoraShieldNav).toBeUndefined();
+    expect(addedListeners.length).toBe(0);
+  });
+
+  it('bypasses typing guard and navigation interceptor on word-edit.officeapps.live.com', () => {
+    const { ctx, addedListeners } = createShieldNavContext('word-edit.officeapps.live.com');
+    vm.runInContext(bundleCode, ctx);
+    expect(ctx.__xoraShieldNav).toBeUndefined();
+    expect(addedListeners.length).toBe(0);
+  });
+
+  it('bypasses typing guard and navigation interceptor on login.microsoftonline.com', () => {
+    const { ctx, addedListeners } = createShieldNavContext('login.microsoftonline.com');
     vm.runInContext(bundleCode, ctx);
     expect(ctx.__xoraShieldNav).toBeUndefined();
     expect(addedListeners.length).toBe(0);

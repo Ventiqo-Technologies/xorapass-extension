@@ -33,6 +33,8 @@ export interface OverlayCredential {
   username: string;
   category: string;
   hasTotp?: boolean;
+  workspaceName?: string;
+  readOnly?: boolean;
 }
 
 export interface DropdownOptions {
@@ -1831,6 +1833,17 @@ export function openDropdown(anchor: HTMLInputElement, opts: DropdownOptions): v
       badge.textContent = '2FA';
       badge.title = 'Generates 2FA code';
       row.appendChild(badge);
+    }
+
+    if (cred.workspaceName) {
+      const wsBadge = document.createElement('span');
+      wsBadge.className = 'menu-item-badge';
+      wsBadge.style.background = '#eef2ff';
+      wsBadge.style.color = '#4338ca';
+      wsBadge.style.borderColor = '#c7d2fe';
+      wsBadge.textContent = cred.workspaceName;
+      wsBadge.title = `Shared from ${cred.workspaceName}`;
+      row.appendChild(wsBadge);
     }
 
     item.appendChild(row);

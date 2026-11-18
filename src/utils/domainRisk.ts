@@ -20,6 +20,7 @@ import {
   isSubdomainOf,
   hasPunycode,
   stripPublicSuffix,
+  publicSuffix,
   isUserContentHost,
   isFreeHostingHost,
 } from './siteTrust';
@@ -232,7 +233,10 @@ export const KNOWN_LEGITIMATE_DOMAINS = new Set([
   'static.microsoft',
   'office.net',
   'sharepoint.com',
+  'sharepoint-df.com',
   'microsoft365.com',
+  'cloud.microsoft',
+  'officeapps.live.com',
   'live.com',
   'office.com',
   'azure.com',
@@ -264,6 +268,7 @@ export const KNOWN_LEGITIMATE_DOMAINS = new Set([
   'awsapps.com',
   'signin.aws',
   'github.com',
+  'github.dev',
   'gitlab.com',
   'bitbucket.org',
   'paypal.com',
@@ -283,17 +288,35 @@ export const KNOWN_LEGITIMATE_DOMAINS = new Set([
   'salesforce.com',
   'force.com',
   'atlassian.com',
+  'atlassian.net',
+  'jira.com',
+  'confluence.cloud',
   'slack.com',
   'notion.so',
+  'notion.com',
   'figma.com',
   'adobe.com',
   'dropbox.com',
   'box.com',
   'zoom.us',
+  'zoom.com',
   'webex.com',
   'canva.com',
   'hubspot.com',
   'zendesk.com',
+  'freshdesk.com',
+  'freshservice.com',
+  'freshworks.com',
+  'myshopify.com',
+  'okta.com',
+  'oktapreview.com',
+  'okta-emea.com',
+  'auth0.com',
+  'onelogin.com',
+  'pingidentity.com',
+  'pingone.com',
+  'ping.cloud',
+  'cloudflareaccess.com',
   'intercom.com',
   'asana.com',
   'trello.com',
@@ -303,6 +326,17 @@ export const KNOWN_LEGITIMATE_DOMAINS = new Set([
   'docusign.net',
   'intuit.com',
   'quickbooks.com',
+  'servicenow.com',
+  'service-now.com',
+  'workday.com',
+  'myworkday.com',
+  'box.com',
+  'boxcdn.net',
+  'webex.com',
+  'ciscowebex.com',
+  'sentry.io',
+  'datadoghq.com',
+  'datadoghq.eu',
 
   // Developer & DevOps
   'docker.com',
@@ -816,9 +850,13 @@ export function assessDomainRisk(
   // USER_CONTENT_HOST_SUFFIXES): a Google Form or an Azure blob page is not
   // Google's or Microsoft's page.
   const verifiedPlatforms = options.verifiedPlatforms || [];
+  const baseSuffix = publicSuffix(pageHostname);
   const isPlatform =
     (pageReg && (KNOWN_LEGITIMATE_DOMAINS.has(pageReg) || verifiedPlatforms.includes(pageReg))) ||
-    verifiedPlatforms.includes(pageHostname);
+    (baseSuffix && (KNOWN_LEGITIMATE_DOMAINS.has(baseSuffix) || verifiedPlatforms.includes(baseSuffix))) ||
+    verifiedPlatforms.includes(pageHostname) ||
+    KNOWN_LEGITIMATE_DOMAINS.has(pageHostname) ||
+    Array.from(KNOWN_LEGITIMATE_DOMAINS).some((platform) => isSubdomainOf(pageHostname, platform));
 
   if (isPlatform && !isUserContentHost(pageHostname)) {
     assessment.signals.isSameRegistrableDomain = true;
@@ -936,6 +974,19 @@ export function assessDomainRisk(
     // ordinary tokens ("sign-ups"), so they only count via exact lookalikes.
     const catalogWeak = catalog && brand.length < 5;
     if (ruleOn('brand_abuse') && !catalogWeak && isBrandInHost && pageReg !== target) {
+      // Same-brand sibling platforms (e.g. atlassian.com vs ventiqo.atlassian.net, microsoft.com vs sharepoint.com)
+      // belong to the same authentic brand ecosystem and must never be flagged as impersonating each other.
+      const isSameBrandSibling = BRAND_CATALOG.some(
+        (b) => brandOwnsHost(b, target, brandTlds) && brandOwnsHost(b, pageHostname, brandTlds)
+      );
+      if (isSameBrandSibling) continue;
+
+      // If the brand token is part of the multi-tenant base suffix (e.g. atlassian.net, sharepoint.com)
+      // rather than a prefix or modifier in the tenant SLD, it is an authentic platform suffix.
+      if (baseSuffix && baseSuffix.split('.')[0]?.toLowerCase() === brand) {
+        continue;
+      }
+
       // Check if brand is combined with login/secure/verify keywords or hyphenated/subdomain
       const brandRegex = new RegExp(`(^|[-._])${brand}([-._]|$)`, 'i');
       const isTokenMatch = brandRegex.test(pageHostname) || brandRegex.test(pageSld) || brandRegex.test(decodedPageHost);

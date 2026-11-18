@@ -22,6 +22,7 @@ import { showPhishingInterstitial, closePhishingInterstitial, closeRiskWarning, 
 import { detectScamCues } from '../utils/pageContent';
 import { webRiskAdvisoryFromThreatType } from '../utils/webRiskAttribution';
 import { techSupportScamScore, TECH_SUPPORT_WARN, isNotificationBait, type BehaviorKind } from '../utils/scamBehavior';
+import { isStartupIsolatedHost } from '../utils/startupIsolation';
 
 interface NavVerdict {
   action: 'allow' | 'warn' | 'block';
@@ -40,16 +41,11 @@ const MAX_GUARD_MS = 1500;
   if (window !== window.top) return;
   if (!/^https?:$/.test(location.protocol)) return;
   // These are first-party applications with highly timing-sensitive boot
-  // sequences (AWS CloudScape and WhatsApp's QR renderer). They are already
-  // trusted by the domain-risk engine, so do not install document_start
-  // navigation/input guards that can interfere with their initialization.
-  const host = location.hostname.toLowerCase();
-  if (
-    host === 'web.whatsapp.com' || host.endsWith('.whatsapp.com') ||
-    host === 'aws.amazon.com' || host.endsWith('.aws.amazon.com') ||
-    host === 'signin.aws' || host.endsWith('.signin.aws') ||
-    host === 'awsapps.com' || host.endsWith('.awsapps.com')
-  ) return;
+  // sequences (AWS CloudScape, WhatsApp's QR renderer, Microsoft SharePoint /
+  // Office Online document viewers and editors). They are already trusted by
+  // the domain-risk engine, so do not install document_start navigation/input
+  // guards that can interfere with their initialization.
+  if (isStartupIsolatedHost(location.hostname)) return;
 
   const state: { host: string; action: string; shown: boolean } = {
     host: location.hostname,

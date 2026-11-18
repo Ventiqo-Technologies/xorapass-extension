@@ -73,6 +73,7 @@ import {
   type EncryptedPayload,
 } from '../utils/crypto';
 import { API_BASE_URL, WEB_APP_URL } from '../utils/config';
+import { fetchAndDecryptWorkspaceSecrets } from '../utils/workspaceSecrets';
 import {
   CLIPBOARD_PLACEHOLDER,
   clearDelayInMinutes,
@@ -358,6 +359,11 @@ interface VaultItem {
   accountId?: string;
   totpSecret?: string;
   customFields?: Record<string, string>;
+  workspaceId?: string;
+  workspaceName?: string;
+  vaultId?: string;
+  vaultName?: string;
+  readOnly?: boolean;
 }
 
 async function credentialReleaseError(
@@ -1608,6 +1614,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
           username: item.username,
           category: item.category || 'login',
           hasTotp: !!item.totpSecret,
+          workspaceName: item.workspaceName,
+          readOnly: item.readOnly,
         })),
         disabled: false,
         lookalike,
@@ -2378,6 +2386,14 @@ async function applyBridgedSession(
     }
   });
 
+  let workspaceItems: VaultItem[] = [];
+  try {
+    workspaceItems = await fetchAndDecryptWorkspaceSecrets(token);
+  } catch (wsErr) {
+    console.warn('[XoraPass Bridge] Could not fetch workspace secrets:', wsErr);
+  }
+  const allVaultItems = [...decryptedItems, ...workspaceItems];
+
   // NOTE: encKey must be stored as hex (matching bytesToHex from the popup
   // login path) so that refreshVault can correctly recover it with hexToBytes.
   const sessionData: Record<string, unknown> = {
@@ -2386,7 +2402,7 @@ async function applyBridgedSession(
     token,
     jwt: token,
     encKey: bytesToHex(encKeyBytes),
-    vaultItems: decryptedItems,
+    vaultItems: allVaultItems,
     offline: false,
   };
   if (refreshToken) sessionData.refreshToken = refreshToken;
