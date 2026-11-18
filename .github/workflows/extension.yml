@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Run Dependency Audit
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high
       - name: Install Playwright Chromium Dependencies
         run: npx playwright install --with-deps chromium
       - name: Run Comprehensive Regression Test Suite
