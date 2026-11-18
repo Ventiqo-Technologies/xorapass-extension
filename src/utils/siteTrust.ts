@@ -58,6 +58,7 @@ export const MULTI_PART_SUFFIXES = new Set([
   'azurewebsites.net', 'azurestaticapps.net', 'blogspot.com', 'wordpress.com',
   'myshopify.com', 'squarespace.com', 'webflow.io', 'wixsite.com',
   'zendesk.com', 'freshdesk.com', 'atlassian.net', 'sharepoint.com',
+  'service-now.com', 'myworkday.com', 'cloudflareaccess.com', 'pingone.com', 'okta.com',
   'notion.site', 'ngrok.io', 'ngrok-free.app', 'trycloudflare.com',
 ]);
 
@@ -113,7 +114,7 @@ const EXTRA_SUFFIXES = new Set([
 ]);
 
 /** Longest applicable boundary, including private PSL and wildcard rules. */
-function publicSuffix(host: string): string {
+export function publicSuffix(host: string): string {
   const suffix = getPublicSuffix(host, PSL_OPTIONS) || '';
   const labels = host.split('.');
   for (let i = 0; i < labels.length; i++) {

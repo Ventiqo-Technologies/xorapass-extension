@@ -233,6 +233,84 @@ describe('Domain Risk Assessment — Acceptance Criteria', () => {
     expect(resCatalog.decision).toBe('allow');
     expect(resCatalog.riskScore).toBe(0);
   });
+
+  it('ALLOWS multi-tenant cloud platforms (Atlassian Cloud, SharePoint) without false brand abuse flags', () => {
+    // User has atlassian.com in vault; ventiqo.atlassian.net must NOT be blocked as an impersonator
+    const resAtlassian = assessDomainRisk('ventiqo.atlassian.net', ['https://atlassian.com']);
+    expect(resAtlassian.decision).toBe('allow');
+    expect(resAtlassian.riskScore).toBe(0);
+    expect(resAtlassian.reasons).toHaveLength(0);
+
+    const resAtlassianCatalog = assessWithCatalog('ventiqo.atlassian.net', ['https://atlassian.com']);
+    expect(resAtlassianCatalog.decision).toBe('allow');
+    expect(resAtlassianCatalog.riskScore).toBe(0);
+
+    // User has sharepoint.com or microsoft.com in vault; company.sharepoint.com must NOT be blocked
+    const resSharepoint = assessDomainRisk('company.sharepoint.com', ['https://sharepoint.com', 'https://microsoft.com']);
+    expect(resSharepoint.decision).toBe('allow');
+    expect(resSharepoint.riskScore).toBe(0);
+    expect(resSharepoint.reasons).toHaveLength(0);
+
+    // Zendesk multi-tenant customer support portal
+    const resZendesk = assessDomainRisk('company.zendesk.com', ['https://zendesk.com']);
+    expect(resZendesk.decision).toBe('allow');
+    expect(resZendesk.riskScore).toBe(0);
+
+    // Freshdesk / Freshservice portal
+    const resFreshdesk = assessDomainRisk('support.freshdesk.com', ['https://freshdesk.com']);
+    expect(resFreshdesk.decision).toBe('allow');
+    expect(resFreshdesk.riskScore).toBe(0);
+
+    // Shopify merchant stores
+    const resShopify = assessDomainRisk('mystore.myshopify.com', ['https://shopify.com']);
+    expect(resShopify.decision).toBe('allow');
+    expect(resShopify.riskScore).toBe(0);
+
+    // Salesforce Lightning & Force.com sibling domains
+    const resSalesforce = assessDomainRisk('myorg.lightning.force.com', ['https://salesforce.com']);
+    expect(resSalesforce.decision).toBe('allow');
+    expect(resSalesforce.riskScore).toBe(0);
+
+    // Okta enterprise authentication portal
+    const resOkta = assessDomainRisk('myorg.okta.com', ['https://okta.com']);
+    expect(resOkta.decision).toBe('allow');
+    expect(resOkta.riskScore).toBe(0);
+
+    // Notion domains (notion.so, notion.site, notion.com)
+    const resNotion = assessDomainRisk('workspace.notion.site', ['https://notion.com', 'https://notion.so']);
+    expect(resNotion.decision).toBe('allow');
+    expect(resNotion.riskScore).toBe(0);
+
+    // ServiceNow (tenant.service-now.com)
+    const resServiceNow = assessDomainRisk('mycompany.service-now.com', ['https://servicenow.com']);
+    expect(resServiceNow.decision).toBe('allow');
+    expect(resServiceNow.riskScore).toBe(0);
+
+    // Workday (tenant.myworkday.com)
+    const resWorkday = assessDomainRisk('mycompany.myworkday.com', ['https://workday.com']);
+    expect(resWorkday.decision).toBe('allow');
+    expect(resWorkday.riskScore).toBe(0);
+
+    // Cloudflare Access (team.cloudflareaccess.com)
+    const resCloudflare = assessDomainRisk('myteam.cloudflareaccess.com', ['https://cloudflare.com']);
+    expect(resCloudflare.decision).toBe('allow');
+    expect(resCloudflare.riskScore).toBe(0);
+
+    // Datadog
+    const resDatadog = assessDomainRisk('datadoghq.com', ['https://datadoghq.com']);
+    expect(resDatadog.decision).toBe('allow');
+    expect(resDatadog.riskScore).toBe(0);
+
+    // But actual deceptive domains using the brand token MUST still be blocked
+    const resDeceptive = assessDomainRisk('atlassian-login.net', ['https://atlassian.com']);
+    expect(resDeceptive.decision).toBe('block');
+    expect(resDeceptive.riskScore).toBeGreaterThanOrEqual(80);
+    expect(resDeceptive.matchedTarget).toBe('atlassian.com');
+
+    const resDeceptiveZendesk = assessDomainRisk('zendesk-verify.com', ['https://zendesk.com']);
+    expect(resDeceptiveZendesk.decision).toBe('block');
+    expect(resDeceptiveZendesk.matchedTarget).toBe('zendesk.com');
+  });
 });
 
 

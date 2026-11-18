@@ -23,15 +23,10 @@
 // other than pure utilities.
 
 import { shouldBlockClipboardWrite, classifyWalletRequest } from '../utils/scamBehavior';
+import { isStartupIsolatedHost } from '../utils/startupIsolation';
 
 (() => {
-  const host = location.hostname.toLowerCase();
-  if (
-    host === 'web.whatsapp.com' || host.endsWith('.whatsapp.com') ||
-    host === 'aws.amazon.com' || host.endsWith('.aws.amazon.com') ||
-    host === 'signin.aws' || host.endsWith('.signin.aws') ||
-    host === 'awsapps.com' || host.endsWith('.awsapps.com')
-  ) return;
+  if (isStartupIsolatedHost(location.hostname)) return;
   const TAG = '__xoraShield';
   const w = window as any;
   if (w[TAG + 'Hooked']) return;
