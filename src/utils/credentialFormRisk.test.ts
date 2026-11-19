@@ -11,13 +11,40 @@ describe('credential form checks independent of saved-site trust', () => {
   it.each(['/submit', '../submit', 'https://portal.example.com:443/submit'])('preserves a same-origin HTTPS action %s', actionUrl => {
     expect(credentialFormReason(page, { ...form, actionUrl })).toBeNull();
   });
-  it.each(['https://collector.invalid/submit', 'https://auth.example.com/submit', 'https://portal.example.com:8443/submit',
+  it.each(['https://collector.invalid/submit', 'https://auth.foreign-collector.invalid/submit', 'https://portal.example.com:8443/submit',
     'http://portal.example.com/submit', 'javascript:submit()', 'data:text/plain,password', 'https://['])
   ('requires approval for unsafe action %s on an allowlisted saved site', actionUrl => {
     const base = assessDomainRisk('portal.example.com', ['portal.example.com'], ['portal.example.com']);
     const risk = applyCredentialFormRisk(base, page, { ...form, actionUrl });
     expect(risk.decision).toBe('require_approval');
     expect(risk.riskScore).toBeGreaterThanOrEqual(70);
+  });
+  it('permits same-site auth subdomains (e.g. portal.example.com -> auth.example.com)', () => {
+    expect(credentialFormReason(page, { ...form, actionUrl: 'https://auth.example.com/submit' })).toBeNull();
+  });
+  it('permits authentic enterprise platforms with auth subdomains (e.g. www.zoho.com -> accounts.zoho.com)', () => {
+    expect(
+      credentialFormReason('https://www.zoho.com/one/signup1.html', {
+        ...form,
+        actionUrl: 'https://accounts.zoho.com/signup',
+      })
+    ).toBeNull();
+  });
+  it('permits authentic enterprise brand SSO siblings (e.g. office.com -> login.microsoftonline.com)', () => {
+    expect(
+      credentialFormReason('https://www.office.com/login', {
+        ...form,
+        actionUrl: 'https://login.microsoftonline.com/common/login',
+      })
+    ).toBeNull();
+  });
+  it('flags multi-tenant free hosting cross-tenant forms (e.g. victim.github.io -> attacker.github.io)', () => {
+    expect(
+      credentialFormReason('https://victim.github.io/login', {
+        ...form,
+        actionUrl: 'https://attacker.github.io/submit',
+      })
+    ).toBe('This login form sends your password to a different origin.');
   });
   it('checks structural form signals even without a form action', () => {
     expect(credentialFormReason(page, undefined, { password_field_count: 1, form_action_insecure: true })).toBeTruthy();

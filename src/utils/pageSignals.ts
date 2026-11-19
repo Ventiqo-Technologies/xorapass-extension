@@ -17,6 +17,7 @@
 // under the node test environment. collectPageSignals is the one DOM adapter.
 
 import { extractHostname, registrableDomain } from './siteTrust';
+import { isSameBrandOrSite } from './credentialFormRisk';
 
 export interface PageSignals {
   visible_brand_tokens?: string[];
@@ -398,7 +399,7 @@ export function collectPageSignals(): PageSignals {
         const action = new URL(rawAction, loc.href);
         signals.form_action_insecure = action.protocol === 'http:' && action.hostname !== 'localhost';
         signals.form_action_cross_origin =
-          registrableDomain(action.hostname) !== registrableDomain(extractHostname(loc.hostname));
+          !isSameBrandOrSite(extractHostname(loc.hostname), action.hostname);
       } catch {
         /* unparseable action - report nothing rather than something wrong */
       }

@@ -1142,7 +1142,7 @@ async function evaluateDomainRisk(opts: {
   // Page structure (brand shown vs. real domain, password field, hosting,
   // fake windows), scored locally — works offline and without the server.
   risk = applyPageRisk(risk, scorePageSignals(opts.pageSignals, opts.hostname, brands), shieldAssessOptions(cfg));
-  risk = applyCredentialFormRisk(risk, opts.currentUrl, opts.formContext, opts.pageSignals);
+  risk = applyCredentialFormRisk(risk, opts.currentUrl, opts.formContext, opts.pageSignals, brands);
   const hit = await checkBlocklist(opts.currentUrl);
   if (hit) risk = blocklistAssessment(risk, hit.threatType);
 
@@ -1170,7 +1170,7 @@ async function evaluateDomainRisk(opts: {
   const merged = remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
   // A domain allow policy does not authorize an unsafe credential destination.
   // A locally confirmed blocklist hit is also independent of trust/policy hints.
-  return hit ? blocklistAssessment(merged, hit.threatType) : applyCredentialFormRisk(merged, opts.currentUrl, opts.formContext, opts.pageSignals);
+  return hit ? blocklistAssessment(merged, hit.threatType) : applyCredentialFormRisk(merged, opts.currentUrl, opts.formContext, opts.pageSignals, brands);
 }
 
 /**
