@@ -73,6 +73,11 @@ describe('tech-support scam scoring', () => {
   });
   it('recognises notification bait', () => {
     expect(isNotificationBait(true, 'Click Allow to verify you are not a robot')).toBe(true);
+    expect(isNotificationBait(true, 'Press Allow to watch video')).toBe(true);
+    expect(isNotificationBait(true, 'To continue, please click Allow')).toBe(true);
+    expect(isNotificationBait(true, 'Just click allow to continue')).toBe(true);
+    expect(isNotificationBait(true, 'Press allow button to download file')).toBe(true);
+    expect(isNotificationBait(true, 'Tap Allow if you are 18+')).toBe(true);
     expect(isNotificationBait(false, 'Latest news', [])).toBe(false);
     expect(isNotificationBait(false, '', ['tech_support'])).toBe(true);
   });

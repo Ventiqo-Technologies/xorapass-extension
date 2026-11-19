@@ -1142,7 +1142,7 @@ async function evaluateDomainRisk(opts: {
   // Page structure (brand shown vs. real domain, password field, hosting,
   // fake windows), scored locally — works offline and without the server.
   risk = applyPageRisk(risk, scorePageSignals(opts.pageSignals, opts.hostname, brands), shieldAssessOptions(cfg));
-  risk = applyCredentialFormRisk(risk, opts.currentUrl, opts.formContext, opts.pageSignals);
+  risk = applyCredentialFormRisk(risk, opts.currentUrl, opts.formContext, opts.pageSignals, brands);
   const hit = await checkBlocklist(opts.currentUrl);
   if (hit) risk = blocklistAssessment(risk, hit.threatType);
 
@@ -1167,10 +1167,12 @@ async function evaluateDomainRisk(opts: {
   // the call for allowlisted domains (as this used to) made that guard dead
   // code and let a user-level allowlist toggle silently override an org
   // blocklist — precisely what the policy_enforced flag exists to prevent.
-  const merged = remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
+  const merged = remoteRisk
+    ? mergeLocalAndRemoteRisk(risk, remoteRisk, opts.currentUrl, opts.formContext, brands)
+    : risk;
   // A domain allow policy does not authorize an unsafe credential destination.
   // A locally confirmed blocklist hit is also independent of trust/policy hints.
-  return hit ? blocklistAssessment(merged, hit.threatType) : applyCredentialFormRisk(merged, opts.currentUrl, opts.formContext, opts.pageSignals);
+  return hit ? blocklistAssessment(merged, hit.threatType) : applyCredentialFormRisk(merged, opts.currentUrl, opts.formContext, opts.pageSignals, brands);
 }
 
 /**
@@ -2205,6 +2207,56 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const reputation = await getMaliciousExtensionReputation().catch(() => ({ ids: new Set<string>(), source: 'unavailable' as const }));
       const api = (globalThis as any).chrome?.management || (browser as any)?.management;
       return auditInstalledExtensions(reputation.source === 'unavailable' ? undefined : reputation.ids, api, reputation.source);
+    })();
+  }
+
+  if (type === 'DISABLE_EXTENSION') {
+    return (async () => {
+      const { id } = msg.payload || {};
+      if (typeof id === 'string' && id) {
+        const api = (globalThis as any).chrome?.management || (browser as any)?.management;
+        if (typeof api?.setEnabled === 'function') {
+          return new Promise<boolean>((resolve) => {
+            try {
+              const res = api.setEnabled(id, false, () => {
+                const err = (globalThis as any).chrome?.runtime?.lastError;
+                resolve(!err);
+              });
+              if (res && typeof res.then === 'function') {
+                res.then(() => resolve(true)).catch(() => resolve(false));
+              }
+            } catch {
+              resolve(false);
+            }
+          });
+        }
+      }
+      return false;
+    })();
+  }
+
+  if (type === 'UNINSTALL_EXTENSION') {
+    return (async () => {
+      const { id } = msg.payload || {};
+      if (typeof id === 'string' && id) {
+        const api = (globalThis as any).chrome?.management || (browser as any)?.management;
+        if (typeof api?.uninstall === 'function') {
+          return new Promise<boolean>((resolve) => {
+            try {
+              const res = api.uninstall(id, { showConfirmDialog: true }, () => {
+                const err = (globalThis as any).chrome?.runtime?.lastError;
+                resolve(!err);
+              });
+              if (res && typeof res.then === 'function') {
+                res.then(() => resolve(true)).catch(() => resolve(false));
+              }
+            } catch {
+              resolve(false);
+            }
+          });
+        }
+      }
+      return false;
     })();
   }
 

@@ -314,5 +314,13 @@ describe('validateMessage — companion-device linking bridge', () => {
     expect(validateMessage({ type: 'GET_TAB_RISK_STATE' }, popupSender()).ok).toBe(true);
     expect(validateMessage({ type: 'DISMISS_TAB_RISK_WARNING' }, popupSender()).ok).toBe(true);
   });
+
+  it('allows DISABLE_EXTENSION and UNINSTALL_EXTENSION only from popup', () => {
+    expect(validateMessage({ type: 'DISABLE_EXTENSION', payload: { id: 'test-ext' } }, popupSender()).ok).toBe(true);
+    expect(validateMessage({ type: 'UNINSTALL_EXTENSION', payload: { id: 'test-ext' } }, popupSender()).ok).toBe(true);
+    expect(validateMessage({ type: 'DISABLE_EXTENSION', payload: { id: 'test-ext' } }, contentSender()).reason).toBe('privileged-from-content');
+    expect(validateMessage({ type: 'UNINSTALL_EXTENSION', payload: { id: 'test-ext' } }, contentSender()).reason).toBe('privileged-from-content');
+    expect(validateMessage({ type: 'DISABLE_EXTENSION', payload: { id: 'test-ext' } }, externalWebSender()).reason).toBe('unauthorized-external-type');
+  });
 });
 
