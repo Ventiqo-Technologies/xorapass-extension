@@ -1167,7 +1167,9 @@ async function evaluateDomainRisk(opts: {
   // the call for allowlisted domains (as this used to) made that guard dead
   // code and let a user-level allowlist toggle silently override an org
   // blocklist — precisely what the policy_enforced flag exists to prevent.
-  const merged = remoteRisk ? mergeLocalAndRemoteRisk(risk, remoteRisk) : risk;
+  const merged = remoteRisk
+    ? mergeLocalAndRemoteRisk(risk, remoteRisk, opts.currentUrl, opts.formContext, brands)
+    : risk;
   // A domain allow policy does not authorize an unsafe credential destination.
   // A locally confirmed blocklist hit is also independent of trust/policy hints.
   return hit ? blocklistAssessment(merged, hit.threatType) : applyCredentialFormRisk(merged, opts.currentUrl, opts.formContext, opts.pageSignals, brands);

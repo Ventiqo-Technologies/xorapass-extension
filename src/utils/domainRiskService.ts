@@ -11,6 +11,8 @@ import { visibleShieldHistory } from './domainRiskHistory';
 import type { Decision, RiskLevel, DomainRiskAssessment } from './domainRisk';
 import { extractHostname } from './siteTrust';
 import type { PageSignals } from './pageSignals';
+import { isSameBrandOrSite } from './credentialFormRisk';
+import { BRAND_CATALOG, type CatalogBrand } from './brandCatalog';
 
 export interface FormThreatContext {
   isLoginForm?: boolean;
@@ -311,17 +313,46 @@ export async function checkDomainRiskRemote(
  */
 export function mergeLocalAndRemoteRisk(
   local: DomainRiskAssessment,
-  remote: RemoteDomainRiskResponse | null
+  remote: RemoteDomainRiskResponse | null,
+  currentUrl?: string,
+  form?: FormThreatContext,
+  brands: readonly CatalogBrand[] = BRAND_CATALOG
 ): DomainRiskAssessment {
   if (!remote) {
     return local;
   }
 
+  // If remote returned CROSS_ORIGIN_FORM_ACTION, but local on-device analysis
+  // confirms the destination is actually a same-site subdomain or authentic brand sibling,
+  // do not treat the server's cross-origin signal as a genuine credential-stealing threat.
+  const isFalseCrossOrigin =
+    (remote.reason_codes || []).includes('CROSS_ORIGIN_FORM_ACTION') &&
+    (() => {
+      try {
+        if (!currentUrl) return false;
+        const page = new URL(currentUrl);
+        const action = new URL(form?.actionUrl || currentUrl, page);
+        return (
+          action.protocol === page.protocol &&
+          action.port === page.port &&
+          isSameBrandOrSite(page.hostname, action.hostname, brands)
+        );
+      } catch {
+        return false;
+      }
+    })();
+
+  const rawReasonCodes = remote.reason_codes || [];
+  const effectiveReasonCodes = isFalseCrossOrigin
+    ? rawReasonCodes.filter((rc) => rc !== 'CROSS_ORIGIN_FORM_ACTION')
+    : rawReasonCodes;
+
   const hasThreatIntelHit =
-    (remote.reason_codes || []).some((rc) => rc === 'THREAT_INTEL_PHISHING_HIT' || rc === 'THREAT_INTEL_MALWARE_HIT') ||
+    effectiveReasonCodes.some((rc) => rc === 'THREAT_INTEL_PHISHING_HIT' || rc === 'THREAT_INTEL_MALWARE_HIT') ||
     Object.values(remote.threat_intel_signals || {}).some((sig) => sig === 'phishing_hit' || sig === 'malware_hit');
-  const hasFormRisk = (remote.reason_codes || []).some((rc) =>
-    ['CROSS_ORIGIN_FORM_ACTION', 'INSECURE_FORM_ACTION', 'INVALID_FORM_ACTION'].includes(rc));
+  const hasFormRisk = effectiveReasonCodes.some((rc) =>
+    ['CROSS_ORIGIN_FORM_ACTION', 'INSECURE_FORM_ACTION', 'INVALID_FORM_ACTION'].includes(rc)
+  );
 
   // A local, user-level allowlist toggle can suppress ordinary heuristic/
   // threat-intel noise for a domain the user has personally vetted — but it
@@ -336,7 +367,7 @@ export function mergeLocalAndRemoteRisk(
   // An admin approved this site for this user (server-side, per account):
   // the server already refused to apply it over policies or threat-intel
   // hits, so honour it over local heuristics too.
-  if (remote.decision === 'allow' && (remote.reason_codes || []).includes('USER_ALLOWLIST_APPROVED')) {
+  if (remote.decision === 'allow' && effectiveReasonCodes.includes('USER_ALLOWLIST_APPROVED')) {
     return {
       ...local,
       riskScore: Math.min(local.riskScore, remote.risk_score),
@@ -349,12 +380,19 @@ export function mergeLocalAndRemoteRisk(
     };
   }
 
-  // Check whether threat intelligence (Google Web Risk, VirusTotal, Cloudflare, etc.) flagged
-  // this domain as suspected phishing or malware. A confirmed threat intel hit must NEVER
-  // be softened or presented as merely a low/medium warning.
+  // If the server's elevated decision was driven purely by the false cross-origin form,
+  // neutralize its score and decision so it doesn't override local trust.
+  const remoteDecisionDrivenByFalseForm =
+    isFalseCrossOrigin &&
+    effectiveReasonCodes.length === 0 &&
+    !hasThreatIntelHit &&
+    !remote.policy_enforced;
+
+  const remoteScore = remoteDecisionDrivenByFalseForm ? 0 : remote.risk_score;
+  const remoteDecision: Decision = remoteDecisionDrivenByFalseForm ? 'allow' : remote.decision;
 
   // Choose stricter decision & higher score
-  let score = Math.max(local.riskScore, remote.risk_score);
+  let score = Math.max(local.riskScore, remoteScore);
   let decision: Decision = local.decision;
 
   const rank = (d: Decision): number => {
@@ -371,22 +409,22 @@ export function mergeLocalAndRemoteRisk(
     }
   };
 
-  const isPolicyAllowed = !!remote.policy_enforced && remote.decision === 'allow';
-  const isUnblockedOverride = (remote.reason_codes || []).some(
+  const isPolicyAllowed = !!remote.policy_enforced && remoteDecision === 'allow';
+  const isUnblockedOverride = effectiveReasonCodes.some(
     (rc) => rc === 'THREAT_INTEL_UNBLOCKED_WARNING'
   );
 
   if (isPolicyAllowed) {
     decision = 'allow';
-    score = remote.risk_score || 0;
+    score = remoteScore || 0;
   } else if (hasThreatIntelHit && !isUnblockedOverride) {
     if (score < 85) score = 85;
     decision = 'block';
   } else if (hasThreatIntelHit && isUnblockedOverride) {
     decision = 'warn';
     if (score < 65) score = 65;
-  } else if (rank(remote.decision) > rank(local.decision)) {
-    decision = remote.decision;
+  } else if (rank(remoteDecision) > rank(local.decision)) {
+    decision = remoteDecision;
   }
 
   let riskLevel: RiskLevel = local.riskLevel;
@@ -404,12 +442,17 @@ export function mergeLocalAndRemoteRisk(
     }
   }
 
-  // Merge unique reason strings. Defensively coerced to [] — a backend
-  // response with reasons serialized as null (a real bug that shipped
-  // once already: a Go nil slice marshals to JSON null, not []) would
-  // otherwise crash this entire function on `...null`, taking down
-  // whatever UI called it.
-  const combinedReasons = Array.from(new Set([...(local.reasons || []), ...(remote.reasons || [])]));
+  const rawReasons = remote.reasons || [];
+  const remoteReasons = isFalseCrossOrigin
+    ? rawReasons.filter((r) => !r.toLowerCase().includes('different origin'))
+    : rawReasons;
+
+  // Merge unique reason strings.
+  const combinedReasons = Array.from(new Set([...(local.reasons || []), ...remoteReasons]));
+
+  const effectiveSafeWarningMessage = remoteDecisionDrivenByFalseForm
+    ? local.safeWarningMessage
+    : (remote.safe_warning_message || local.safeWarningMessage);
 
   return {
     ...local,
@@ -417,8 +460,8 @@ export function mergeLocalAndRemoteRisk(
     riskLevel,
     decision,
     reasons: combinedReasons,
-    matchedTarget: local.matchedTarget || remote.matched_target || null,
-    safeWarningMessage: remote.safe_warning_message || local.safeWarningMessage,
+    matchedTarget: local.matchedTarget || (remoteDecisionDrivenByFalseForm ? null : remote.matched_target) || null,
+    safeWarningMessage: effectiveSafeWarningMessage,
     showInterstitial:
       !isPolicyAllowed &&
       (!!remote.show_interstitial ||
