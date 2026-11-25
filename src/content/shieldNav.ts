@@ -200,6 +200,21 @@ const MAX_GUARD_MS = 1500;
       });
       return;
     }
+    if (kind === 'notification_blocked' && !warnedNotification) {
+      warnedNotification = true;
+      tellBackground('notification_trap_blocked');
+      showRiskWarning({
+        source: 'behavior',
+        onShown: () => reportDisplayedShieldAction('page_blocked', 'risk', currentRiskDocumentContext()),
+        severity: 'block',
+        title: 'Blocked Deceptive Notification Trap',
+        message:
+          'This page tried to trick you into enabling browser notification spam (e.g. fake "click allow to verify you are human"). XoraPass blocked the request before it reached your browser.',
+        currentDomain: location.hostname,
+        riskLevel: 'high',
+      });
+      return;
+    }
     if (kind === 'notification_request' && !warnedNotification) {
       const text = pageText();
       if (isNotificationBait(!!d.activated, text, detectScamCues(text))) {

@@ -174,7 +174,11 @@ export const TECH_SUPPORT_WARN = 60;
  * plain news site asking on load is annoying but not flagged.
  */
 export function isNotificationBait(hadUserActivation: boolean, pageText: string, cues: readonly string[] = []): boolean {
-  const bait = /\b(click|press|tap) ["“']?allow["”']? (to|if) (verify|confirm|prove|continue|watch|download|access|you('re| are) not a robot|you are (a )?human)/i.test(pageText);
+  const bait = /\b(click|press|tap|hit|select) ["“']?allow["”']? (to|if|and) (verify|confirm|prove|continue|watch|download|access|proceed|play|unmute|unblock|close|you('re| are) not a robot|you are (a )?human|you are 18\+)/i.test(pageText) ||
+    /\b(to (continue|download|watch|play|verify|proceed)|if you are human|to prove you are not a robot),? (please )?(click|press|tap) ["“']?allow["”']?/i.test(pageText) ||
+    /\bjust (click|press|tap) ["“']?allow["”']? to (continue|proceed|verify|watch|download)/i.test(pageText) ||
+    /\bpress ["“']?allow["”']? button to (continue|verify|proceed|download)/i.test(pageText);
+
   const scammy = cues.some((c) => ['tech_support', 'prize_scam', 'crypto_scam', 'fake_download', 'clickfix'].includes(c));
   return bait || (!hadUserActivation && scammy);
 }

@@ -22,7 +22,7 @@
 // Built as its own self-contained IIFE (vite --mode pagehooks); NO imports
 // other than pure utilities.
 
-import { shouldBlockClipboardWrite, classifyWalletRequest } from '../utils/scamBehavior';
+import { shouldBlockClipboardWrite, classifyWalletRequest, isNotificationBait } from '../utils/scamBehavior';
 import { isStartupIsolatedHost } from '../utils/startupIsolation';
 
 (() => {
@@ -232,14 +232,24 @@ import { isStartupIsolatedHost } from '../utils/startupIsolation';
     if (!self.muted && self.volume > 0 && !activated()) report('autoplay_audio');
   });
 
-  // ── Notification permission ────────────────────────────────────────────
+  // ── Notification permission trap interceptor ─────────────────────────────
   try {
     const N = (window as any).Notification;
     if (N?.requestPermission) {
       const orig = N.requestPermission.bind(N);
-      N.requestPermission = (...args: any[]) => {
-        post('notification_request', { activated: !!(navigator as any).userActivation?.isActive });
-        return orig(...args);
+      N.requestPermission = function(callback?: (permission: string) => void) {
+        const text = pageText();
+        const hasActivation = !!(navigator as any).userActivation?.isActive;
+        const isBait = isNotificationBait(hasActivation, text);
+        if (isBait) {
+          post('notification_blocked', { bait: true });
+          if (typeof callback === 'function') {
+            try { callback('denied'); } catch { /* ignore */ }
+          }
+          return Promise.resolve('denied');
+        }
+        post('notification_request', { activated: hasActivation });
+        return orig(callback);
       };
     }
   } catch {
