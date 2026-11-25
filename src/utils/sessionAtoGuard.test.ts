@@ -101,5 +101,19 @@ describe('sessionAtoGuard', () => {
       expect(tracker.getActiveAlerts().length).toBe(0);
     }
   });
+
+  it('seeds existing active session cookies without triggering alerts', () => {
+    tracker.seedActiveCookies([
+      { domain: '.facebook.com', name: 'c_user' },
+      { domain: '.facebook.com', name: 'xs' },
+      { domain: '.example.com', name: 'unrelated' },
+    ]);
+
+    const statuses = tracker.getPlatformStatuses();
+    const meta = statuses.find((s) => s.platformId === 'meta');
+    expect(meta?.status).toBe('active_session');
+    expect(meta?.activeCookieCount).toBe(2);
+    expect(tracker.getActiveAlerts().length).toBe(0);
+  });
 });
 

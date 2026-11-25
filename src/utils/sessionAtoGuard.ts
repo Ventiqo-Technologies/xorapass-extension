@@ -99,6 +99,20 @@ export class SessionAtoTracker {
   }
 
   /**
+   * Seeds existing browser cookies so already-authenticated sessions show as active_session
+   * without triggering churn or deletion alerts.
+   */
+  public seedActiveCookies(cookies: Array<{ domain: string; name: string }>) {
+    for (const c of cookies) {
+      const platform = matchMonitoredPlatform(c.domain, c.name);
+      if (!platform) continue;
+      const platformSet = this.activeCookies.get(platform.id) || new Set();
+      platformSet.add(c.name);
+      this.activeCookies.set(platform.id, platformSet);
+    }
+  }
+
+  /**
    * Processes an incoming cookie change event
    */
   public recordCookieChange(event: CookieChangeDetail, now = Date.now()): AtoAlert | null {

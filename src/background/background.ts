@@ -861,19 +861,55 @@ async function getCulpritSearchExtensions(): Promise<SearchHijackExtensionFindin
   }
 }
 
-if (typeof browser.cookies !== 'undefined' && browser.cookies?.onChanged) {
-  browser.cookies.onChanged.addListener((changeInfo) => {
-    if (!changeInfo?.cookie) return;
-    const detail: CookieChangeDetail = {
-      domain: changeInfo.cookie.domain || '',
-      name: changeInfo.cookie.name || '',
-      value: changeInfo.cookie.value,
-      secure: changeInfo.cookie.secure,
-      httpOnly: changeInfo.cookie.httpOnly,
-      removed: Boolean(changeInfo.removed),
-      cause: changeInfo.cause,
-    };
-    sessionAtoTracker.recordCookieChange(detail);
+let cookieWatcherAttached = false;
+
+async function seedExistingAtoCookies(): Promise<void> {
+  try {
+    if (typeof browser.cookies !== 'undefined' && typeof browser.cookies?.getAll === 'function') {
+      const allCookies = await browser.cookies.getAll({});
+      if (Array.isArray(allCookies)) {
+        sessionAtoTracker.seedActiveCookies(
+          allCookies.map((c) => ({ domain: c.domain || '', name: c.name || '' }))
+        );
+      }
+    }
+  } catch {
+    // Non-fatal if cookies permission is not yet granted
+  }
+}
+
+function ensureCookieWatcherAttached(): boolean {
+  if (typeof browser.cookies === 'undefined' || !browser.cookies?.onChanged) {
+    return false;
+  }
+  if (!cookieWatcherAttached) {
+    cookieWatcherAttached = true;
+    browser.cookies.onChanged.addListener((changeInfo) => {
+      if (!changeInfo?.cookie) return;
+      const detail: CookieChangeDetail = {
+        domain: changeInfo.cookie.domain || '',
+        name: changeInfo.cookie.name || '',
+        value: changeInfo.cookie.value,
+        secure: changeInfo.cookie.secure,
+        httpOnly: changeInfo.cookie.httpOnly,
+        removed: Boolean(changeInfo.removed),
+        cause: changeInfo.cause,
+      };
+      sessionAtoTracker.recordCookieChange(detail);
+    });
+    void seedExistingAtoCookies();
+  }
+  return true;
+}
+
+ensureCookieWatcherAttached();
+
+if (typeof browser.permissions !== 'undefined' && browser.permissions?.onAdded) {
+  browser.permissions.onAdded.addListener((perms) => {
+    if (perms?.permissions?.includes('cookies')) {
+      ensureCookieWatcherAttached();
+      void seedExistingAtoCookies();
+    }
   });
 }
 
@@ -2350,11 +2386,17 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
 
   if (type === 'GET_ATO_SESSION_STATUS') {
-    return Promise.resolve({
-      platforms: sessionAtoTracker.getPlatformStatuses(),
-      alerts: sessionAtoTracker.getActiveAlerts(),
-      hasCookiePermission: Boolean(typeof browser.cookies !== 'undefined' && browser.cookies?.onChanged),
-    });
+    return (async () => {
+      const hasCookiePermission = ensureCookieWatcherAttached();
+      if (hasCookiePermission) {
+        await seedExistingAtoCookies();
+      }
+      return {
+        platforms: sessionAtoTracker.getPlatformStatuses(),
+        alerts: sessionAtoTracker.getActiveAlerts(),
+        hasCookiePermission,
+      };
+    })();
   }
 
   if (type === 'DISMISS_ATO_ALERT') {
