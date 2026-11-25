@@ -8,6 +8,17 @@ export interface MonitoredPlatformDef {
   primaryCookies: Set<string>;
 }
 
+export const ATO_MONITORED_ORIGINS = [
+  'https://*.google.com/*',
+  'https://*.facebook.com/*',
+  'https://*.instagram.com/*',
+  'https://*.twitter.com/*',
+  'https://*.x.com/*',
+  'https://*.microsoftonline.com/*',
+  'https://*.live.com/*',
+  'https://login.microsoft.com/*',
+];
+
 export const MONITORED_ATO_PLATFORMS: MonitoredPlatformDef[] = [
   {
     id: 'google',
@@ -119,6 +130,11 @@ export class SessionAtoTracker {
     const platform = matchMonitoredPlatform(event.domain, event.name);
     if (!platform) return null;
 
+    // 'overwrite' is the internal deletion half of a cookie replacement – Chrome/Edge fire
+    // removed:true/cause:'overwrite' immediately before removed:false/cause:'explicit' for
+    // the same cookie renewal. Skip it to avoid double-counting normal session refreshes.
+    if (event.cause === 'overwrite') return null;
+
     const cookieKey = `${platform.id}:${event.name}`;
     const timestamps = this.changeTimestamps.get(cookieKey) || [];
     // Prune timestamps older than 60s
@@ -129,6 +145,13 @@ export class SessionAtoTracker {
     const platformSet = this.activeCookies.get(platform.id) || new Set();
 
     if (event.removed) {
+      // 'expired_overwrite' is Chrome's cookie expiry via replacement — not a real revocation.
+      if (event.cause === 'expired_overwrite') {
+        platformSet.add(event.name); // treat as still active (expiry via renewal)
+        this.activeCookies.set(platform.id, platformSet);
+        return null;
+      }
+
       platformSet.delete(event.name);
       this.globalRemovals.push({ platformId: platform.id, timestamp: now });
       // Keep only recent removals (last 60s)
@@ -154,9 +177,10 @@ export class SessionAtoTracker {
       platformSet.add(event.name);
 
       // Rule 2: Rapid Cookie Churn (Token swapping / replay attack)
-      // If the same key changed >= 4 times in 15 seconds
+      // Threshold raised to 7 set-operations in 15s to absorb normal login flows
+      // (which legitimately set 3-5 cookies during sign-in sequences).
       const veryRecent = recent.filter((t) => now - t < 15000);
-      if (veryRecent.length >= 4) {
+      if (veryRecent.length >= 7) {
         const alert: AtoAlert = {
           id: `ato-churn-${platform.id}-${now}`,
           timestamp: now,

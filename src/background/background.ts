@@ -71,6 +71,7 @@ import {
 } from '../utils/searchHijackGuard';
 import {
   SessionAtoTracker,
+  ATO_MONITORED_ORIGINS,
   type CookieChangeDetail,
 } from '../utils/sessionAtoGuard';
 import {
@@ -2387,7 +2388,18 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   if (type === 'GET_ATO_SESSION_STATUS') {
     return (async () => {
-      const hasCookiePermission = ensureCookieWatcherAttached();
+      let hasOriginsPermission = true;
+      try {
+        if (browser.permissions?.contains) {
+          hasOriginsPermission = await browser.permissions.contains({
+            permissions: ['cookies'],
+            origins: ATO_MONITORED_ORIGINS,
+          });
+        }
+      } catch {
+        hasOriginsPermission = false;
+      }
+      const hasCookiePermission = ensureCookieWatcherAttached() && hasOriginsPermission;
       if (hasCookiePermission) {
         await seedExistingAtoCookies();
       }

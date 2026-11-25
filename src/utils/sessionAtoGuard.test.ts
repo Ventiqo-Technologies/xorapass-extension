@@ -53,9 +53,13 @@ describe('sessionAtoGuard', () => {
 
   it('detects rapid cookie churn as suspicious', () => {
     const now = Date.now();
+    // Threshold is 7 set-operations in 15s — simulate 7 rapid rewrites
     tracker.recordCookieChange({ domain: 'facebook.com', name: 'c_user', removed: false }, now);
+    tracker.recordCookieChange({ domain: 'facebook.com', name: 'c_user', removed: false }, now + 500);
     tracker.recordCookieChange({ domain: 'facebook.com', name: 'c_user', removed: false }, now + 1000);
+    tracker.recordCookieChange({ domain: 'facebook.com', name: 'c_user', removed: false }, now + 1500);
     tracker.recordCookieChange({ domain: 'facebook.com', name: 'c_user', removed: false }, now + 2000);
+    tracker.recordCookieChange({ domain: 'facebook.com', name: 'c_user', removed: false }, now + 2500);
     const alert = tracker.recordCookieChange(
       { domain: 'facebook.com', name: 'c_user', removed: false },
       now + 3000
@@ -65,6 +69,27 @@ describe('sessionAtoGuard', () => {
     expect(alert?.severity).toBe('warning');
     expect(alert?.platformId).toBe('meta');
     expect(alert?.title).toContain('Rapid Session Modification');
+  });
+
+  it('ignores overwrite-cause events (normal cookie renewal)', () => {
+    const now = Date.now();
+    // Simulate Chrome firing removed:true/cause:'overwrite' before the actual renewal
+    for (let i = 0; i < 10; i++) {
+      const result = tracker.recordCookieChange(
+        { domain: '.instagram.com', name: 'ds_user_id', removed: true, cause: 'overwrite' },
+        now + i * 500
+      );
+      expect(result).toBeNull(); // overwrite events must never raise alerts
+    }
+    // The actual renewal set-event should mark cookie as active, not raise alert
+    const setResult = tracker.recordCookieChange(
+      { domain: '.instagram.com', name: 'ds_user_id', removed: false, cause: 'explicit' },
+      now + 5000
+    );
+    expect(setResult).toBeNull();
+    const statuses = tracker.getPlatformStatuses();
+    const ig = statuses.find((s) => s.platformId === 'instagram');
+    expect(ig?.status).toBe('active_session');
   });
 
   it('triggers critical ATO alert upon multi-platform simultaneous invalidation', () => {
