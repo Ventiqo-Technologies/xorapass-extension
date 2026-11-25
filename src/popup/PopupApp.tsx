@@ -59,6 +59,8 @@ import {
 } from 'lucide-react';
 import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptSafety';
 import { type ExtensionAuditSummary } from '../utils/extensionAudit';
+import { type SearchHijackVerdict, type SearchHijackExtensionFinding } from '../utils/searchHijackGuard';
+import { type PlatformSessionStatus, type AtoAlert } from '../utils/sessionAtoGuard';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
@@ -494,6 +496,59 @@ export const PopupApp: React.FC = () => {
   const [extensionAudit, setExtensionAudit] = useState<ExtensionAuditSummary | null>(null);
   const [isAuditingExtensions, setIsAuditingExtensions] = useState(false);
   const [extensionAuditDenied, setExtensionAuditDenied] = useState(false);
+
+  // XoraPass Shield - Search Engine Hijack & Session ATO Guard state
+  const [searchHijackStatus, setSearchHijackStatus] = useState<{
+    alert: {
+      id: string;
+      timestamp: number;
+      url: string;
+      verdict: SearchHijackVerdict;
+      culpritExtensions: SearchHijackExtensionFinding[];
+    } | null;
+    culpritExtensions: SearchHijackExtensionFinding[];
+  } | null>(null);
+
+  const [atoSessionStatus, setAtoSessionStatus] = useState<{
+    platforms: PlatformSessionStatus[];
+    alerts: AtoAlert[];
+    hasCookiePermission: boolean;
+  } | null>(null);
+
+  const loadHijackAndAtoStatus = async () => {
+    try {
+      const [hijackRes, atoRes] = await Promise.all([
+        browser.runtime.sendMessage({ type: 'GET_SEARCH_HIJACK_STATUS' }).catch(() => null),
+        browser.runtime.sendMessage({ type: 'GET_ATO_SESSION_STATUS' }).catch(() => null),
+      ]);
+      if (hijackRes) setSearchHijackStatus(hijackRes);
+      if (atoRes) setAtoSessionStatus(atoRes);
+    } catch {
+      // Non-fatal
+    }
+  };
+
+  useEffect(() => {
+    void loadHijackAndAtoStatus();
+  }, [unlocked]);
+
+  const handleDismissSearchHijack = async () => {
+    await browser.runtime.sendMessage({ type: 'DISMISS_SEARCH_HIJACK_ALERT' }).catch(() => undefined);
+    await loadHijackAndAtoStatus();
+  };
+
+  const handleDismissAtoAlert = async (id: string) => {
+    await browser.runtime.sendMessage({ type: 'DISMISS_ATO_ALERT', payload: { id } }).catch(() => undefined);
+    await loadHijackAndAtoStatus();
+  };
+
+  const handleEnableCookieWatch = async () => {
+    if (browser.permissions?.request) {
+      await browser.permissions.request({ permissions: ['cookies'] }).catch(() => false);
+      // Reload background listener or refresh status
+      await loadHijackAndAtoStatus();
+    }
+  };
   // Always-on Shield status (paid; keeps protecting while the vault is locked).
   const [shieldState, setShieldState] = useState<{
     active: boolean;
@@ -4304,6 +4359,192 @@ export const PopupApp: React.FC = () => {
                           : 'Click "Audit Extensions" to review permissions and known threats. This cannot verify extension safety.'}
                       </p>
                     </div>
+                  )}
+                </div>
+
+                {/* ── Search Engine Hijack Guard ─────────────────────────── */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      <Search className="w-4 h-4 text-slate-500" /> Search Engine Guard
+                    </div>
+                    <button
+                      onClick={() => loadHijackAndAtoStatus()}
+                      className="p-1 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition"
+                      title="Refresh"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                    </button>
+                  </div>
+
+                  {searchHijackStatus?.alert ? (
+                    <div className="p-3 rounded-xl border border-rose-200/80 bg-rose-50/60 dark:bg-rose-950/20 dark:border-rose-700/40 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-rose-100 dark:bg-rose-950/70 flex items-center justify-center shrink-0">
+                            <AlertTriangle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-rose-700 dark:text-rose-300">Search Hijack Detected</div>
+                            <div className="text-[11px] text-rose-600/80 dark:text-rose-400/80 truncate max-w-[180px]">
+                              {searchHijackStatus.alert.verdict.matchedDomain || 'Unknown domain'}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleDismissSearchHijack}
+                          className="shrink-0 p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-900/40 text-rose-400 hover:text-rose-600 transition"
+                          title="Dismiss alert"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+                        {searchHijackStatus.alert.verdict.reasons[0] || searchHijackStatus.alert.verdict.details}
+                      </p>
+                      {searchHijackStatus.culpritExtensions.length > 0 && (
+                        <div className="pt-1 space-y-1">
+                          <div className="text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wide">Likely culprit extensions</div>
+                          {searchHijackStatus.culpritExtensions.slice(0, 3).map((ext) => (
+                            <div key={ext.extensionId} className="flex items-center justify-between gap-2 p-1.5 rounded-lg bg-white/60 dark:bg-white/5 border border-slate-200/60 dark:border-white/10 text-xs">
+                              <span className="font-medium text-slate-800 dark:text-slate-200 truncate">{ext.name}</span>
+                              <div className="flex gap-1 shrink-0">
+                                <button
+                                  onClick={() => handleDisableExtension(ext.extensionId)}
+                                  className="p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-950/50 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 transition"
+                                  title="Disable"
+                                ><Power className="w-3 h-3" /></button>
+                                <button
+                                  onClick={() => handleUninstallExtension(ext.extensionId)}
+                                  className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950/50 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition"
+                                  title="Remove"
+                                ><Trash2 className="w-3 h-3" /></button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2.5 p-2.5 bg-slate-50 dark:bg-white/[0.04] border border-slate-900/5 dark:border-white/10 rounded-xl">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-100 dark:bg-emerald-950/60 flex items-center justify-center shrink-0">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-800 dark:text-slate-100">Search Engine Protected</div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">No redirect hijacking detected on current navigation.</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Account Takeover (ATO) Session Monitor ─────────────── */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      <Activity className="w-4 h-4 text-slate-500" /> Session Guard
+                    </div>
+                    {atoSessionStatus && !atoSessionStatus.hasCookiePermission ? (
+                      <button
+                        onClick={handleEnableCookieWatch}
+                        className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 hover:opacity-80 transition"
+                      >
+                        Enable Watch
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => loadHijackAndAtoStatus()}
+                        className="p-1 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition"
+                        title="Refresh"
+                      ><RefreshCw className="w-3 h-3" /></button>
+                    )}
+                  </div>
+
+                  {atoSessionStatus?.alerts && atoSessionStatus.alerts.length > 0 && (
+                    <div className="space-y-1.5">
+                      {atoSessionStatus.alerts.map((alert) => (
+                        <div
+                          key={alert.id}
+                          className={`p-3 rounded-xl border space-y-1.5 ${
+                            alert.severity === 'critical'
+                              ? 'bg-rose-50/60 border-rose-200/80 dark:bg-rose-950/20 dark:border-rose-700/40'
+                              : 'bg-amber-50/60 border-amber-200/80 dark:bg-amber-950/20 dark:border-amber-700/40'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                alert.severity === 'critical'
+                                  ? 'bg-rose-100 dark:bg-rose-950/70'
+                                  : 'bg-amber-100 dark:bg-amber-950/70'
+                              }`}>
+                                <ShieldAlert className={`w-3.5 h-3.5 ${alert.severity === 'critical' ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400'}`} />
+                              </div>
+                              <div>
+                                <div className={`text-xs font-bold ${alert.severity === 'critical' ? 'text-rose-700 dark:text-rose-300' : 'text-amber-700 dark:text-amber-300'}`}>
+                                  {alert.title}
+                                </div>
+                                <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{alert.platformName}</div>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handleDismissAtoAlert(alert.id)}
+                              className="shrink-0 p-1 rounded hover:bg-slate-200/60 dark:hover:bg-white/10 text-slate-400 hover:text-slate-600 transition"
+                              title="Dismiss"
+                            ><X className="w-3 h-3" /></button>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">{alert.message}</p>
+                          <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">{alert.recommendation}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {!atoSessionStatus?.hasCookiePermission ? (
+                    <div className="flex items-start gap-2.5 p-2.5 bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-700/40 rounded-xl">
+                      <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-950/60 flex items-center justify-center shrink-0 mt-0.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-amber-700 dark:text-amber-300">Cookie Watch Not Active</div>
+                        <div className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug mt-0.5">
+                          Grant the <span className="font-semibold">cookies</span> permission to monitor session token theft across Google, Meta, Instagram, X, and Microsoft 365.
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-5 gap-1.5 pt-0.5">
+                      {(atoSessionStatus?.platforms || []).map((p) => (
+                        <div
+                          key={p.platformId}
+                          title={`${p.platformName}: ${p.status.replace(/_/g, ' ')}`}
+                          className={`flex flex-col items-center gap-0.5 p-1.5 rounded-lg border text-center cursor-default ${
+                            p.status === 'potential_ato'
+                              ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-700/40'
+                              : p.status === 'suspicious_churn'
+                              ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-700/40'
+                              : p.status === 'active_session'
+                              ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-700/30'
+                              : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200/60 dark:border-white/10'
+                          }`}
+                        >
+                          <div className={`w-2 h-2 rounded-full ${
+                            p.status === 'potential_ato' ? 'bg-rose-500' :
+                            p.status === 'suspicious_churn' ? 'bg-amber-400' :
+                            p.status === 'active_session' ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                          }`} />
+                          <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 leading-tight truncate w-full">
+                            {p.platformName.split(' ')[0]}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {atoSessionStatus?.hasCookiePermission && (!atoSessionStatus?.alerts || atoSessionStatus.alerts.length === 0) && (
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                      Monitoring session tokens across 5 platforms. No suspicious activity detected.
+                    </p>
                   )}
                 </div>
 

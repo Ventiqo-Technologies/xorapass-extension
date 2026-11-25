@@ -64,6 +64,16 @@ import { applyCredentialFormRisk } from '../utils/credentialFormRisk';
 import { isSupportedWebmail } from '../utils/webmailGuard';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import {
+  inspectSearchUrl,
+  auditExtensionsForSearchHijack,
+  type SearchHijackVerdict,
+  type SearchHijackExtensionFinding,
+} from '../utils/searchHijackGuard';
+import {
+  SessionAtoTracker,
+  type CookieChangeDetail,
+} from '../utils/sessionAtoGuard';
+import {
   encryptPayload,
   decryptPayload,
   hexToBytes,
@@ -819,8 +829,72 @@ async function saveSecretToVault(input: {
 }
 
 
+const sessionAtoTracker = new SessionAtoTracker();
+
+interface StoredSearchHijackAlert {
+  id: string;
+  timestamp: number;
+  url: string;
+  verdict: SearchHijackVerdict;
+  culpritExtensions: SearchHijackExtensionFinding[];
+}
+
+let activeSearchHijackAlert: StoredSearchHijackAlert | null = null;
+
+async function getCulpritSearchExtensions(): Promise<SearchHijackExtensionFinding[]> {
+  try {
+    const api = (globalThis as any).chrome?.management || (browser as any)?.management;
+    if (typeof api?.getAll !== 'function') return [];
+    const allExts = await new Promise<any[]>((resolve) => {
+      try {
+        const res = api.getAll((list: any[]) => resolve(Array.isArray(list) ? list : []));
+        if (res && typeof res.then === 'function') {
+          res.then((list: any[]) => resolve(Array.isArray(list) ? list : [])).catch(() => resolve([]));
+        }
+      } catch {
+        resolve([]);
+      }
+    });
+    return auditExtensionsForSearchHijack(allExts);
+  } catch {
+    return [];
+  }
+}
+
+if (typeof browser.cookies !== 'undefined' && browser.cookies?.onChanged) {
+  browser.cookies.onChanged.addListener((changeInfo) => {
+    if (!changeInfo?.cookie) return;
+    const detail: CookieChangeDetail = {
+      domain: changeInfo.cookie.domain || '',
+      name: changeInfo.cookie.name || '',
+      value: changeInfo.cookie.value,
+      secure: changeInfo.cookie.secure,
+      httpOnly: changeInfo.cookie.httpOnly,
+      removed: Boolean(changeInfo.removed),
+      cause: changeInfo.cause,
+    };
+    sessionAtoTracker.recordCookieChange(detail);
+  });
+}
+
 // Keep proactive tab-risk checks independent of the retired approval flow.
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  const targetUrl = changeInfo.url || (changeInfo.status === 'complete' ? tab.url : undefined);
+  if (targetUrl && /^https?:\/\//i.test(targetUrl)) {
+    const hijackVerdict = inspectSearchUrl(targetUrl);
+    if (hijackVerdict.isHijacked) {
+      void (async () => {
+        const culpritExtensions = await getCulpritSearchExtensions();
+        activeSearchHijackAlert = {
+          id: `hijack-${Date.now()}`,
+          timestamp: Date.now(),
+          url: targetUrl,
+          verdict: hijackVerdict,
+          culpritExtensions,
+        };
+      })();
+    }
+  }
   if (changeInfo.status === 'complete') void checkAndPushTabRisk(tabId, tab.url);
 });
 
@@ -2258,6 +2332,37 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
       return false;
     })();
+  }
+
+  if (type === 'GET_SEARCH_HIJACK_STATUS') {
+    return (async () => {
+      const culpritExtensions = await getCulpritSearchExtensions();
+      return {
+        alert: activeSearchHijackAlert,
+        culpritExtensions,
+      };
+    })();
+  }
+
+  if (type === 'DISMISS_SEARCH_HIJACK_ALERT') {
+    activeSearchHijackAlert = null;
+    return Promise.resolve({ ok: true });
+  }
+
+  if (type === 'GET_ATO_SESSION_STATUS') {
+    return Promise.resolve({
+      platforms: sessionAtoTracker.getPlatformStatuses(),
+      alerts: sessionAtoTracker.getActiveAlerts(),
+      hasCookiePermission: Boolean(typeof browser.cookies !== 'undefined' && browser.cookies?.onChanged),
+    });
+  }
+
+  if (type === 'DISMISS_ATO_ALERT') {
+    const alertId = msg.payload?.id;
+    if (typeof alertId === 'string' && alertId) {
+      sessionAtoTracker.dismissAlert(alertId);
+    }
+    return Promise.resolve({ ok: true });
   }
 
   // ── Web Bridge messages from content script or internal pages ─────────
