@@ -29,9 +29,11 @@ describe('sessionAtoGuard', () => {
     const ms = matchMonitoredPlatform('login.microsoftonline.com', 'ESTSAUTH');
     expect(ms?.id).toBe('microsoft');
 
-    // Unrelated cookies should return null
+    // Unrelated or logged-out tracking/CSRF cookies should return null
     expect(matchMonitoredPlatform('example.com', 'session')).toBeNull();
     expect(matchMonitoredPlatform('.google.com', 'unrelated_cookie')).toBeNull();
+    expect(matchMonitoredPlatform('.facebook.com', 'fr')).toBeNull();
+    expect(matchMonitoredPlatform('.x.com', 'ct0')).toBeNull();
   });
 
   it('reports active session status when monitored cookies are added', () => {

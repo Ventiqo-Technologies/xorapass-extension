@@ -30,7 +30,7 @@ export const MONITORED_ATO_PLATFORMS: MonitoredPlatformDef[] = [
     id: 'meta',
     name: 'Facebook / Meta',
     domainMatch: (d: string) => d.includes('facebook.com'),
-    primaryCookies: new Set(['c_user', 'xs', 'fr']),
+    primaryCookies: new Set(['c_user', 'xs']),
   },
   {
     id: 'instagram',
@@ -42,7 +42,7 @@ export const MONITORED_ATO_PLATFORMS: MonitoredPlatformDef[] = [
     id: 'twitter',
     name: 'X (Twitter)',
     domainMatch: (d: string) => d.includes('twitter.com') || d.includes('x.com'),
-    primaryCookies: new Set(['auth_token', 'ct0']),
+    primaryCookies: new Set(['auth_token']),
   },
   {
     id: 'microsoft',
