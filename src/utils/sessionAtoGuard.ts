@@ -60,6 +60,7 @@ export interface CookieChangeDetail {
   httpOnly?: boolean;
   removed: boolean;
   cause?: string;
+  storeId?: string;
   timestamp?: number;
 }
 
@@ -121,6 +122,17 @@ export class SessionAtoTracker {
       platformSet.add(c.name);
       this.activeCookies.set(platform.id, platformSet);
     }
+  }
+
+  /**
+   * Replaces tracked active session cookies with an authoritative snapshot from a store
+   * (e.g., when refreshing status or when an incognito window is closed/reopened).
+   */
+  public syncActiveCookies(cookies: Array<{ domain: string; name: string }>) {
+    for (const p of MONITORED_ATO_PLATFORMS) {
+      this.activeCookies.set(p.id, new Set());
+    }
+    this.seedActiveCookies(cookies);
   }
 
   /**
@@ -261,6 +273,51 @@ export class SessionAtoTracker {
     this.alerts = [];
     for (const p of MONITORED_ATO_PLATFORMS) {
       this.activeCookies.set(p.id, new Set());
+    }
+  }
+}
+
+/**
+ * Isolates SessionAtoTracker state per browser cookie storeId (e.g. normal "0" vs
+ * incognito/InPrivate "1" or Firefox "firefox-private") so cookies and alerts never leak
+ * across private browsing boundaries.
+ */
+export class StoreScopedAtoTracker {
+  private stores: Map<string, SessionAtoTracker> = new Map();
+
+  private getStore(storeId = '0'): SessionAtoTracker {
+    const key = storeId || '0';
+    let tracker = this.stores.get(key);
+    if (!tracker) {
+      tracker = new SessionAtoTracker();
+      this.stores.set(key, tracker);
+    }
+    return tracker;
+  }
+
+  public recordCookieChange(event: CookieChangeDetail, now = Date.now()): AtoAlert | null {
+    return this.getStore(event.storeId).recordCookieChange(event, now);
+  }
+
+  public syncStoreCookies(storeId: string, cookies: Array<{ domain: string; name: string }>) {
+    this.getStore(storeId).syncActiveCookies(cookies);
+  }
+
+  public getPlatformStatuses(storeId = '0', now = Date.now()): PlatformSessionStatus[] {
+    return this.getStore(storeId).getPlatformStatuses(now);
+  }
+
+  public getActiveAlerts(storeId = '0'): AtoAlert[] {
+    return this.getStore(storeId).getActiveAlerts();
+  }
+
+  public dismissAlert(alertId: string, storeId?: string) {
+    if (storeId) {
+      this.getStore(storeId).dismissAlert(alertId);
+      return;
+    }
+    for (const tracker of this.stores.values()) {
+      tracker.dismissAlert(alertId);
     }
   }
 }

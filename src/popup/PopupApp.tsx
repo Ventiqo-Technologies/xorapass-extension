@@ -544,9 +544,22 @@ export const PopupApp: React.FC = () => {
 
   const loadHijackAndAtoStatus = async () => {
     try {
+      let tabContext: { tabId?: number; incognito?: boolean; cookieStoreId?: string } | undefined;
+      try {
+        const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+        if (activeTab) {
+          tabContext = {
+            tabId: activeTab.id,
+            incognito: Boolean(activeTab.incognito),
+            cookieStoreId: (activeTab as any).cookieStoreId,
+          };
+        }
+      } catch {
+        // Non-fatal
+      }
       const [hijackRes, atoRes] = await Promise.all([
         browser.runtime.sendMessage({ type: 'GET_SEARCH_HIJACK_STATUS' }).catch(() => null),
-        browser.runtime.sendMessage({ type: 'GET_ATO_SESSION_STATUS' }).catch(() => null),
+        browser.runtime.sendMessage({ type: 'GET_ATO_SESSION_STATUS', payload: tabContext }).catch(() => null),
       ]);
       if (hijackRes) setSearchHijackStatus(hijackRes);
       if (atoRes) setAtoSessionStatus(atoRes);
@@ -557,7 +570,7 @@ export const PopupApp: React.FC = () => {
 
   useEffect(() => {
     void loadHijackAndAtoStatus();
-  }, [unlocked]);
+  }, [unlocked, tab]);
 
   const handleDismissSearchHijack = async () => {
     await browser.runtime.sendMessage({ type: 'DISMISS_SEARCH_HIJACK_ALERT' }).catch(() => undefined);

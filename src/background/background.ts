@@ -70,7 +70,7 @@ import {
   type SearchHijackExtensionFinding,
 } from '../utils/searchHijackGuard';
 import {
-  SessionAtoTracker,
+  StoreScopedAtoTracker,
   ATO_MONITORED_ORIGINS,
   type CookieChangeDetail,
 } from '../utils/sessionAtoGuard';
@@ -830,7 +830,7 @@ async function saveSecretToVault(input: {
 }
 
 
-const sessionAtoTracker = new SessionAtoTracker();
+const sessionAtoTracker = new StoreScopedAtoTracker();
 
 interface StoredSearchHijackAlert {
   id: string;
@@ -863,19 +863,72 @@ async function getCulpritSearchExtensions(): Promise<SearchHijackExtensionFindin
 }
 
 let cookieWatcherAttached = false;
+const INCOGNITO_EMPTY_STORE = '__incognito_empty__';
 
-async function seedExistingAtoCookies(): Promise<void> {
+async function resolveAtoStoreId(opts?: {
+  tabId?: number;
+  incognito?: boolean;
+  cookieStoreId?: string;
+}): Promise<string> {
+  if (typeof opts?.cookieStoreId === 'string' && opts.cookieStoreId) {
+    return opts.cookieStoreId;
+  }
+
+  let targetTabId = typeof opts?.tabId === 'number' ? opts.tabId : undefined;
+  let isIncognito = Boolean(opts?.incognito);
+
+  if (targetTabId === undefined) {
+    try {
+      const tabs = await browser.tabs.query({ active: true, lastFocusedWindow: true });
+      const activeTab = tabs[0];
+      if (activeTab) {
+        if (typeof (activeTab as any).cookieStoreId === 'string' && (activeTab as any).cookieStoreId) {
+          return (activeTab as any).cookieStoreId;
+        }
+        targetTabId = activeTab.id;
+        isIncognito = Boolean(activeTab.incognito);
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  try {
+    if (typeof browser.cookies !== 'undefined' && typeof browser.cookies?.getAllCookieStores === 'function') {
+      const stores = await browser.cookies.getAllCookieStores();
+      if (targetTabId !== undefined) {
+        const match = stores.find((s) => Array.isArray(s.tabIds) && s.tabIds.includes(targetTabId!));
+        if (match?.id) return match.id;
+      }
+      if (isIncognito) {
+        const privateStore = stores.find((s) => s.id && s.id !== '0');
+        return privateStore?.id || INCOGNITO_EMPTY_STORE;
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  return isIncognito ? INCOGNITO_EMPTY_STORE : '0';
+}
+
+async function seedExistingAtoCookies(storeId = '0'): Promise<void> {
+  if (storeId === INCOGNITO_EMPTY_STORE) {
+    sessionAtoTracker.syncStoreCookies(storeId, []);
+    return;
+  }
   try {
     if (typeof browser.cookies !== 'undefined' && typeof browser.cookies?.getAll === 'function') {
-      const allCookies = await browser.cookies.getAll({});
+      const allCookies = await browser.cookies.getAll({ storeId });
       if (Array.isArray(allCookies)) {
-        sessionAtoTracker.seedActiveCookies(
+        sessionAtoTracker.syncStoreCookies(
+          storeId,
           allCookies.map((c) => ({ domain: c.domain || '', name: c.name || '' }))
         );
       }
     }
   } catch {
-    // Non-fatal if cookies permission is not yet granted
+    // Non-fatal if cookies permission is not yet granted or store unavailable
   }
 }
 
@@ -895,10 +948,10 @@ function ensureCookieWatcherAttached(): boolean {
         httpOnly: changeInfo.cookie.httpOnly,
         removed: Boolean(changeInfo.removed),
         cause: changeInfo.cause,
+        storeId: (changeInfo.cookie as any).storeId || '0',
       };
       sessionAtoTracker.recordCookieChange(detail);
     });
-    void seedExistingAtoCookies();
   }
   return true;
 }
@@ -909,7 +962,7 @@ if (typeof browser.permissions !== 'undefined' && browser.permissions?.onAdded) 
   browser.permissions.onAdded.addListener((perms) => {
     if (perms?.permissions?.includes('cookies')) {
       ensureCookieWatcherAttached();
-      void seedExistingAtoCookies();
+      void resolveAtoStoreId().then((storeId) => seedExistingAtoCookies(storeId));
     }
   });
 }
@@ -2400,12 +2453,17 @@ browser.runtime.onMessage.addListener((message, sender) => {
         hasOriginsPermission = false;
       }
       const hasCookiePermission = ensureCookieWatcherAttached() && hasOriginsPermission;
+      const storeId = await resolveAtoStoreId({
+        tabId: typeof msg.payload?.tabId === 'number' ? msg.payload.tabId : undefined,
+        incognito: Boolean(msg.payload?.incognito),
+        cookieStoreId: typeof msg.payload?.cookieStoreId === 'string' ? msg.payload.cookieStoreId : undefined,
+      });
       if (hasCookiePermission) {
-        await seedExistingAtoCookies();
+        await seedExistingAtoCookies(storeId);
       }
       return {
-        platforms: sessionAtoTracker.getPlatformStatuses(),
-        alerts: sessionAtoTracker.getActiveAlerts(),
+        platforms: sessionAtoTracker.getPlatformStatuses(storeId),
+        alerts: sessionAtoTracker.getActiveAlerts(storeId),
         hasCookiePermission,
       };
     })();
@@ -2414,7 +2472,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (type === 'DISMISS_ATO_ALERT') {
     const alertId = msg.payload?.id;
     if (typeof alertId === 'string' && alertId) {
-      sessionAtoTracker.dismissAlert(alertId);
+      sessionAtoTracker.dismissAlert(
+        alertId,
+        typeof msg.payload?.storeId === 'string' ? msg.payload.storeId : undefined
+      );
     }
     return Promise.resolve({ ok: true });
   }

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   SessionAtoTracker,
+  StoreScopedAtoTracker,
   matchMonitoredPlatform,
   MONITORED_ATO_PLATFORMS,
 } from './sessionAtoGuard';
@@ -160,6 +161,42 @@ describe('sessionAtoGuard', () => {
     expect(r1).toBeNull();
     expect(r2).toBeNull();
     expect(tracker.getActiveAlerts().length).toBe(0);
+  });
+
+  it('isolates active sessions and alerts per cookie storeId (normal vs incognito)', () => {
+    const scoped = new StoreScopedAtoTracker();
+
+    // Regular profile store "0" is logged into Facebook & Google
+    scoped.syncStoreCookies('0', [
+      { domain: '.facebook.com', name: 'c_user' },
+      { domain: '.google.com', name: 'SID' },
+    ]);
+    // Incognito store "1" has no cookies
+    scoped.syncStoreCookies('1', []);
+
+    const normalStatuses = scoped.getPlatformStatuses('0');
+    const privateStatuses = scoped.getPlatformStatuses('1');
+
+    expect(normalStatuses.find((s) => s.platformId === 'meta')?.status).toBe('active_session');
+    expect(normalStatuses.find((s) => s.platformId === 'google')?.status).toBe('active_session');
+
+    expect(privateStatuses.find((s) => s.platformId === 'meta')?.status).toBe('protected');
+    expect(privateStatuses.find((s) => s.platformId === 'google')?.status).toBe('protected');
+
+    // Signing into X inside incognito store "1" only updates store "1"
+    scoped.recordCookieChange({
+      domain: '.x.com',
+      name: 'auth_token',
+      removed: false,
+      storeId: '1',
+    });
+
+    expect(scoped.getPlatformStatuses('1').find((s) => s.platformId === 'twitter')?.status).toBe('active_session');
+    expect(scoped.getPlatformStatuses('0').find((s) => s.platformId === 'twitter')?.status).toBe('protected');
+
+    // Syncing empty cookies (e.g. incognito window closed/reopened) clears stale sessions
+    scoped.syncStoreCookies('1', []);
+    expect(scoped.getPlatformStatuses('1').find((s) => s.platformId === 'twitter')?.status).toBe('protected');
   });
 });
 
