@@ -145,19 +145,32 @@ export class SessionAtoTracker {
     const platformSet = this.activeCookies.get(platform.id) || new Set();
 
     if (event.removed) {
-      // 'expired_overwrite' is Chrome's cookie expiry via replacement — not a real revocation.
-      if (event.cause === 'expired_overwrite') {
-        platformSet.add(event.name); // treat as still active (expiry via renewal)
-        this.activeCookies.set(platform.id, platformSet);
+      // Browser-managed cleanup causes — not evidence of a real session revocation.
+      // 'expired'          : cookie naturally expired (TTL reached)
+      // 'expired_overwrite': browser expired it as part of a replacement
+      // 'evicted'          : browser evicted from cache under memory/storage pressure
+      // 'overwrite'        : already filtered above, but guard again defensively
+      const BENIGN_REMOVAL_CAUSES = new Set(['expired', 'expired_overwrite', 'evicted', 'overwrite']);
+      if (event.cause && BENIGN_REMOVAL_CAUSES.has(event.cause)) {
+        // Still track the cookie as potentially active (browser renewed it internally)
+        // so the status dot doesn't flicker to gray on routine expiry.
         return null;
       }
 
       platformSet.delete(event.name);
-      this.globalRemovals.push({ platformId: platform.id, timestamp: now });
+
+      // Only add to globalRemovals for suspicious causes: 'explicit' (manual deletion or
+      // programmatic JS removal — the infostealer signature) or unknown/undefined causes.
+      // This prevents normal navigation-triggered cookie cleanup from firing cross-platform alerts.
+      const isSuspiciousRemoval = !event.cause || event.cause === 'explicit';
+      if (isSuspiciousRemoval) {
+        this.globalRemovals.push({ platformId: platform.id, timestamp: now });
+      }
       // Keep only recent removals (last 60s)
       this.globalRemovals = this.globalRemovals.filter((r) => now - r.timestamp < 60000);
 
       // Rule 1: Multi-Platform Invalidation (Infostealer or cross-account attack signature)
+      // Requires >= 2 platforms with SUSPICIOUS (explicit/unknown) removals within 60s.
       const impactedPlatforms = new Set(this.globalRemovals.map((r) => r.platformId));
       if (impactedPlatforms.size >= 2) {
         const alert: AtoAlert = {

@@ -98,11 +98,11 @@ describe('sessionAtoGuard', () => {
     tracker.recordCookieChange({ domain: '.google.com', name: 'SID', removed: false }, now - 5000);
     tracker.recordCookieChange({ domain: '.instagram.com', name: 'sessionid', removed: false }, now - 5000);
 
-    // Abrupt removal on Google
-    tracker.recordCookieChange({ domain: '.google.com', name: 'SID', removed: true }, now);
-    // Abrupt removal on Instagram shortly after
+    // Abrupt EXPLICIT removal on Google (suspicious cause)
+    tracker.recordCookieChange({ domain: '.google.com', name: 'SID', removed: true, cause: 'explicit' }, now);
+    // Abrupt EXPLICIT removal on Instagram shortly after
     const alert = tracker.recordCookieChange(
-      { domain: '.instagram.com', name: 'sessionid', removed: true },
+      { domain: '.instagram.com', name: 'sessionid', removed: true, cause: 'explicit' },
       now + 2000
     );
 
@@ -138,6 +138,27 @@ describe('sessionAtoGuard', () => {
     const meta = statuses.find((s) => s.platformId === 'meta');
     expect(meta?.status).toBe('active_session');
     expect(meta?.activeCookieCount).toBe(2);
+    expect(tracker.getActiveAlerts().length).toBe(0);
+  });
+
+  it('ignores benign browser cleanup causes (expired, evicted) for multi-platform alerts', () => {
+    const now = Date.now();
+    tracker.seedActiveCookies([
+      { domain: '.facebook.com', name: 'c_user' },
+      { domain: '.instagram.com', name: 'sessionid' },
+    ]);
+
+    const r1 = tracker.recordCookieChange(
+      { domain: '.facebook.com', name: 'c_user', removed: true, cause: 'expired' },
+      now
+    );
+    const r2 = tracker.recordCookieChange(
+      { domain: '.instagram.com', name: 'sessionid', removed: true, cause: 'evicted' },
+      now + 1000
+    );
+
+    expect(r1).toBeNull();
+    expect(r2).toBeNull();
     expect(tracker.getActiveAlerts().length).toBe(0);
   });
 });
