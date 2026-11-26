@@ -64,6 +64,17 @@ import { applyCredentialFormRisk } from '../utils/credentialFormRisk';
 import { isSupportedWebmail } from '../utils/webmailGuard';
 import { isLocalOrPrivateHost } from '../utils/localHosts';
 import {
+  inspectSearchUrl,
+  auditExtensionsForSearchHijack,
+  type SearchHijackVerdict,
+  type SearchHijackExtensionFinding,
+} from '../utils/searchHijackGuard';
+import {
+  SessionAtoTracker,
+  ATO_MONITORED_ORIGINS,
+  type CookieChangeDetail,
+} from '../utils/sessionAtoGuard';
+import {
   encryptPayload,
   decryptPayload,
   hexToBytes,
@@ -819,8 +830,108 @@ async function saveSecretToVault(input: {
 }
 
 
+const sessionAtoTracker = new SessionAtoTracker();
+
+interface StoredSearchHijackAlert {
+  id: string;
+  timestamp: number;
+  url: string;
+  verdict: SearchHijackVerdict;
+  culpritExtensions: SearchHijackExtensionFinding[];
+}
+
+let activeSearchHijackAlert: StoredSearchHijackAlert | null = null;
+
+async function getCulpritSearchExtensions(): Promise<SearchHijackExtensionFinding[]> {
+  try {
+    const api = (globalThis as any).chrome?.management || (browser as any)?.management;
+    if (typeof api?.getAll !== 'function') return [];
+    const allExts = await new Promise<any[]>((resolve) => {
+      try {
+        const res = api.getAll((list: any[]) => resolve(Array.isArray(list) ? list : []));
+        if (res && typeof res.then === 'function') {
+          res.then((list: any[]) => resolve(Array.isArray(list) ? list : [])).catch(() => resolve([]));
+        }
+      } catch {
+        resolve([]);
+      }
+    });
+    return auditExtensionsForSearchHijack(allExts);
+  } catch {
+    return [];
+  }
+}
+
+let cookieWatcherAttached = false;
+
+async function seedExistingAtoCookies(): Promise<void> {
+  try {
+    if (typeof browser.cookies !== 'undefined' && typeof browser.cookies?.getAll === 'function') {
+      const allCookies = await browser.cookies.getAll({});
+      if (Array.isArray(allCookies)) {
+        sessionAtoTracker.seedActiveCookies(
+          allCookies.map((c) => ({ domain: c.domain || '', name: c.name || '' }))
+        );
+      }
+    }
+  } catch {
+    // Non-fatal if cookies permission is not yet granted
+  }
+}
+
+function ensureCookieWatcherAttached(): boolean {
+  if (typeof browser.cookies === 'undefined' || !browser.cookies?.onChanged) {
+    return false;
+  }
+  if (!cookieWatcherAttached) {
+    cookieWatcherAttached = true;
+    browser.cookies.onChanged.addListener((changeInfo) => {
+      if (!changeInfo?.cookie) return;
+      const detail: CookieChangeDetail = {
+        domain: changeInfo.cookie.domain || '',
+        name: changeInfo.cookie.name || '',
+        value: changeInfo.cookie.value,
+        secure: changeInfo.cookie.secure,
+        httpOnly: changeInfo.cookie.httpOnly,
+        removed: Boolean(changeInfo.removed),
+        cause: changeInfo.cause,
+      };
+      sessionAtoTracker.recordCookieChange(detail);
+    });
+    void seedExistingAtoCookies();
+  }
+  return true;
+}
+
+ensureCookieWatcherAttached();
+
+if (typeof browser.permissions !== 'undefined' && browser.permissions?.onAdded) {
+  browser.permissions.onAdded.addListener((perms) => {
+    if (perms?.permissions?.includes('cookies')) {
+      ensureCookieWatcherAttached();
+      void seedExistingAtoCookies();
+    }
+  });
+}
+
 // Keep proactive tab-risk checks independent of the retired approval flow.
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  const targetUrl = changeInfo.url || (changeInfo.status === 'complete' ? tab.url : undefined);
+  if (targetUrl && /^https?:\/\//i.test(targetUrl)) {
+    const hijackVerdict = inspectSearchUrl(targetUrl);
+    if (hijackVerdict.isHijacked) {
+      void (async () => {
+        const culpritExtensions = await getCulpritSearchExtensions();
+        activeSearchHijackAlert = {
+          id: `hijack-${Date.now()}`,
+          timestamp: Date.now(),
+          url: targetUrl,
+          verdict: hijackVerdict,
+          culpritExtensions,
+        };
+      })();
+    }
+  }
   if (changeInfo.status === 'complete') void checkAndPushTabRisk(tabId, tab.url);
 });
 
@@ -2258,6 +2369,54 @@ browser.runtime.onMessage.addListener((message, sender) => {
       }
       return false;
     })();
+  }
+
+  if (type === 'GET_SEARCH_HIJACK_STATUS') {
+    return (async () => {
+      const culpritExtensions = await getCulpritSearchExtensions();
+      return {
+        alert: activeSearchHijackAlert,
+        culpritExtensions,
+      };
+    })();
+  }
+
+  if (type === 'DISMISS_SEARCH_HIJACK_ALERT') {
+    activeSearchHijackAlert = null;
+    return Promise.resolve({ ok: true });
+  }
+
+  if (type === 'GET_ATO_SESSION_STATUS') {
+    return (async () => {
+      let hasOriginsPermission = true;
+      try {
+        if (browser.permissions?.contains) {
+          hasOriginsPermission = await browser.permissions.contains({
+            permissions: ['cookies'],
+            origins: ATO_MONITORED_ORIGINS,
+          });
+        }
+      } catch {
+        hasOriginsPermission = false;
+      }
+      const hasCookiePermission = ensureCookieWatcherAttached() && hasOriginsPermission;
+      if (hasCookiePermission) {
+        await seedExistingAtoCookies();
+      }
+      return {
+        platforms: sessionAtoTracker.getPlatformStatuses(),
+        alerts: sessionAtoTracker.getActiveAlerts(),
+        hasCookiePermission,
+      };
+    })();
+  }
+
+  if (type === 'DISMISS_ATO_ALERT') {
+    const alertId = msg.payload?.id;
+    if (typeof alertId === 'string' && alertId) {
+      sessionAtoTracker.dismissAlert(alertId);
+    }
+    return Promise.resolve({ ok: true });
   }
 
   // ── Web Bridge messages from content script or internal pages ─────────

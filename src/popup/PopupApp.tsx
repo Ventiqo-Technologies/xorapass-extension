@@ -59,6 +59,8 @@ import {
 } from 'lucide-react';
 import { analyzePromptSafety, type PromptAnalysisResult } from '../utils/promptSafety';
 import { type ExtensionAuditSummary } from '../utils/extensionAudit';
+import { type SearchHijackVerdict, type SearchHijackExtensionFinding } from '../utils/searchHijackGuard';
+import { ATO_MONITORED_ORIGINS, type PlatformSessionStatus, type AtoAlert } from '../utils/sessionAtoGuard';
 import { deriveMasterKey, splitMasterKey, encryptPayload, decryptPayload, bytesToHex, hexToBytes } from '../utils/crypto';
 import { parseTotpSecret, generateTotp } from '../utils/totp';
 import { isDomainMatch, findLookalikeTarget, extractHostname } from '../utils/siteTrust';
@@ -190,6 +192,33 @@ function fmtRelativeShort(iso: string): string {
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs}h`;
   return `${Math.round(hrs / 24)}d`;
+}
+
+class ShieldErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error) {
+    console.error('[XoraPass] Shield tab render error:', error);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs space-y-1">
+          <div className="font-bold">Shield view encountered an error</div>
+          <div className="font-mono text-[11px] break-all">{this.state.error.message}</div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 interface ActiveAiTab {
@@ -494,6 +523,61 @@ export const PopupApp: React.FC = () => {
   const [extensionAudit, setExtensionAudit] = useState<ExtensionAuditSummary | null>(null);
   const [isAuditingExtensions, setIsAuditingExtensions] = useState(false);
   const [extensionAuditDenied, setExtensionAuditDenied] = useState(false);
+
+  // XoraPass Shield - Search Engine Hijack & Session ATO Guard state
+  const [searchHijackStatus, setSearchHijackStatus] = useState<{
+    alert: {
+      id: string;
+      timestamp: number;
+      url: string;
+      verdict: SearchHijackVerdict;
+      culpritExtensions: SearchHijackExtensionFinding[];
+    } | null;
+    culpritExtensions: SearchHijackExtensionFinding[];
+  } | null>(null);
+
+  const [atoSessionStatus, setAtoSessionStatus] = useState<{
+    platforms: PlatformSessionStatus[];
+    alerts: AtoAlert[];
+    hasCookiePermission: boolean;
+  } | null>(null);
+
+  const loadHijackAndAtoStatus = async () => {
+    try {
+      const [hijackRes, atoRes] = await Promise.all([
+        browser.runtime.sendMessage({ type: 'GET_SEARCH_HIJACK_STATUS' }).catch(() => null),
+        browser.runtime.sendMessage({ type: 'GET_ATO_SESSION_STATUS' }).catch(() => null),
+      ]);
+      if (hijackRes) setSearchHijackStatus(hijackRes);
+      if (atoRes) setAtoSessionStatus(atoRes);
+    } catch {
+      // Non-fatal
+    }
+  };
+
+  useEffect(() => {
+    void loadHijackAndAtoStatus();
+  }, [unlocked]);
+
+  const handleDismissSearchHijack = async () => {
+    await browser.runtime.sendMessage({ type: 'DISMISS_SEARCH_HIJACK_ALERT' }).catch(() => undefined);
+    await loadHijackAndAtoStatus();
+  };
+
+  const handleDismissAtoAlert = async (id: string) => {
+    await browser.runtime.sendMessage({ type: 'DISMISS_ATO_ALERT', payload: { id } }).catch(() => undefined);
+    await loadHijackAndAtoStatus();
+  };
+
+  const handleEnableCookieWatch = async () => {
+    if (browser.permissions?.request) {
+      await browser.permissions
+        .request({ permissions: ['cookies'], origins: ATO_MONITORED_ORIGINS })
+        .catch(() => false);
+      // Reload background listener or refresh status
+      await loadHijackAndAtoStatus();
+    }
+  };
   // Always-on Shield status (paid; keeps protecting while the vault is locked).
   const [shieldState, setShieldState] = useState<{
     active: boolean;
@@ -3634,6 +3718,7 @@ export const PopupApp: React.FC = () => {
 
             {/* SHIELD TAB (XORAPASS SHIELD & SITE SCANNER) */}
             {tab === 'ai' && (
+              <ShieldErrorBoundary>
               <div className="space-y-3 animate-fade-in flex-1 flex flex-col">
                 {/* XoraPass Shield Banner Card */}
                 <div data-shield-active={shieldState?.active === true} className={`p-3 rounded-xl shadow-xs space-y-1.5 relative overflow-hidden border ${shieldState?.active ? 'bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 text-white border-slate-800' : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:border-slate-700'}`}>
@@ -4307,6 +4392,245 @@ export const PopupApp: React.FC = () => {
                   )}
                 </div>
 
+                {/* ── Search Engine Hijack Guard ─────────────────────────── */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      <Search className="w-4 h-4 text-slate-500" /> Search Engine Guard
+                    </div>
+                    <button
+                      onClick={() => loadHijackAndAtoStatus()}
+                      className="p-1 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition"
+                      title="Refresh"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                    </button>
+                  </div>
+
+                  {searchHijackStatus?.alert ? (
+                    <div className="p-3 rounded-xl border border-rose-200/80 bg-rose-50/60 dark:bg-rose-950/20 dark:border-rose-700/40 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-rose-100 dark:bg-rose-950/70 flex items-center justify-center shrink-0">
+                            <AlertTriangle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-rose-700 dark:text-rose-300">Search Hijack Detected</div>
+                            <div className="text-[11px] text-rose-600/80 dark:text-rose-400/80 truncate max-w-[180px]">
+                              {searchHijackStatus.alert.verdict?.matchedDomain || 'Unknown domain'}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleDismissSearchHijack}
+                          className="shrink-0 p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-900/40 text-rose-400 hover:text-rose-600 transition"
+                          title="Dismiss alert"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+                        {searchHijackStatus.alert.verdict?.reasons?.[0] || searchHijackStatus.alert.verdict?.details || 'Suspicious search redirect detected.'}
+                      </p>
+                      {Array.isArray(searchHijackStatus.culpritExtensions) && searchHijackStatus.culpritExtensions.length > 0 && (
+                        <div className="pt-1 space-y-1">
+                          <div className="text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wide">Likely culprit extensions</div>
+                          {searchHijackStatus.culpritExtensions.slice(0, 3).map((ext) => (
+                            <div key={ext.extensionId} className="flex items-center justify-between gap-2 p-1.5 rounded-lg bg-white/60 dark:bg-white/5 border border-slate-200/60 dark:border-white/10 text-xs">
+                              <span className="font-medium text-slate-800 dark:text-slate-200 truncate">{ext.name}</span>
+                              <div className="flex gap-1 shrink-0">
+                                <button
+                                  onClick={() => handleDisableExtension(ext.extensionId)}
+                                  className="p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-950/50 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 transition"
+                                  title="Disable"
+                                ><Power className="w-3 h-3" /></button>
+                                <button
+                                  onClick={() => handleUninstallExtension(ext.extensionId)}
+                                  className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950/50 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition"
+                                  title="Remove"
+                                ><Trash2 className="w-3 h-3" /></button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2.5 p-2.5 bg-slate-50 dark:bg-white/[0.04] border border-slate-900/5 dark:border-white/10 rounded-xl">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-100 dark:bg-emerald-950/60 flex items-center justify-center shrink-0">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-800 dark:text-slate-100">Search Engine Protected</div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">No redirect hijacking detected on current navigation.</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Account Takeover (ATO) Session Monitor ─────────────── */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      <Activity className="w-4 h-4 text-slate-500" /> Session Guard
+                    </div>
+                    {atoSessionStatus && !atoSessionStatus.hasCookiePermission ? (
+                      <button
+                        onClick={handleEnableCookieWatch}
+                        className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 hover:opacity-80 transition"
+                      >
+                        Enable Watch
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => loadHijackAndAtoStatus()}
+                        className="p-1 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition"
+                        title="Refresh"
+                      ><RefreshCw className="w-3 h-3" /></button>
+                    )}
+                  </div>
+
+                  {atoSessionStatus?.alerts && atoSessionStatus.alerts.length > 0 && (
+                    <div className="space-y-1.5">
+                      {atoSessionStatus.alerts.map((alert) => (
+                        <div
+                          key={alert.id}
+                          className={`p-3 rounded-xl border space-y-1.5 ${
+                            alert.severity === 'critical'
+                              ? 'bg-rose-50/60 border-rose-200/80 dark:bg-rose-950/20 dark:border-rose-700/40'
+                              : 'bg-amber-50/60 border-amber-200/80 dark:bg-amber-950/20 dark:border-amber-700/40'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                alert.severity === 'critical'
+                                  ? 'bg-rose-100 dark:bg-rose-950/70'
+                                  : 'bg-amber-100 dark:bg-amber-950/70'
+                              }`}>
+                                <ShieldAlert className={`w-3.5 h-3.5 ${alert.severity === 'critical' ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400'}`} />
+                              </div>
+                              <div>
+                                <div className={`text-xs font-bold ${alert.severity === 'critical' ? 'text-rose-700 dark:text-rose-300' : 'text-amber-700 dark:text-amber-300'}`}>
+                                  {alert.title}
+                                </div>
+                                <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{alert.platformName}</div>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handleDismissAtoAlert(alert.id)}
+                              className="shrink-0 p-1 rounded hover:bg-slate-200/60 dark:hover:bg-white/10 text-slate-400 hover:text-slate-600 transition"
+                              title="Dismiss"
+                            ><X className="w-3 h-3" /></button>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">{alert.message}</p>
+                          <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">{alert.recommendation}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {!atoSessionStatus?.hasCookiePermission ? (
+                    <div className="flex items-start gap-2.5 p-2.5 bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-700/40 rounded-xl">
+                      <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-950/60 flex items-center justify-center shrink-0 mt-0.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-amber-700 dark:text-amber-300">Cookie Watch Not Active</div>
+                        <div className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug mt-0.5">
+                          Grant the <span className="font-semibold">cookies</span> permission to monitor session token theft across Google, Meta, Instagram, X, and Microsoft 365.
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-5 gap-1.5 pt-0.5">
+                      {(atoSessionStatus?.platforms || []).map((p) => {
+                        const statusColor =
+                          p.status === 'potential_ato' ? 'bg-rose-500' :
+                          p.status === 'suspicious_churn' ? 'bg-amber-400' :
+                          p.status === 'active_session' ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600';
+                        const cardBg =
+                          p.status === 'potential_ato'
+                            ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-700/40'
+                            : p.status === 'suspicious_churn'
+                            ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-700/40'
+                            : p.status === 'active_session'
+                            ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-700/30'
+                            : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200/60 dark:border-white/10';
+
+                        const platformIcon: Record<string, React.ReactNode> = {
+                          google: (
+                            <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                            </svg>
+                          ),
+                          meta: (
+                            <svg viewBox="0 0 24 24" className="w-4 h-4" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" fill="#1877F2"/>
+                            </svg>
+                          ),
+                          instagram: (
+                            <svg viewBox="0 0 24 24" className="w-4 h-4" xmlns="http://www.w3.org/2000/svg">
+                              <defs>
+                                <radialGradient id="ig-grad" cx="30%" cy="107%" r="150%">
+                                  <stop offset="0%" stopColor="#ffd600"/>
+                                  <stop offset="30%" stopColor="#ff6930"/>
+                                  <stop offset="60%" stopColor="#e3277a"/>
+                                  <stop offset="100%" stopColor="#6a1fc2"/>
+                                </radialGradient>
+                              </defs>
+                              <rect width="24" height="24" rx="6" fill="url(#ig-grad)"/>
+                              <path d="M12 7.5a4.5 4.5 0 100 9 4.5 4.5 0 000-9zm0 7.5a3 3 0 110-6 3 3 0 010 6z" fill="white"/>
+                              <circle cx="16.75" cy="7.25" r="1" fill="white"/>
+                            </svg>
+                          ),
+                          twitter: (
+                            <svg viewBox="0 0 24 24" className="w-4 h-4" xmlns="http://www.w3.org/2000/svg">
+                              <rect width="24" height="24" rx="4" fill="black"/>
+                              <path d="M17.75 4h2.49l-5.44 6.22L21 20h-5.01l-3.93-5.14L7.56 20H5.07l5.82-6.65L3 4h5.14l3.55 4.65L17.75 4zm-.87 14.4h1.38L7.2 5.4H5.73l11.15 13z" fill="white"/>
+                            </svg>
+                          ),
+                          microsoft: (
+                            <svg viewBox="0 0 24 24" className="w-4 h-4" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M11.4 2H2v9.4h9.4V2z" fill="#F25022"/>
+                              <path d="M22 2h-9.4v9.4H22V2z" fill="#7FBA00"/>
+                              <path d="M11.4 12.6H2V22h9.4v-9.4z" fill="#00A4EF"/>
+                              <path d="M22 12.6h-9.4V22H22v-9.4z" fill="#FFB900"/>
+                            </svg>
+                          ),
+                        };
+
+                        return (
+                          <div
+                            key={p.platformId}
+                            title={`${p.platformName}: ${p.status.replace(/_/g, ' ')}`}
+                            className={`flex flex-col items-center gap-1 p-1.5 rounded-lg border text-center cursor-default ${cardBg}`}
+                          >
+                            <div className="relative">
+                              {platformIcon[p.platformId] ?? (
+                                <div className="w-4 h-4 rounded bg-slate-300 dark:bg-slate-600" />
+                              )}
+                              <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-white dark:border-slate-800 ${statusColor}`} />
+                            </div>
+                            <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 leading-tight truncate w-full">
+                              {p.platformName.split(' ')[0]}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {atoSessionStatus?.hasCookiePermission && (!atoSessionStatus?.alerts || atoSessionStatus.alerts.length === 0) && (
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                      Monitoring session tokens across 5 platforms. No suspicious activity detected.
+                    </p>
+                  )}
+                </div>
+
                 {/* Guarded AI Portals */}
                 <div className="space-y-2 pt-1">
                   <div className="flex items-center justify-between">
@@ -4476,6 +4800,7 @@ export const PopupApp: React.FC = () => {
                   </div>
                 </div>
               </div>
+              </ShieldErrorBoundary>
             )}
           </div>
 

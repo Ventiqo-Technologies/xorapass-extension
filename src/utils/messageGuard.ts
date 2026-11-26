@@ -128,6 +128,12 @@ export const KNOWN_MESSAGE_TYPES = [
   // Popup tells the content script the user dismissed the warning in the popup,
   // so the in-page overlay card can also be closed.
   'DISMISS_TAB_RISK_WARNING',
+  // Search Engine & New-Tab Hijack Guard
+  'GET_SEARCH_HIJACK_STATUS',
+  'DISMISS_SEARCH_HIJACK_ALERT',
+  // Social Media & Critical Account Takeover (ATO) Monitor
+  'GET_ATO_SESSION_STATUS',
+  'DISMISS_ATO_ALERT',
 ] as const;
 
 export type MessageType = (typeof KNOWN_MESSAGE_TYPES)[number];
@@ -187,6 +193,11 @@ const EXTENSION_PAGE_ONLY: ReadonlySet<string> = new Set([
   // A page has no business arming (or re-arming, and so postponing) the
   // clipboard clear; only the popup copies passwords.
   'CLIPBOARD_COPIED',
+  // Search hijacker & ATO session queries: popup only.
+  'GET_SEARCH_HIJACK_STATUS',
+  'DISMISS_SEARCH_HIJACK_ALERT',
+  'GET_ATO_SESSION_STATUS',
+  'DISMISS_ATO_ALERT',
 ]);
 
 export interface GuardResult {
